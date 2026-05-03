@@ -109,7 +109,9 @@ def _get_all_versions(
         except Exception:
             versions.sort(reverse=True)
         return versions
-    except requests.RequestException:
+    except requests.RequestException as e:
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        print(f"  [DEBUG] _get_all_versions({package}) failed: status={status}, url={url}")
         return []
 
 
@@ -304,6 +306,7 @@ def resolve_dependencies(
                 try:
                     all_versions = future.result()
                     if not all_versions:
+                        print(f"  [DEBUG] 过滤 {dep_name}: 无可用版本")
                         continue
 
                     merged_spec = _merge_specifiers(accumulated_constraints[dep_name])
@@ -318,6 +321,8 @@ def resolve_dependencies(
 
                     if to_keep:
                         result[dep_name] = to_keep
+                    else:
+                        print(f"  [DEBUG] 过滤 {dep_name}: spec='{merged_spec}', all={len(all_versions)}, filtered={len(filtered)}, to_keep empty")
 
                 except Exception as e:
                     print(f"  [WARN] 获取 {dep_name} 版本失败: {e}")
