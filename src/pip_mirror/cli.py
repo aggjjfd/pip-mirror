@@ -13,6 +13,7 @@ from .downloader import download_packages
 from .indexer import generate_index
 from .log import setup_logging
 from .packager import create_incremental_package
+from .access_logger import AccessLogger
 from .python_downloader import sync_python_builds
 from .server import start_server
 
@@ -157,6 +158,51 @@ def _cmd_sync_python(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_access_log(args: argparse.Namespace) -> int:
+    """查看访问日志统计."""
+    config = Config.load(Path(args.config) if args.config else None)
+
+    db_path = config.repository_dir / ".access_log.db"
+    if not db_path.exists():
+        logger.warning(f"访问日志数据库不存在: {db_path}")
+        logger.info("请先启动服务器并接收一些请求")
+        return 1
+
+    access_logger = AccessLogger(db_path)
+    summary = access_logger.get_summary()
+
+    logger.info("=" * 50)
+    logger.info("访问日志统计")
+    logger.info("=" * 50)
+    logger.info(f"总请求数:   {summary['total_requests']}")
+    logger.info(f"成功请求:   {summary['successful_requests']}")
+    logger.info(f"独立 IP 数: {summary['unique_ips']}")
+    logger.info("")
+
+    top_ips = access_logger.get_top_ips(10)
+    if top_ips:
+        logger.info("--- 下载量最多的 IP ---")
+        for ip, count in top_ips:
+            logger.info(f"  {ip}: {count} 次")
+        logger.info("")
+
+    top_paths = access_logger.get_top_paths(15)
+    if top_paths:
+        logger.info("--- 下载量最多的文件 ---")
+        for path, count in top_paths:
+            logger.info(f"  {path}: {count} 次")
+        logger.info("")
+
+    records = access_logger.get_stats(args.limit)
+    if records:
+        logger.info(f"--- 最近 {len(records)} 条访问记录 ---")
+        for r in records:
+            ts = r['timestamp'][:19] if len(r['timestamp']) > 19 else r['timestamp']
+            logger.info(f"  [{ts}] {r['client_ip']} {r['method']} {r['path']} {r['status_code']}")
+
+    return 0
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
     """初始化示例配置."""
     config_path = Path(args.output)
@@ -208,6 +254,10 @@ def main() -> int:
     serve_parser.add_argument("--host", help="监听地址")
     serve_parser.add_argument("--port", type=int, help="监听端口")
 
+    access_log_parser = subparsers.add_parser("access-log", help="查看访问日志统计")
+    access_log_parser.add_argument("-c", "--config", help="配置文件路径")
+    access_log_parser.add_argument("-n", "--limit", type=int, default=20, help="显示最近 N 条记录")
+
     init_parser = subparsers.add_parser("init", help="生成示例配置文件")
     init_parser.add_argument("-o", "--output", default="pip-mirror.toml", help="输出文件名")
     init_parser.add_argument("-f", "--force", action="store_true", help="覆盖已存在的文件")
@@ -230,6 +280,7 @@ def main() -> int:
         "sync": _cmd_sync,
         "sync-python": _cmd_sync_python,
         "serve": _cmd_serve,
+        "access-log": _cmd_access_log,
         "init": _cmd_init,
     }
 
