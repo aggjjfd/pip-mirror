@@ -44,6 +44,12 @@ class DownloadStore:
                 CREATE INDEX IF NOT EXISTS idx_pkg_ver
                 ON downloaded_files(package_name, version)
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS file_metadata (
+                    filename TEXT PRIMARY KEY,
+                    metadata_sha256 TEXT NOT NULL
+                )
+            """)
             conn.commit()
 
     def get_sha256(self, filename: str) -> str | None:
@@ -110,5 +116,38 @@ class DownloadStore:
             conn.execute(
                 "DELETE FROM downloaded_files WHERE filename = ?",
                 (filename,),
+            )
+            conn.execute(
+                "DELETE FROM file_metadata WHERE filename = ?",
+                (filename,),
+            )
+            conn.commit()
+
+    # --- metadata (PEP 658) ---
+
+    def get_metadata_sha256(self, filename: str) -> str | None:
+        """获取文件的 metadata sha256."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT metadata_sha256 FROM file_metadata WHERE filename = ?",
+                (filename,),
+            ).fetchone()
+            return row[0] if row else None
+
+    def get_all_metadata_hashes(self) -> dict[str, str]:
+        """获取所有文件的 metadata sha256 映射."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            rows = conn.execute(
+                "SELECT filename, metadata_sha256 FROM file_metadata"
+            ).fetchall()
+            return {filename: sha256 for filename, sha256 in rows}
+
+    def set_metadata_sha256(self, filename: str, metadata_sha256: str) -> None:
+        """设置文件的 metadata sha256."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO file_metadata (filename, metadata_sha256) "
+                "VALUES (?, ?)",
+                (filename, metadata_sha256),
             )
             conn.commit()

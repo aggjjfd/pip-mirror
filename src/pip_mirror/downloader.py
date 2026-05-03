@@ -35,6 +35,7 @@ from .filters import (
     is_source_distribution,
     normalize_package_name,
 )
+from .metadata_extractor import extract_wheel_metadata
 from .sqlite_store import DownloadStore
 
 logger = logging.getLogger("pip-mirror")
@@ -425,6 +426,19 @@ def download_packages(
                                 sha256=file_info.sha256,
                                 size=file_info.size,
                             )
+                        # 对 wheel 提取 METADATA (PEP 658)
+                        if file_info.filename.endswith(".whl"):
+                            wheel_path = pkg_dir / file_info.filename
+                            meta = extract_wheel_metadata(wheel_path)
+                            if meta:
+                                content, meta_sha256 = meta
+                                meta_path = wheel_path.with_suffix(".whl.metadata")
+                                meta_path.write_bytes(content)
+                                store.set_metadata_sha256(file_info.filename, meta_sha256)
+                                logger.debug(
+                                    f"METADATA 已提取: {file_info.filename} "
+                                    f"({len(content)} bytes, sha256={meta_sha256[:16]}...)"
+                                )
                     else:
                         result.failed.append((file_info, error))
                 except Exception as e:
