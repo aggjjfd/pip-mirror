@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import tarfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from tqdm import tqdm
+
+logger = logging.getLogger("pip-mirror")
 
 from .downloader import FileInfo
 
@@ -32,7 +35,7 @@ def create_incremental_package(
         生成的压缩包路径，如果没有新增文件则返回 None
     """
     if not downloaded_files:
-        print("没有新增文件，跳过增量打包")
+        logger.info("没有新增文件，跳过增量打包")
         return None
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -63,7 +66,7 @@ def create_incremental_package(
     mode = "w:gz" if compress else "w"
 
     total = len(downloaded_files)
-    print(f"增量打包 {total} 个文件...")
+    logger.info(f"增量打包 {total} 个文件...")
 
     with tarfile.open(archive_path, mode) as tar:
         for file_info in tqdm(downloaded_files, desc="打包", unit="file", total=total):
@@ -71,7 +74,7 @@ def create_incremental_package(
             file_path = simple_dir / normalized / file_info.filename
 
             if not file_path.exists():
-                print(f"  警告: 文件不存在，跳过: {file_path}")
+                logger.warning(f"文件不存在，跳过: {file_path}")
                 continue
 
             arcname = f"simple/{normalized}/{file_info.filename}"
@@ -84,7 +87,7 @@ def create_incremental_package(
         tar.addfile(manifest_info, io.BytesIO(manifest_bytes))
 
     mb = manifest["total_size"] / 1024 / 1024
-    print(f"增量包已生成: {archive_path}")
-    print(f"  包含 {manifest['file_count']} 个文件, 共 {mb:.2f} MB")
+    logger.info(f"增量包已生成: {archive_path}")
+    logger.info(f"包含 {manifest['file_count']} 个文件, 共 {mb:.2f} MB")
 
     return archive_path

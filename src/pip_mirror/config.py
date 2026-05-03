@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("pip-mirror")
 
 
 @dataclass(frozen=True)
@@ -77,7 +80,7 @@ class Config:
 
             return cls.from_dict(tool_config)
         except (OSError, ValueError) as e:
-            print(f"警告: 读取 pyproject.toml 失败: {e}")
+            logger.warning(f"读取 pyproject.toml 失败: {e}")
             return None
 
     @classmethod
@@ -86,22 +89,22 @@ class Config:
         if path:
             if not path.exists():
                 raise FileNotFoundError(f"配置文件不存在: {path}")
-            print(f"加载配置: {path}")
+            logger.info(f"加载配置: {path}")
             return cls.from_toml(path)
 
         config = cls.from_pyproject()
         if config:
-            print("从 pyproject.toml [tool.pip-mirror] 加载配置")
+            logger.info("从 pyproject.toml [tool.pip-mirror] 加载配置")
             return config
 
         env_packages = os.environ.get("PIP_MIRROR_PACKAGES", "")
         if env_packages:
-            print("从环境变量加载配置")
+            logger.info("从环境变量加载配置")
             return cls.from_dict({
                 "packages": [p.strip() for p in env_packages.split(",") if p.strip()],
             })
 
-        print("警告: 未找到配置，使用默认空配置")
+        logger.warning("未找到配置，使用默认空配置")
         return cls.from_dict({})
 
 

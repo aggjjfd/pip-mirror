@@ -291,12 +291,12 @@ def download_packages(
 
     files_to_download: list[tuple[FileInfo, Path]] = []
 
-    print(f"开始收集 {len(packages)} 个包的文件信息...")
-    print(f"  源: {index_url}")
+    logger.info(f"开始收集 {len(packages)} 个包的文件信息...")
+    logger.info(f"  源: {index_url}")
     if specific_versions:
-        print(f"  使用指定版本列表")
+        logger.info(f"  使用指定版本列表")
     else:
-        print(f"  每个包保留最新 {max_versions} 个版本")
+        logger.info(f"  每个包保留最新 {max_versions} 个版本")
 
     use_json_api = _is_official_pypi(pypi_url)
 
@@ -310,28 +310,28 @@ def download_packages(
             if use_json_api:
                 try:
                     files = _fetch_json_api(session, package_name, pypi_url)
-                    print(f"  [OK] {package_name} (JSON API, {len(files)} files)")
+                    logger.info(f"  [OK] {package_name} (JSON API, {len(files)} files)")
                 except (requests.HTTPError, requests.RequestException) as e1:
                     try:
                         files = _fetch_simple_index(session, package_name, index_url)
-                        print(f"  [OK] {package_name} (Simple Index fallback, {len(files)} files)")
+                        logger.info(f"  [OK] {package_name} (Simple Index fallback, {len(files)} files)")
                     except (requests.HTTPError, requests.RequestException) as e2:
                         status = getattr(getattr(e2, "response", None), "status_code", None)
                         if status == 404:
-                            print(f"  [ERR] 包不存在: {package_name}")
+                            logger.error(f"  [ERR] 包不存在: {package_name}")
                         else:
-                            print(f"  [ERR] 获取失败 {package_name}: {e2}")
+                            logger.error(f"  [ERR] 获取失败 {package_name}: {e2}")
                         continue
             else:
                 try:
                     files = _fetch_simple_index(session, package_name, index_url)
-                    print(f"  [OK] {package_name} (Simple Index, {len(files)} files)")
+                    logger.info(f"  [OK] {package_name} (Simple Index, {len(files)} files)")
                 except (requests.HTTPError, requests.RequestException) as e:
                     status = getattr(getattr(e, "response", None), "status_code", None)
                     if status == 404:
-                        print(f"  [ERR] 包不存在: {package_name}")
+                        logger.error(f"  [ERR] 包不存在: {package_name}")
                     else:
-                        print(f"  [ERR] 获取失败 {package_name}: {e}")
+                        logger.error(f"  [ERR] 获取失败 {package_name}: {e}")
                     continue
 
             # 版本过滤
@@ -395,13 +395,13 @@ def download_packages(
                                     f"且不是纯 Python 包，无法提供 sdist fallback"
                                 )
                                 result.warnings.append(msg)
-                                print(f"警告: {msg}")
+                                logger.warning(f"{msg}")
 
     if not files_to_download:
-        print("所有文件已是最新，无需下载")
+        logger.info("所有文件已是最新，无需下载")
         return result
 
-    print(f"需要下载 {len(files_to_download)} 个文件")
+    logger.info(f"需要下载 {len(files_to_download)} 个文件")
 
     # 并发下载，带 tqdm 进度条
     with tqdm(total=len(files_to_download), desc="下载", unit="file") as pbar:

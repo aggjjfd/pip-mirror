@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+logger = logging.getLogger("pip-mirror")
 
 
 _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
@@ -54,10 +57,10 @@ def generate_index(repository_dir: Path) -> None:
     """生成 PEP 503 规范的 simple index."""
     simple_dir = repository_dir / "simple"
     if not simple_dir.exists():
-        print("仓库目录为空，跳过索引生成")
+        logger.info("仓库目录为空，跳过索引生成")
         return
 
-    print("生成 PEP 503 索引...")
+    logger.info("生成 PEP 503 索引...")
 
     package_names: list[str] = []
 
@@ -79,4 +82,4 @@ def generate_index(repository_dir: Path) -> None:
     root_html = _generate_index_html(package_names)
     (simple_dir / "index.html").write_text(root_html, encoding="utf-8")
 
-    print(f"索引生成完成: {len(package_names)} 个包")
+    logger.info(f"索引生成完成: {len(package_names)} 个包")

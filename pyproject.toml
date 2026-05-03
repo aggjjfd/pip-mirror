@@ -8,6 +8,7 @@ dependencies = [
     "packaging>=24.0",
     "tomli>=2.0.0;python_version<'3.11'",
     "tqdm>=4.66.0",
+    "colorlog>=6.10.1",
 ]
 
 [project.optional-dependencies]
@@ -18,6 +19,9 @@ dev = [
 
 [project.scripts]
 pip-mirror = "pip_mirror.cli:main"
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple"
 
 [build-system]
 requires = ["hatchling"]

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import http.server
+import logging
 import socketserver
 import sys
 from pathlib import Path
+
+logger = logging.getLogger("pip-mirror")
 
 
 class _RequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -32,24 +35,24 @@ def start_server(host: str, port: int, repository_dir: Path) -> None:
         repository_dir: 仓库根目录（其中包含 simple/ 子目录）
     """
     if not repository_dir.exists():
-        print(f"仓库目录不存在: {repository_dir}", file=sys.stderr)
+        logger.error(f"仓库目录不存在: {repository_dir}")
         sys.exit(1)
 
     simple_dir = repository_dir / "simple"
     if not simple_dir.exists():
-        print(f"警告: {simple_dir} 不存在，请先生成索引", file=sys.stderr)
+        logger.warning(f"{simple_dir} 不存在，请先生成索引")
 
     def handler_factory(*args, **kwargs):
         return _RequestHandler(*args, directory=str(repository_dir), **kwargs)
 
     with socketserver.ThreadingTCPServer((host, port), handler_factory) as httpd:
-        print("PIP 镜像服务器启动")
-        print(f"  地址: http://{host}:{port}")
-        print(f"  仓库: {repository_dir}")
-        print(f"  pip 使用: pip install --index-url http://{host}:{port}/simple package")
-        print("  按 Ctrl+C 停止")
+        logger.info("PIP 镜像服务器启动")
+        logger.info(f"  地址: http://{host}:{port}")
+        logger.info(f"  仓库: {repository_dir}")
+        logger.info(f"  pip 使用: pip install --index-url http://{host}:{port}/simple package")
+        logger.info("  按 Ctrl+C 停止")
 
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
-            print("\n服务器已停止")
+            logger.info("服务器已停止")

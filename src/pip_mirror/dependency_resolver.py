@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
@@ -20,6 +21,8 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import parse as parse_version
 
 from .filters import normalize_package_name
+
+logger = logging.getLogger("pip-mirror")
 
 
 @dataclass(frozen=True)
@@ -204,7 +207,7 @@ def _resolve_one_layer(
                 for dep in deps:
                     all_constraints.setdefault(dep.name, []).append(dep.specifier)
             except Exception as e:
-                print(f"  [WARN] 解析 {pkg}=={ver} 依赖失败: {e}")
+                logger.warning(f"解析 {pkg}=={ver} 依赖失败: {e}")
 
     return all_constraints
 
@@ -228,7 +231,7 @@ def resolve_dependencies(
     Returns:
         {包名: [版本号列表]} 所有需要下载的依赖
     """
-    print("解析依赖...")
+    logger.info("解析依赖...")
 
     # 提取顶层包 extras
     pkg_extras: dict[str, set[str]] = {}
@@ -254,7 +257,7 @@ def resolve_dependencies(
             if not current_layer_packages:
                 break
 
-            print(f"  第 {depth} 层依赖: {len(current_layer_packages)} 个包")
+            logger.info(f"  第 {depth} 层依赖: {len(current_layer_packages)} 个包")
 
             constraints = _resolve_one_layer(
                 current_layer_packages,
@@ -281,7 +284,7 @@ def resolve_dependencies(
                     new_packages.append(dep_name)
 
             if not new_packages:
-                print(f"  第 {depth} 层无新包，结束递归")
+                logger.info(f"  第 {depth} 层无新包，结束递归")
                 break
 
             # 获取新包的所有版本，用于下一轮解析
@@ -304,13 +307,13 @@ def resolve_dependencies(
                     except Exception:
                         pass
 
-            print(f"  第 {depth} 层发现 {len(current_layer_packages)} 个新包")
+            logger.info(f"  第 {depth} 层发现 {len(current_layer_packages)} 个新包")
 
     if not accumulated_constraints:
-        print("  未找到依赖")
+        logger.info("  未找到依赖")
         return {}
 
-    print(f"  总共 {len(accumulated_constraints)} 个依赖包，开始过滤版本...")
+    logger.info(f"  总共 {len(accumulated_constraints)} 个依赖包，开始过滤版本...")
 
     # 用约束过滤版本，确定最终需要下载的版本
     result: dict[str, list[str]] = {}
@@ -343,9 +346,9 @@ def resolve_dependencies(
                         result[dep_name] = to_keep
 
                 except Exception as e:
-                    print(f"  [WARN] 获取 {dep_name} 版本失败: {e}")
+                    logger.warning(f"获取 {dep_name} 版本失败: {e}")
 
     total_versions = sum(len(v) for v in result.values())
-    print(f"  依赖解析完成: {len(result)} 个包, {total_versions} 个版本")
+    logger.info(f"  依赖解析完成: {len(result)} 个包, {total_versions} 个版本")
 
     return result
