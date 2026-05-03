@@ -1,0 +1,189 @@
+"""命令行入口."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from .config import Config, write_example_config
+from .dependency_resolver import resolve_dependencies
+from .downloader import download_packages
+from .indexer import generate_index
+from .packager import create_incremental_package
+from .server import start_server
+
+
+def _cmd_sync(args: argparse.Namespace) -> int:
+    """执行同步命令."""
+    config = Config.load(Path(args.config) if args.config else None)
+
+    packages = args.packages if args.packages else config.packages
+
+    if not packages:
+        print("错误: 未指定要同步的包")
+        print("请在配置文件中设置 packages，或通过 --packages 参数指定")
+        return 1
+
+    # 区分顶层包（可能包含 extras）和纯包名
+    top_packages = packages
+    top_pkg_names = []
+    for pkg_ref in top_packages:
+        # 提取包名（去掉 extras）
+        name = pkg_ref.split("[")[0] if "[" in pkg_ref else pkg_ref
+        top_pkg_names.append(name)
+
+    all_downloaded: list = []
+    all_warnings: list = []
+
+    # ========== 第一遍：下载顶层包 ==========
+    print("\n" + "=" * 50)
+    print("第 1/2 步：下载顶层包")
+    print("=" * 50)
+
+    top_result = download_packages(
+        packages=top_pkg_names,
+        repository_dir=config.repository_dir,
+        pypi_url=config.pypi_url,
+        index_url=config.index_url,
+        include_source=config.include_source,
+        workers=config.workers,
+        max_versions=config.max_versions,
+    )
+
+    all_downloaded.extend(top_result.downloaded)
+    all_warnings.extend(top_result.warnings)
+
+    # 收集顶层包已下载的版本
+    top_versions: dict[str, list[str]] = {}
+    for fi in top_result.downloaded + top_result.skipped:
+        if fi.version:
+            versions = top_versions.setdefault(fi.package_name, [])
+            if fi.version not in versions:
+                versions.append(fi.version)
+
+    # ========== 第二遍：解析并下载依赖 ==========
+    if not args.no_deps:
+        print("\n" + "=" * 50)
+        print("第 2/2 步：解析并下载依赖")
+        print("=" * 50)
+
+        dep_versions = resolve_dependencies(
+            top_packages=top_packages,
+            top_versions=top_versions,
+            pypi_url=config.pypi_url,
+            workers=config.workers,
+        )
+
+        if dep_versions:
+            dep_names = list(dep_versions.keys())
+            dep_result = download_packages(
+                packages=dep_names,
+                repository_dir=config.repository_dir,
+                pypi_url=config.pypi_url,
+                index_url=config.index_url,
+                include_source=config.include_source,
+                workers=config.workers,
+                specific_versions=dep_versions,
+            )
+
+            all_downloaded.extend(dep_result.downloaded)
+            all_warnings.extend(dep_result.warnings)
+
+    # ========== 生成索引和增量包 ==========
+    generate_index(config.repository_dir)
+
+    if all_downloaded:
+        create_incremental_package(
+            downloaded_files=all_downloaded,
+            repository_dir=config.repository_dir,
+            output_dir=config.incremental_dir,
+        )
+
+    print("\n" + "=" * 50)
+    print("同步完成")
+    print("=" * 50)
+
+    if all_warnings:
+        print(f"\n警告 ({len(all_warnings)} 条):")
+        for w in all_warnings:
+            print(f"  ! {w}")
+
+    return 0
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """执行服务命令."""
+    config = Config.load(Path(args.config) if args.config else None)
+
+    host = args.host or config.server_host
+    port = args.port or config.server_port
+
+    generate_index(config.repository_dir)
+    start_server(host=host, port=port, repository_dir=config.repository_dir)
+    return 0
+
+
+def _cmd_init(args: argparse.Namespace) -> int:
+    """初始化示例配置."""
+    config_path = Path(args.output)
+
+    if config_path.exists() and not args.force:
+        print(f"文件已存在: {config_path}")
+        print("使用 --force 覆盖")
+        return 1
+
+    write_example_config(config_path)
+    print(f"示例配置已生成: {config_path}")
+    return 0
+
+
+def main() -> int:
+    """CLI 入口."""
+    parser = argparse.ArgumentParser(
+        prog="pip-mirror",
+        description="轻量级私有 PIP 仓库，支持增量同步",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  pip-mirror sync                          # 同步配置文件中的包
+  pip-mirror sync --packages requests numpy # 同步指定包
+  pip-mirror sync --no-deps                # 不同步依赖
+  pip-mirror serve --port 8080             # 启动 HTTP 服务
+  pip-mirror init                          # 生成示例配置
+        """,
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="可用命令")
+
+    sync_parser = subparsers.add_parser("sync", help="从 PyPI 同步包")
+    sync_parser.add_argument("-c", "--config", help="配置文件路径（TOML 格式）")
+    sync_parser.add_argument("-p", "--packages", nargs="+", help="要同步的包名")
+    sync_parser.add_argument("--no-deps", action="store_true", help="不下载依赖")
+
+    serve_parser = subparsers.add_parser("serve", help="启动 HTTP 服务")
+    serve_parser.add_argument("-c", "--config", help="配置文件路径")
+    serve_parser.add_argument("--host", help="监听地址")
+    serve_parser.add_argument("--port", type=int, help="监听端口")
+
+    init_parser = subparsers.add_parser("init", help="生成示例配置文件")
+    init_parser.add_argument("-o", "--output", default="pip-mirror.toml", help="输出文件名")
+    init_parser.add_argument("-f", "--force", action="store_true", help="覆盖已存在的文件")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return 1
+
+    commands = {
+        "sync": _cmd_sync,
+        "serve": _cmd_serve,
+        "init": _cmd_init,
+    }
+
+    return commands[args.command](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
