@@ -32,7 +32,7 @@ jobs:
           version: 'latest'
       - run: uv sync --no-dev
       - name: Sync package
-        run: uv run pip-mirror sync --packages "${{ github.event.inputs.package }}" --no-deps
+        run: uv run pip-mirror sync --packages "${{ github.event.inputs.package }}"
       - id: info
         run: |
           echo "package=${{ github.event.inputs.package }}" >> "$GITHUB_OUTPUT"
