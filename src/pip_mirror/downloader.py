@@ -155,26 +155,44 @@ def _extract_version_from_filename(filename: str, package_name: str) -> str | No
 def _fetch_simple_index(
     session: requests.Session, package_name: str, index_url: str,
 ) -> list[FileInfo]:
-    """从 Simple Index HTML 页面获取文件列表."""
+    """从 Simple Index HTML 页面获取文件列表.
+
+    如果第一次请求失败，尝试用 _/- 互换的包名重试.
+    """
     normalized = normalize_package_name(package_name)
-    url = f"{index_url.rstrip('/')}/{normalized}/"
+    urls_to_try = [f"{index_url.rstrip('/')}/{normalized}/"]
 
-    response = session.get(url, timeout=30)
-    response.raise_for_status()
+    # 备选 URL: _ 和 - 互换
+    alt = normalized.replace("-", "_") if "-" in normalized else normalized.replace("_", "-")
+    if alt != normalized:
+        urls_to_try.append(f"{index_url.rstrip('/')}/{alt}/")
 
-    parser = _SimpleIndexParser()
-    parser.feed(response.text)
+    last_error: Exception | None = None
+    for url in urls_to_try:
+        try:
+            response = session.get(url, timeout=30)
+            response.raise_for_status()
 
-    result: list[FileInfo] = []
-    for filename, href, sha256 in parser.links:
-        version = _extract_version_from_filename(filename, package_name)
-        full_url = urljoin(url, href)
-        result.append(FileInfo(
-            filename=filename, url=full_url, sha256=sha256,
-            package_name=package_name, version=version or "",
-        ))
+            parser = _SimpleIndexParser()
+            parser.feed(response.text)
 
-    return result
+            result: list[FileInfo] = []
+            for filename, href, sha256 in parser.links:
+                version = _extract_version_from_filename(filename, package_name)
+                full_url = urljoin(url, href)
+                result.append(FileInfo(
+                    filename=filename, url=full_url, sha256=sha256,
+                    package_name=package_name, version=version or "",
+                ))
+
+            if result:
+                return result
+        except Exception as e:
+            last_error = e
+
+    if last_error:
+        raise last_error
+    return []
 
 
 def _fetch_json_api(
