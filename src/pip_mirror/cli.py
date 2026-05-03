@@ -93,11 +93,12 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     # ========== 生成索引和增量包 ==========
     generate_index(config.repository_dir)
 
-    if all_downloaded:
+    if all_downloaded and not args.no_pack:
         create_incremental_package(
             downloaded_files=all_downloaded,
             repository_dir=config.repository_dir,
             output_dir=config.incremental_dir,
+            compress=not args.no_compress,
         )
 
     print("\n" + "=" * 50)
@@ -160,6 +161,8 @@ def main() -> int:
     sync_parser.add_argument("-c", "--config", help="配置文件路径（TOML 格式）")
     sync_parser.add_argument("-p", "--packages", nargs="+", help="要同步的包名")
     sync_parser.add_argument("--no-deps", action="store_true", help="不下载依赖")
+    sync_parser.add_argument("--no-pack", action="store_true", help="跳过增量打包")
+    sync_parser.add_argument("--no-compress", action="store_true", help="增量包不压缩（纯 tar，适合 GitHub Actions）")
 
     serve_parser = subparsers.add_parser("serve", help="启动 HTTP 服务")
     serve_parser.add_argument("-c", "--config", help="配置文件路径")

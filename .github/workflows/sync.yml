@@ -78,7 +78,7 @@ jobs:
           fi
 
           echo "===== 开始同步 ====="
-          uv run pip-mirror sync $SYNC_ARGS 2>&1 | tee sync.log
+          uv run pip-mirror sync --no-pack $SYNC_ARGS 2>&1 | tee sync.log
           SYNC_EXIT=${PIPESTATUS[0]}
           echo "===== 同步结束 (exit=$SYNC_EXIT) ====="
           exit $SYNC_EXIT
