@@ -109,9 +109,7 @@ def _get_all_versions(
         except Exception:
             versions.sort(reverse=True)
         return versions
-    except requests.RequestException as e:
-        status = getattr(getattr(e, "response", None), "status_code", None)
-        print(f"  [DEBUG] _get_all_versions({package}) failed: status={status}, url={url}")
+    except requests.RequestException:
         return []
 
 
@@ -286,8 +284,6 @@ def resolve_dependencies(
                 print(f"  第 {depth} 层无新包，结束递归")
                 break
 
-            print(f"  [DEBUG] 第 {depth} 层新包: {new_packages}")
-
             # 获取新包的所有版本，用于下一轮解析
             current_layer_packages = []
             current_layer_versions = {}
@@ -314,7 +310,6 @@ def resolve_dependencies(
         print("  未找到依赖")
         return {}
 
-    print(f"  [DEBUG] 所有约束包名: {sorted(accumulated_constraints.keys())}")
     print(f"  总共 {len(accumulated_constraints)} 个依赖包，开始过滤版本...")
 
     # 用约束过滤版本，确定最终需要下载的版本
@@ -332,7 +327,6 @@ def resolve_dependencies(
                 try:
                     all_versions = future.result()
                     if not all_versions:
-                        print(f"  [DEBUG] 过滤 {dep_name}: 无可用版本")
                         continue
 
                     merged_spec = _merge_specifiers(accumulated_constraints[dep_name])
@@ -347,15 +341,11 @@ def resolve_dependencies(
 
                     if to_keep:
                         result[dep_name] = to_keep
-                    else:
-                        print(f"  [DEBUG] 过滤 {dep_name}: spec='{merged_spec}', all={len(all_versions)}, filtered={len(filtered)}, to_keep empty")
 
                 except Exception as e:
                     print(f"  [WARN] 获取 {dep_name} 版本失败: {e}")
 
     total_versions = sum(len(v) for v in result.values())
     print(f"  依赖解析完成: {len(result)} 个包, {total_versions} 个版本")
-    if result:
-        print(f"  [DEBUG] 结果包名: {sorted(result.keys())}")
 
     return result
