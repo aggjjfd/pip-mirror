@@ -49,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python: ['3.10', '3.12']
+        python: ['3.8', '3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -85,7 +85,7 @@ jobs:
       PYTHONIOENCODING: utf-8
     strategy:
       matrix:
-        python: ['3.10', '3.12']
+        python: ['3.8', '3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
