@@ -119,25 +119,14 @@ jobs:
 
           cat report.txt
 
-      - name: Upload packages artifact
-        if: always() && hashFiles('packages/simple/**') != ''
+      - name: Upload incremental + report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pip-mirror-packages-${{ github.run_id }}
+          name: pip-mirror-incremental-${{ github.run_id }}
           path: |
-            packages/
             incremental/
             report.txt
             sync.log
           retention-days: 7
-          compression-level: 0
-
-      - name: Upload report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pip-mirror-report-${{ github.run_id }}
-          path: |
-            report.txt
-            sync.log
-          retention-days: 30
+          compression-level: 9
