@@ -11,6 +11,17 @@ from typing import Any
 logger = logging.getLogger("pip-mirror")
 
 
+def _load_toml(path: Path) -> dict[str, Any]:
+    """读取 TOML 文件,兼容 Python 3.8-3.10 的 tomli 与 3.11+ 内置 tomllib."""
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib
+
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
 @dataclass(frozen=True)
 class Config:
     """应用配置."""
@@ -48,15 +59,7 @@ class Config:
     @classmethod
     def from_toml(cls, path: Path) -> Config:
         """从 TOML 文件加载配置."""
-        try:
-            import tomllib  # Python 3.11+
-        except ImportError:
-            import tomli as tomllib  # Python 3.8-3.10
-
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
-
-        return cls.from_dict(data)
+        return cls.from_dict(_load_toml(path))
 
     @classmethod
     def from_pyproject(cls) -> Config | None:
@@ -66,22 +69,15 @@ class Config:
             return None
 
         try:
-            try:
-                import tomllib
-            except ImportError:
-                import tomli as tomllib
-
-            with open(pyproject, "rb") as f:
-                data = tomllib.load(f)
-
-            tool_config = data.get("tool", {}).get("pip-mirror", {})
-            if not tool_config:
-                return None
-
-            return cls.from_dict(tool_config)
+            data = _load_toml(pyproject)
         except (OSError, ValueError) as e:
             logger.warning(f"读取 pyproject.toml 失败: {e}")
             return None
+
+        tool_config = data.get("tool", {}).get("pip-mirror", {})
+        if not tool_config:
+            return None
+        return cls.from_dict(tool_config)
 
     @classmethod
     def load(cls, path: Path | None = None) -> Config:

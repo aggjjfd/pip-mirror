@@ -6,7 +6,6 @@ import logging
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +57,9 @@ class AccessLogger:
         self._local = threading.local()
         self._init_db()
 
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(str(self._db_path))
+
     def _get_conn(self) -> sqlite3.Connection:
         """获取线程本地连接."""
         if not hasattr(self._local, "conn") or self._local.conn is None:
@@ -67,7 +69,7 @@ class AccessLogger:
     def _init_db(self) -> None:
         """初始化数据库表."""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(str(self._db_path)) as conn:
+        with self._connect() as conn:
             conn.executescript(_INIT_SQL)
             conn.commit()
         logger.info(f"访问日志数据库: {self._db_path}")
@@ -99,7 +101,7 @@ class AccessLogger:
 
     def get_stats(self, limit: int = 20) -> list[dict[str, Any]]:
         """获取最近访问统计."""
-        with sqlite3.connect(str(self._db_path)) as conn:
+        with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -114,7 +116,7 @@ class AccessLogger:
 
     def get_top_ips(self, limit: int = 10) -> list[tuple[str, int]]:
         """获取下载量最多的 IP."""
-        with sqlite3.connect(str(self._db_path)) as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT client_ip, COUNT(*) as count
@@ -130,7 +132,7 @@ class AccessLogger:
 
     def get_top_paths(self, limit: int = 20) -> list[tuple[str, int]]:
         """获取下载量最多的路径."""
-        with sqlite3.connect(str(self._db_path)) as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT path, COUNT(*) as count
@@ -146,7 +148,7 @@ class AccessLogger:
 
     def get_summary(self) -> dict[str, Any]:
         """获取访问汇总."""
-        with sqlite3.connect(str(self._db_path)) as conn:
+        with self._connect() as conn:
             total = conn.execute(
                 "SELECT COUNT(*) FROM access_log"
             ).fetchone()[0]

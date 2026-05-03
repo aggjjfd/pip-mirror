@@ -17,12 +17,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
 from urllib.parse import urljoin
 
 import requests
@@ -232,32 +230,44 @@ def _is_official_pypi(pypi_url: str) -> bool:
     return "pypi.org" in pypi_url.lower()
 
 
+def _log_fetch_error(package_name: str, exc: Exception) -> None:
+    """统一记录索引获取失败日志,区分 404 与其它错误."""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status == 404:
+        logger.error(f"  [ERR] 包不存在: {package_name}")
+    else:
+        logger.error(f"  [ERR] 获取失败 {package_name}: {exc}")
+
+
+def _enqueue_or_skip(
+    fi: FileInfo,
+    existing_hashes: dict[str, str],
+    pkg_dir: Path,
+    files_to_download: list[tuple[FileInfo, Path]],
+    result: DownloadResult,
+) -> None:
+    """已下载且 sha256 匹配则记 skipped,否则加入下载队列."""
+    existing_sha256 = existing_hashes.get(fi.filename)
+    if existing_sha256 and fi.sha256 and existing_sha256.lower() == fi.sha256.lower():
+        result.skipped.append(fi)
+        return
+    files_to_download.append((fi, pkg_dir / fi.filename))
+
+
 def _select_latest_versions(files: list[FileInfo], max_versions: int) -> list[FileInfo]:
     """只保留最新版本的文件."""
     if max_versions <= 0:
         return files
 
-    version_files: dict[str, list[FileInfo]] = {}
-    for fi in files:
-        version_files.setdefault(fi.version, []).append(fi)
+    versions = {fi.version for fi in files}
 
     try:
-        sorted_versions = sorted(
-            version_files.keys(), key=lambda v: parse_version(v), reverse=True,
-        )
+        sorted_versions = sorted(versions, key=parse_version, reverse=True)
     except Exception:
-        sorted_versions = sorted(version_files.keys(), reverse=True)
+        sorted_versions = sorted(versions, reverse=True)
 
     selected = set(sorted_versions[:max_versions])
     return [fi for fi in files if fi.version in selected]
-
-
-def _collect_version_files(files: list[FileInfo]) -> dict[str, list[FileInfo]]:
-    """按版本分组."""
-    result: dict[str, list[FileInfo]] = {}
-    for fi in files:
-        result.setdefault(fi.version, []).append(fi)
-    return result
 
 
 def download_packages(
@@ -295,7 +305,7 @@ def download_packages(
     logger.info(f"开始收集 {len(packages)} 个包的文件信息...")
     logger.info(f"  源: {index_url}")
     if specific_versions:
-        logger.info(f"  使用指定版本列表")
+        logger.info("  使用指定版本列表")
     else:
         logger.info(f"  每个包保留最新 {max_versions} 个版本")
 
@@ -312,27 +322,22 @@ def download_packages(
                 try:
                     files = _fetch_json_api(session, package_name, pypi_url)
                     logger.info(f"  [OK] {package_name} (JSON API, {len(files)} files)")
-                except (requests.HTTPError, requests.RequestException) as e1:
+                except (requests.HTTPError, requests.RequestException):
                     try:
                         files = _fetch_simple_index(session, package_name, index_url)
-                        logger.info(f"  [OK] {package_name} (Simple Index fallback, {len(files)} files)")
+                        logger.info(
+                            f"  [OK] {package_name} "
+                            f"(Simple Index fallback, {len(files)} files)"
+                        )
                     except (requests.HTTPError, requests.RequestException) as e2:
-                        status = getattr(getattr(e2, "response", None), "status_code", None)
-                        if status == 404:
-                            logger.error(f"  [ERR] 包不存在: {package_name}")
-                        else:
-                            logger.error(f"  [ERR] 获取失败 {package_name}: {e2}")
+                        _log_fetch_error(package_name, e2)
                         continue
             else:
                 try:
                     files = _fetch_simple_index(session, package_name, index_url)
                     logger.info(f"  [OK] {package_name} (Simple Index, {len(files)} files)")
                 except (requests.HTTPError, requests.RequestException) as e:
-                    status = getattr(getattr(e, "response", None), "status_code", None)
-                    if status == 404:
-                        logger.error(f"  [ERR] 包不存在: {package_name}")
-                    else:
-                        logger.error(f"  [ERR] 获取失败 {package_name}: {e}")
+                    _log_fetch_error(package_name, e)
                     continue
 
             # 版本过滤
@@ -341,7 +346,9 @@ def download_packages(
                 files = [fi for fi in files if fi.version in allowed]
             else:
                 files = _select_latest_versions(files, max_versions)
-            version_files = _collect_version_files(files)
+            version_files: dict[str, list[FileInfo]] = {}
+            for fi in files:
+                version_files.setdefault(fi.version, []).append(fi)
 
             for version, vfiles in version_files.items():
                 # 判断该版本是否为纯 Python
@@ -363,40 +370,27 @@ def download_packages(
 
                 # 先处理 wheel
                 for fi in accepted_wheels:
-                    existing_sha256 = existing_hashes.get(fi.filename)
-                    if existing_sha256 and fi.sha256:
-                        if existing_sha256.lower() == fi.sha256.lower():
-                            result.skipped.append(fi)
-                            continue
-                    files_to_download.append((fi, pkg_dir / fi.filename))
+                    _enqueue_or_skip(fi, existing_hashes, pkg_dir, files_to_download, result)
 
                 # 再处理 sdist
                 if include_source and sdists:
                     if not accepted_wheels:
                         # 该版本没有任何符合平台要求的 wheel，下载 sdist 作为 fallback
                         for fi in sdists:
-                            existing_sha256 = existing_hashes.get(fi.filename)
-                            if existing_sha256 and fi.sha256:
-                                if existing_sha256.lower() == fi.sha256.lower():
-                                    result.skipped.append(fi)
-                                    continue
-                            files_to_download.append((fi, pkg_dir / fi.filename))
+                            _enqueue_or_skip(
+                                fi, existing_hashes, pkg_dir, files_to_download, result,
+                            )
                     else:
                         missing = _TARGET_PLATFORMS - covered_platforms
-                        if missing:
-                            if has_pure_python:
-                                # 缺少平台覆盖，但纯 Python wheel 已经覆盖所有平台
-                                # 不需要 sdist
-                                pass
-                            else:
-                                # 缺少平台覆盖，但不是纯 Python 包，发 warning
-                                missing_list = ", ".join(sorted(missing))
-                                msg = (
-                                    f"{package_name}=={version}: 缺少平台覆盖 ({missing_list})，"
-                                    f"且不是纯 Python 包，无法提供 sdist fallback"
-                                )
-                                result.warnings.append(msg)
-                                logger.warning(f"{msg}")
+                        if missing and not has_pure_python:
+                            # 缺少平台覆盖，且不是纯 Python 包，无法提供 sdist fallback
+                            missing_list = ", ".join(sorted(missing))
+                            msg = (
+                                f"{package_name}=={version}: 缺少平台覆盖 ({missing_list})，"
+                                f"且不是纯 Python 包，无法提供 sdist fallback"
+                            )
+                            result.warnings.append(msg)
+                            logger.warning(msg)
 
     if not files_to_download:
         logger.info("所有文件已是最新，无需下载")
@@ -408,12 +402,12 @@ def download_packages(
     with tqdm(total=len(files_to_download), desc="下载", unit="file") as pbar:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
-                executor.submit(_download_file, session, fi, dest): fi
+                executor.submit(_download_file, session, fi, dest): (fi, dest)
                 for fi, dest in files_to_download
             }
 
             for future in as_completed(futures):
-                file_info = futures[future]
+                file_info, dest = futures[future]
                 try:
                     success, error = future.result()
                     if success:
@@ -428,11 +422,10 @@ def download_packages(
                             )
                         # 对 wheel 提取 METADATA (PEP 658)
                         if file_info.filename.endswith(".whl"):
-                            wheel_path = pkg_dir / file_info.filename
-                            meta = extract_wheel_metadata(wheel_path)
+                            meta = extract_wheel_metadata(dest)
                             if meta:
                                 content, meta_sha256 = meta
-                                meta_path = wheel_path.with_suffix(".whl.metadata")
+                                meta_path = dest.with_suffix(".whl.metadata")
                                 meta_path.write_bytes(content)
                                 store.set_metadata_sha256(file_info.filename, meta_sha256)
                                 logger.debug(

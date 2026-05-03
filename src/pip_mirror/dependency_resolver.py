@@ -33,7 +33,7 @@ class DepConstraint:
     specifier: str
 
 
-def _extract_extras(package_ref: str) -> tuple[str, set[str]]:
+def extract_extras(package_ref: str) -> tuple[str, set[str]]:
     """从包引用中提取包名和 extras."""
     if "[" not in package_ref:
         return package_ref, set()
@@ -114,12 +114,6 @@ def _get_all_versions(
         return versions
     except requests.RequestException:
         return []
-
-
-def _merge_specifiers(specifiers: list[str]) -> str:
-    """合并多个版本约束."""
-    parts = [s.strip() for s in specifiers if s.strip()]
-    return ",".join(parts)
 
 
 def _filter_versions(versions: list[str], specifier: str) -> list[str]:
@@ -233,17 +227,14 @@ def resolve_dependencies(
     """
     logger.info("解析依赖...")
 
-    # 提取顶层包 extras
+    # 收集顶层包的 extras 与已处理集合（避免重复处理和循环依赖）
     pkg_extras: dict[str, set[str]] = {}
-    for pkg_ref in top_packages:
-        name, extras = _extract_extras(pkg_ref)
-        if extras:
-            pkg_extras.setdefault(name, set()).update(extras)
-
-    # 已处理的包（避免重复处理和循环依赖）
     processed: set[str] = set()
     for pkg_ref in top_packages:
-        processed.add(_extract_extras(pkg_ref)[0])
+        name, extras = extract_extras(pkg_ref)
+        processed.add(name)
+        if extras:
+            pkg_extras.setdefault(name, set()).update(extras)
 
     # 累积所有约束
     accumulated_constraints: dict[str, list[str]] = {}
@@ -332,15 +323,13 @@ def resolve_dependencies(
                     if not all_versions:
                         continue
 
-                    merged_spec = _merge_specifiers(accumulated_constraints[dep_name])
+                    merged_spec = ",".join(
+                        s.strip() for s in accumulated_constraints[dep_name] if s.strip()
+                    )
                     filtered = _filter_versions(all_versions, merged_spec)
 
-                    if not merged_spec:
-                        to_keep = filtered[:3]
-                    elif "<" in merged_spec or "<=" in merged_spec:
-                        to_keep = filtered[:10]
-                    else:
-                        to_keep = filtered[:3]
+                    limit = 10 if "<" in merged_spec else 3
+                    to_keep = filtered[:limit]
 
                     if to_keep:
                         result[dep_name] = to_keep

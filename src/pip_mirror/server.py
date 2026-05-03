@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.server
+import json
 import logging
 import socketserver
 import sys
@@ -135,6 +136,10 @@ class _RequestHandler(http.server.SimpleHTTPRequestHandler):
 
         parsed_path = urlparse(self.path).path
 
+        if parsed_path == "/python-builds/index.json":
+            self._serve_python_builds_index()
+            return
+
         if self._is_simple_api_path(parsed_path) and self._wants_json():
             json_path = self._translate_path_to_json(self.path)
             if json_path:
@@ -143,6 +148,45 @@ class _RequestHandler(http.server.SimpleHTTPRequestHandler):
 
         # 默认：调用父类处理（返回 HTML 或文件）
         super().do_GET()
+
+    def _public_base_url(self) -> str:
+        """从 Host header 推导 absolute base URL,fallback 到绑定地址."""
+        host = self.headers.get("Host")
+        if host:
+            return f"http://{host}"
+        bind_host, bind_port = self.server.server_address[:2]
+        return f"http://{bind_host}:{bind_port}"
+
+    def _serve_python_builds_index(self) -> None:
+        """读取磁盘 python-builds/index.json,把相对 url 改写为绝对 URL 后返回."""
+        if not self._serve_dir:
+            self.send_error(404)
+            return
+
+        filepath = Path(self._serve_dir) / "python-builds" / "index.json"
+        if not filepath.exists():
+            self.send_error(404, "python-builds index not found")
+            return
+
+        try:
+            data = json.loads(filepath.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            self.send_error(500, f"failed to parse index.json: {e}")
+            return
+
+        base = self._public_base_url()
+        for entry in data.values():
+            url = entry.get("url", "")
+            if url.startswith("/"):
+                entry["url"] = f"{base}{url}"
+
+        body = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self._response_bytes = len(body)
 
 
 def start_server(host: str, port: int, repository_dir: Path) -> None:

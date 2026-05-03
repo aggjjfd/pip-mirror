@@ -24,15 +24,17 @@ def extract_wheel_metadata(wheel_path: Path) -> tuple[bytes, str] | None:
 
     try:
         with zipfile.ZipFile(wheel_path, "r") as zf:
-            # 查找 .dist-info/METADATA
+            # 精确匹配 <pkg>-<ver>.dist-info/METADATA,避免子目录或子串误判
             metadata_name = None
             for name in zf.namelist():
-                if ".dist-info/METADATA" in name and not name.endswith("/"):
-                    # 确保精确匹配（避免子目录匹配）
-                    parts = name.split("/")
-                    if len(parts) == 2 and parts[1] == "METADATA" and parts[0].endswith(".dist-info"):
-                        metadata_name = name
-                        break
+                parts = name.split("/")
+                if (
+                    len(parts) == 2
+                    and parts[1] == "METADATA"
+                    and parts[0].endswith(".dist-info")
+                ):
+                    metadata_name = name
+                    break
 
             if not metadata_name:
                 logger.debug(f"未找到 METADATA: {wheel_path.name}")

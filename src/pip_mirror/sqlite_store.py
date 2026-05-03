@@ -26,10 +26,13 @@ class DownloadStore:
         self.db_path = db_path
         self._ensure_table()
 
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(str(self.db_path))
+
     def _ensure_table(self) -> None:
         """确保表存在."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with self._connect() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS downloaded_files (
                     filename TEXT PRIMARY KEY,
@@ -54,7 +57,7 @@ class DownloadStore:
 
     def get_sha256(self, filename: str) -> str | None:
         """获取文件的 sha256."""
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT sha256 FROM downloaded_files WHERE filename = ?",
                 (filename,),
@@ -63,7 +66,7 @@ class DownloadStore:
 
     def get_all_hashes(self) -> dict[str, str]:
         """获取所有文件的 sha256 映射."""
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 "SELECT filename, sha256 FROM downloaded_files"
             ).fetchall()
@@ -71,7 +74,7 @@ class DownloadStore:
 
     def get_files_by_version(self, package_name: str, version: str) -> list[StoredFile]:
         """获取某个版本的所有文件记录."""
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 "SELECT filename, package_name, version, sha256, size, downloaded_at "
                 "FROM downloaded_files WHERE package_name = ? AND version = ?",
@@ -101,7 +104,7 @@ class DownloadStore:
         from datetime import datetime, timezone
 
         downloaded_at = datetime.now(timezone.utc).isoformat()
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO downloaded_files "
                 "(filename, package_name, version, sha256, size, downloaded_at) "
@@ -112,7 +115,7 @@ class DownloadStore:
 
     def remove_file(self, filename: str) -> None:
         """删除文件记录."""
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with self._connect() as conn:
             conn.execute(
                 "DELETE FROM downloaded_files WHERE filename = ?",
                 (filename,),
@@ -127,7 +130,7 @@ class DownloadStore:
 
     def get_metadata_sha256(self, filename: str) -> str | None:
         """获取文件的 metadata sha256."""
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT metadata_sha256 FROM file_metadata WHERE filename = ?",
                 (filename,),
@@ -136,7 +139,7 @@ class DownloadStore:
 
     def get_all_metadata_hashes(self) -> dict[str, str]:
         """获取所有文件的 metadata sha256 映射."""
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 "SELECT filename, metadata_sha256 FROM file_metadata"
             ).fetchall()
@@ -144,7 +147,7 @@ class DownloadStore:
 
     def set_metadata_sha256(self, filename: str, metadata_sha256: str) -> None:
         """设置文件的 metadata sha256."""
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO file_metadata (filename, metadata_sha256) "
                 "VALUES (?, ?)",

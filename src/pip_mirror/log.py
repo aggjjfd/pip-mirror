@@ -7,16 +7,8 @@ import sys
 
 import colorlog
 
-
 LOG_FORMAT = "%(log_color)s%(levelname)-8s%(reset)s %(message)s"
 LOG_DATE_FORMAT = "%H:%M:%S"
-
-
-class InfoFilter(logging.Filter):
-    """只通过 INFO 及以上级别的日志."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        return record.levelno >= logging.INFO
 
 
 def setup_logging(level: int = logging.INFO) -> None:
@@ -39,7 +31,6 @@ def setup_logging(level: int = logging.INFO) -> None:
             },
         ),
     )
-    handler.addFilter(InfoFilter())
 
     root = logging.getLogger("pip-mirror")
     root.setLevel(level)

@@ -12,9 +12,10 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-logger = logging.getLogger("pip-mirror")
-
 from .downloader import FileInfo
+from .filters import normalize_package_name
+
+logger = logging.getLogger("pip-mirror")
 
 
 def create_incremental_package(
@@ -70,7 +71,7 @@ def create_incremental_package(
 
     with tarfile.open(archive_path, mode) as tar:
         for file_info in tqdm(downloaded_files, desc="打包", unit="file", total=total):
-            normalized = file_info.package_name.lower().replace("_", "-").replace(".", "-")
+            normalized = normalize_package_name(file_info.package_name)
             file_path = simple_dir / normalized / file_info.filename
 
             if not file_path.exists():

@@ -7,13 +7,13 @@ import logging
 import sys
 from pathlib import Path
 
+from .access_logger import AccessLogger
 from .config import Config, write_example_config
-from .dependency_resolver import resolve_dependencies
+from .dependency_resolver import extract_extras, resolve_dependencies
 from .downloader import download_packages
 from .indexer import generate_index
 from .log import setup_logging
 from .packager import create_incremental_package
-from .access_logger import AccessLogger
 from .python_downloader import sync_python_builds
 from .server import start_server
 
@@ -33,11 +33,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
 
     # 区分顶层包（可能包含 extras）和纯包名
     top_packages = packages
-    top_pkg_names = []
-    for pkg_ref in top_packages:
-        # 提取包名（去掉 extras）
-        name = pkg_ref.split("[")[0] if "[" in pkg_ref else pkg_ref
-        top_pkg_names.append(name)
+    top_pkg_names = [extract_extras(p)[0] for p in top_packages]
 
     all_downloaded: list = []
     all_warnings: list = []
