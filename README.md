@@ -11,6 +11,7 @@
 - 生成 PEP 503 Simple Index 目录结构
 - 内置 HTTP 服务器，内网直接作为 pip 源使用
 - 增量 tar.gz 打包，方便离线部署
+- 同步 Python 解释器（python-build-standalone），支持 `uv python install` 内网使用
 
 ## 安装
 
@@ -71,7 +72,38 @@ uv run pip-mirror serve --port 8080
 uv run pip-mirror init -o pip-mirror.toml
 ```
 
-## 内网 pip 配置
+### 同步 Python 解释器
+
+```bash
+# 同步 uv 使用的 Python 解释器（python-build-standalone）
+uv run pip-mirror sync-python
+
+# 指定并发数
+uv run pip-mirror sync-python --workers 8
+```
+
+支持的版本和平台：
+- Python 3.8 ~ 3.14（每个版本的最新 build）
+- Windows x86 (32-bit)、Windows x64 (64-bit)
+- Linux x64 glibc（含 x86_64 / x86_64_v2 / x86_64_v3 / x86_64_v4 微架构）
+
+## 内网 uv 配置（Python 解释器）
+
+同步 Python 解释器后，内网机器通过环境变量让 uv 从私有服务器下载：
+
+```bash
+export UV_PYTHON_DOWNLOADS_JSON_URL=http://192.168.1.100:8080/python-builds/index.json
+
+# 安装 Python 3.12
+uv python install 3.12
+
+# 或创建虚拟环境时自动下载
+uv venv --python 3.12
+```
+
+`uv` 会自动从 JSON 中匹配对应平台和版本的解释器并下载。
+
+## 内网 pip 配置（Python 包）
 
 ### 方式一：命令行临时指定
 

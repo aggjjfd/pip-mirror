@@ -83,6 +83,9 @@ jobs:
           echo "===== 同步结束 (exit=$SYNC_EXIT) ====="
           exit $SYNC_EXIT
 
+      - name: Sync Python builds
+        run: uv run pip-mirror sync-python --workers 4 2>&1 | tee -a sync.log
+
       - name: Generate report
         if: always()
         run: |
@@ -110,6 +113,16 @@ jobs:
           fi
           echo "" >> report.txt
 
+          echo "--- Python 解释器 ---" >> report.txt
+          if [ -f packages/python-builds/index.json ]; then
+            echo "Python builds index: $(wc -c < packages/python-builds/index.json) bytes" >> report.txt
+            python3 -c "import json; d=json.load(open('packages/python-builds/index.json')); print(f'条目数: {len(d)}'); [print(f'  {k}') for k in sorted(d.keys())]" >> report.txt
+            du -sh packages/python-builds/ 2>/dev/null >> report.txt
+          else
+            echo "无 Python 解释器下载" >> report.txt
+          fi
+          echo "" >> report.txt
+
           echo "--- 增量包列表 ---" >> report.txt
           ls -lh incremental/ 2>/dev/null || echo "无增量包" >> report.txt
           echo "" >> report.txt
@@ -119,13 +132,14 @@ jobs:
 
           cat report.txt
 
-      - name: Upload incremental + report
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pip-mirror-incremental-${{ github.run_id }}
           path: |
             incremental/
+            packages/python-builds/
             report.txt
             sync.log
           retention-days: 7

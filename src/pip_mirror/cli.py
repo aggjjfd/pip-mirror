@@ -13,6 +13,7 @@ from .downloader import download_packages
 from .indexer import generate_index
 from .log import setup_logging
 from .packager import create_incremental_package
+from .python_downloader import sync_python_builds
 from .server import start_server
 
 logger = logging.getLogger("pip-mirror")
@@ -132,6 +133,30 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sync_python(args: argparse.Namespace) -> int:
+    """同步 Python 解释器."""
+    config = Config.load(Path(args.config) if args.config else None)
+
+    workers = args.workers if args.workers else config.workers
+
+    index_path = sync_python_builds(
+        repository_dir=config.repository_dir,
+        workers=workers,
+    )
+
+    logger.info("")
+    logger.info("=" * 50)
+    logger.info("Python 解释器同步完成")
+    logger.info("=" * 50)
+    logger.info(f"index.json: {index_path}")
+    logger.info("")
+    logger.info("内网 uv 使用方式:")
+    logger.info("  export UV_PYTHON_DOWNLOADS_JSON_URL=http://<服务器>:<端口>/python-builds/index.json")
+    logger.info("  uv python install 3.12")
+
+    return 0
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
     """初始化示例配置."""
     config_path = Path(args.output)
@@ -174,6 +199,10 @@ def main() -> int:
         help="增量包不压缩（纯 tar，适合 GitHub Actions）",
     )
 
+    sync_python_parser = subparsers.add_parser("sync-python", help="同步 Python 解释器")
+    sync_python_parser.add_argument("-c", "--config", help="配置文件路径")
+    sync_python_parser.add_argument("--workers", type=int, help="并发下载线程数")
+
     serve_parser = subparsers.add_parser("serve", help="启动 HTTP 服务")
     serve_parser.add_argument("-c", "--config", help="配置文件路径")
     serve_parser.add_argument("--host", help="监听地址")
@@ -199,6 +228,7 @@ def main() -> int:
 
     commands = {
         "sync": _cmd_sync,
+        "sync-python": _cmd_sync_python,
         "serve": _cmd_serve,
         "init": _cmd_init,
     }
