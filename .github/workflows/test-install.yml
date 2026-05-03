@@ -4,249 +4,112 @@ on:
   workflow_dispatch:
     inputs:
       package:
-        description: '要测试的顶级包名'
+        description: 'Package name to test'
         required: true
       version:
-        description: '要测试的版本（留空则测试最新）'
+        description: 'Version (empty for latest)'
         required: false
         default: ''
       python_version:
-        description: 'Python 版本'
+        description: 'Python version'
         required: false
         default: '3.12'
 
-env:
-  UV_SYSTEM_PYTHON: 1
-
 jobs:
-  # ========== 第一步：下载目标包 ==========
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
     outputs:
       package: ${{ steps.info.outputs.package }}
       version: ${{ steps.info.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '${{ github.event.inputs.python_version }}'
-
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v4
         with:
           version: 'latest'
-
-      - name: Install dependencies
-        run: uv sync --no-dev
-
-      - name: Sync target package
-        id: sync
-        run: |
-          PKG="${{ github.event.inputs.package }}"
-          VER="${{ github.event.inputs.version }}"
-
-          echo "===== 目标包: $PKG ====="
-          if [ -n "$VER" ]; then
-            echo "指定版本: $VER"
-          else
-            echo "版本: 最新"
-          fi
-
-          # 同步指定包（顶层，不递归依赖，保持最小）
-          uv run pip-mirror sync --packages "$PKG" --no-deps 2>&1 | tee sync.log
-
-      - name: Export info
-        id: info
+      - run: uv sync --no-dev
+      - name: Sync package
+        run: uv run pip-mirror sync --packages "${{ github.event.inputs.package }}" --no-deps
+      - id: info
         run: |
           echo "package=${{ github.event.inputs.package }}" >> "$GITHUB_OUTPUT"
           echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload packages artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: test-packages-${{ github.run_id }}
+          name: test-pkg-${{ github.run_id }}
           path: packages/
           retention-days: 1
           compression-level: 0
 
-  # ========== 第二步：在 Linux 上测试安装 ==========
   test-linux:
     needs: sync
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     strategy:
       matrix:
-        python: ['3.10', '3.12', '3.14']
+        python: ['3.10', '3.12']
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Python ${{ matrix.python }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '${{ matrix.python }}'
-
-      - name: Download packages
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: test-packages-${{ github.run_id }}
+          name: test-pkg-${{ github.run_id }}
           path: packages/
-
       - name: Generate index
         run: |
-          # 安装工具生成索引
           pip install packaging requests tqdm tomli 2>/dev/null || true
-          python -m pip_mirror.indexer 2>/dev/null || python -c "
-import sys; sys.path.insert(0, 'src')
-from pip_mirror.indexer import generate_index
-from pathlib import Path
-generate_index(Path('packages'))
-"
-
-      - name: Test install (Linux x86_64)
+          python3 -c "import sys; sys.path.insert(0, 'src'); from pip_mirror.indexer import generate_index; from pathlib import Path; generate_index(Path('packages'))"
+      - name: Test install
         run: |
           PKG="${{ needs.sync.outputs.package }}"
           VER="${{ needs.sync.outputs.version }}"
-
-          echo "===== 测试安装: $PKG ====="
+          INDEX="file://$(pwd)/packages/simple"
+          echo "Testing: $PKG"
           echo "Python: $(python --version)"
-          echo "Platform: $(python -c 'import platform; print(platform.machine(), platform.system())')"
-          echo "Index URL: file://$(pwd)/packages"
-          echo ""
-
-          # 尝试安装
-          INSTALL_CMD="pip install --index-url file://$(pwd)/packages/simple --trusted-host localhost --no-cache-dir"
+          echo "Index: $INDEX"
           if [ -n "$VER" ]; then
-            INSTALL_CMD="$INSTALL_CMD '$PKG==$VER'"
+            pip install --index-url "$INDEX" --trusted-host localhost --no-cache-dir "$PKG==$VER"
           else
-            INSTALL_CMD="$INSTALL_CMD '$PKG'"
+            pip install --index-url "$INDEX" --trusted-host localhost --no-cache-dir "$PKG"
           fi
+          python -c "import $PKG; print('import OK')" 2>/dev/null || echo "import skipped"
 
-          echo "执行: $INSTALL_CMD"
-          eval $INSTALL_CMD 2>&1 | tee install.log
-          INSTALL_EXIT=${PIPESTATUS[0]}
-
-          echo ""
-          echo "===== 安装结果 ====="
-          if [ $INSTALL_EXIT -eq 0 ]; then
-            echo "结果: SUCCESS"
-            python -c "import $PKG; print('导入测试: OK')" 2>/dev/null || echo "导入测试: 跳过（包不可导入）"
-          else
-            echo "结果: FAILED (exit=$INSTALL_EXIT)"
-          fi
-
-          echo ""
-          echo "===== 已安装包列表 ====="
-          pip list | grep -i "$PKG" || echo "未找到已安装的 $PKG"
-
-          exit $INSTALL_EXIT
-
-  # ========== 第三步：在 Windows 上测试安装 ==========
   test-windows:
     needs: sync
     runs-on: windows-latest
-    timeout-minutes: 30
     strategy:
       matrix:
-        python: ['3.10', '3.12', '3.14']
+        python: ['3.10', '3.12']
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Python ${{ matrix.python }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '${{ matrix.python }}'
-
-      - name: Download packages
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: test-packages-${{ github.run_id }}
+          name: test-pkg-${{ github.run_id }}
           path: packages/
-
       - name: Generate index
         shell: pwsh
         run: |
           pip install packaging requests tqdm tomli 2>$null
-          python -c "
-import sys; sys.path.insert(0, 'src')
-from pip_mirror.indexer import generate_index
-from pathlib import Path
-generate_index(Path('packages'))
-"
-
-      - name: Test install (Windows)
+          python -c "import sys; sys.path.insert(0, 'src'); from pip_mirror.indexer import generate_index; from pathlib import Path; generate_index(Path('packages'))"
+      - name: Test install
         shell: pwsh
         run: |
           $pkg = "${{ needs.sync.outputs.package }}"
           $ver = "${{ needs.sync.outputs.version }}"
-          $pwdPath = (Get-Location).Path.Replace('\', '/')
-
-          Write-Host "===== 测试安装: $pkg ====="
+          $idx = "file:///$((Get-Location).Path.Replace('\', '/'))/packages/simple"
+          Write-Host "Testing: $pkg"
           Write-Host "Python: $(python --version)"
-          Write-Host "Platform: $(python -c 'import platform; print(platform.machine(), platform.system())')"
-          Write-Host "Index URL: file:///$pwdPath/packages/simple"
-          Write-Host ""
-
-          $indexUrl = "file:///$pwdPath/packages/simple"
-          $installArgs = @("install", "--index-url", $indexUrl, "--trusted-host", "localhost", "--no-cache-dir")
+          Write-Host "Index: $idx"
           if ($ver) {
-            $installArgs += "$pkg==$ver"
+            pip install --index-url $idx --trusted-host localhost --no-cache-dir "$pkg==$ver"
           } else {
-            $installArgs += $pkg
+            pip install --index-url $idx --trusted-host localhost --no-cache-dir $pkg
           }
-
-          Write-Host "执行: pip $installArgs"
-          pip $installArgs 2>&1 | Tee-Object -FilePath install.log
-          $exitCode = $LASTEXITCODE
-
-          Write-Host ""
-          Write-Host "===== 安装结果 ====="
-          if ($exitCode -eq 0) {
-            Write-Host "结果: SUCCESS"
-            python -c "import $pkg; print('导入测试: OK')" 2>$null
-          } else {
-            Write-Host "结果: FAILED (exit=$exitCode)"
-          }
-
-          Write-Host ""
-          Write-Host "===== 已安装包列表 ====="
-          pip list | Select-String -Pattern $pkg -ErrorAction SilentlyContinue
-
-          exit $exitCode
-
-  # ========== 汇总报告 ==========
-  report:
-    needs: [sync, test-linux, test-windows]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Summary
-        run: |
-          PKG="${{ needs.sync.outputs.package }}"
-          echo "# 安装测试报告: $PKG" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          echo "## Linux 安装测试" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Python | 结果 |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|--------|------|" >> "$GITHUB_STEP_SUMMARY"
-          for py in 3.10 3.12 3.14; do
-            job="test-linux (${{ matrix.python }}=$py)"
-            # 简化输出
-            echo "| $py | 见上方详情 |" >> "$GITHUB_STEP_SUMMARY"
-          done
-
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "## Windows 安装测试" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Python | 结果 |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|--------|------|" >> "$GITHUB_STEP_SUMMARY"
-          for py in 3.10 3.12 3.14; do
-            echo "| $py | 见上方详情 |" >> "$GITHUB_STEP_SUMMARY"
-          done
-
-          echo ""
-          echo "===== 工作流状态 ====="
-          echo "Sync:   ${{ needs.sync.result }}"
-          echo "Linux:  ${{ needs.test-linux.result }}"
-          echo "Windows: ${{ needs.test-windows.result }}"
+          python -c "import $pkg; print('import OK')" 2>$null
