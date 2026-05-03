@@ -167,6 +167,8 @@ def _fetch_simple_index(
     if alt != normalized:
         urls_to_try.append(f"{index_url.rstrip('/')}/{alt}/")
 
+    print(f"  [DEBUG] Simple Index URLs: {urls_to_try}")
+
     last_error: Exception | None = None
     for url in urls_to_try:
         try:
@@ -201,6 +203,7 @@ def _fetch_json_api(
     """从 PyPI JSON API 获取文件列表."""
     normalized = normalize_package_name(package_name)
     url = f"{pypi_url.rstrip('/')}/pypi/{normalized}/json"
+    print(f"  [DEBUG] JSON API URL: {url}")
 
     response = session.get(url, timeout=30)
     response.raise_for_status()
@@ -310,11 +313,11 @@ def download_packages(
             if use_json_api:
                 try:
                     files = _fetch_json_api(session, package_name, pypi_url)
-                    print(f"  [OK] {package_name} (JSON API)")
-                except (requests.HTTPError, requests.RequestException):
+                    print(f"  [OK] {package_name} (JSON API, {len(files)} files)")
+                except (requests.HTTPError, requests.RequestException) as e1:
                     try:
                         files = _fetch_simple_index(session, package_name, index_url)
-                        print(f"  [OK] {package_name} (Simple Index fallback)")
+                        print(f"  [OK] {package_name} (Simple Index fallback, {len(files)} files)")
                     except (requests.HTTPError, requests.RequestException) as e2:
                         status = getattr(getattr(e2, "response", None), "status_code", None)
                         if status == 404:
@@ -325,7 +328,7 @@ def download_packages(
             else:
                 try:
                     files = _fetch_simple_index(session, package_name, index_url)
-                    print(f"  [OK] {package_name} (Simple Index)")
+                    print(f"  [OK] {package_name} (Simple Index, {len(files)} files)")
                 except (requests.HTTPError, requests.RequestException) as e:
                     status = getattr(getattr(e, "response", None), "status_code", None)
                     if status == 404:
@@ -338,9 +341,15 @@ def download_packages(
             if specific_versions and package_name in specific_versions:
                 allowed = set(specific_versions[package_name])
                 files = [fi for fi in files if fi.version in allowed]
+                print(f"  [DEBUG] {package_name} 版本过滤后: {len(files)} files, versions={allowed}")
             else:
                 files = _select_latest_versions(files, max_versions)
+                print(f"  [DEBUG] {package_name} 最新版本过滤后: {len(files)} files")
             version_files = _collect_version_files(files)
+
+            if not version_files:
+                print(f"  [DEBUG] {package_name} 无匹配版本文件")
+                continue
 
             for version, vfiles in version_files.items():
                 # 判断该版本是否为纯 Python
@@ -430,6 +439,13 @@ def download_packages(
                 except Exception as e:
                     result.failed.append((file_info, str(e)))
                 pbar.update(1)
+
+    print(f"  [DEBUG] 下载汇总: downloaded={len(result.downloaded)}, skipped={len(result.skipped)}, failed={len(result.failed)}")
+    pkg_counts = {}
+    for fi in result.downloaded:
+        pkg_counts[fi.package_name] = pkg_counts.get(fi.package_name, 0) + 1
+    if pkg_counts:
+        print(f"  [DEBUG] 各包下载数量: {dict(sorted(pkg_counts.items()))}")
 
     return result
 
