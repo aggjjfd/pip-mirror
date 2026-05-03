@@ -115,30 +115,56 @@ def _get_all_versions(
         return []
 
 
-def _filter_versions(versions: list[str], specifier: str) -> list[str]:
-    """用版本约束过滤版本列表."""
-    if not specifier:
-        return versions
-
-    try:
-        spec = SpecifierSet(specifier)
-    except Exception:
-        return versions
-
-    result = []
-    for v in versions:
-        try:
-            if parse_version(v) in spec:
-                result.append(v)
-        except Exception:
-            continue
-    return result
-
-
 def _merge_specifiers(specifiers: list[str]) -> str:
     """合并多个版本约束."""
     parts = [s.strip() for s in specifiers if s.strip()]
     return ",".join(parts)
+
+
+def _filter_versions(versions: list[str], specifier: str) -> list[str]:
+    """用版本约束过滤版本列表.
+
+    精确版本约束 (==x.y.z) 按 OR 关系处理：满足任意一个即可。
+    范围约束按 AND 关系处理：必须同时满足所有范围约束。
+    """
+    if not specifier:
+        return versions
+
+    # 分离精确版本约束和范围约束
+    exact_versions: set[str] = set()
+    range_parts: list[str] = []
+
+    for part in specifier.split(","):
+        part = part.strip()
+        if part.startswith("=="):
+            exact_versions.add(part[2:].strip())
+        elif part:
+            range_parts.append(part)
+
+    # 如果有精确版本约束，直接匹配这些版本（OR 关系）
+    if exact_versions:
+        result = []
+        for v in versions:
+            if v in exact_versions:
+                result.append(v)
+        return result
+
+    # 否则用范围约束过滤（AND 关系）
+    if range_parts:
+        try:
+            spec = SpecifierSet(",".join(range_parts))
+            result = []
+            for v in versions:
+                try:
+                    if parse_version(v) in spec:
+                        result.append(v)
+                except Exception:
+                    continue
+            return result
+        except Exception:
+            return versions
+
+    return versions
 
 
 def _resolve_one_layer(
