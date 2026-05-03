@@ -4,14 +4,13 @@
 
 ## 功能
 
-- 从 PyPI/镜像站同步指定包及其依赖
-- 保留多平台 wheel（Windows x86/x64、Linux x64），自动过滤 ARM/musl/macOS
-- 纯 Python 包自动 fallback 到 sdist，非纯 Python 包缺失平台时告警
+- **PyPI 包镜像**：同步指定包及其依赖，生成 PEP 503 Simple Index
+- **Python 解释器镜像**：同步 `python-build-standalone`，支持 `uv python install` 内网使用
+- 多平台 wheel 过滤（Windows x86/x64、Linux x64），自动排除 ARM/musl/macOS
+- 纯 Python 包自动 fallback 到 sdist
 - SQLite 增量跟踪，跳过已下载文件
-- 生成 PEP 503 Simple Index 目录结构
-- 内置 HTTP 服务器，内网直接作为 pip 源使用
 - 增量 tar.gz 打包，方便离线部署
-- 同步 Python 解释器（python-build-standalone），支持 `uv python install` 内网使用
+- 内置 HTTP 服务器，一台服务器同时提供 pip 包和 Python 解释器
 
 ## 安装
 
@@ -87,21 +86,44 @@ uv run pip-mirror sync-python --workers 8
 - Windows x86 (32-bit)、Windows x64 (64-bit)
 - Linux x64 glibc（含 x86_64 / x86_64_v2 / x86_64_v3 / x86_64_v4 微架构）
 
-## 内网 uv 配置（Python 解释器）
+## 仓库目录结构
 
-同步 Python 解释器后，内网机器通过环境变量让 uv 从私有服务器下载：
+同步完成后：
+
+```
+packages/
+├── simple/                          # PEP 503 包索引
+│   ├── requests/
+│   ├── numpy/
+│   └── ...
+└── python-builds/                   # Python 解释器
+    ├── index.json                   # uv 使用的元数据索引
+    ├── cpython-3.12.4+20240713-x86_64-pc-windows-msvc-install_only_stripped.tar.gz
+    ├── cpython-3.12.4+20240713-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
+    └── ...
+```
+
+## 内网 uv 完整配置
+
+在同一台服务器上同时提供 pip 包和 Python 解释器：
 
 ```bash
+export UV_DEFAULT_INDEX=http://192.168.1.100:8080/simple
 export UV_PYTHON_DOWNLOADS_JSON_URL=http://192.168.1.100:8080/python-builds/index.json
 
 # 安装 Python 3.12
 uv python install 3.12
 
-# 或创建虚拟环境时自动下载
+# 创建虚拟环境并安装包
 uv venv --python 3.12
+uv pip install requests numpy
 ```
 
-`uv` 会自动从 JSON 中匹配对应平台和版本的解释器并下载。
+如果服务器未配置 HTTPS，需要同时设置：
+```bash
+export UV_TRUSTED_HOST=192.168.1.100
+export PIP_TRUSTED_HOST=192.168.1.100
+```
 
 ## 内网 pip 配置（Python 包）
 
@@ -160,17 +182,30 @@ pip install --config-file pip.conf requests
 
 ## 增量部署
 
+### pip 包增量部署
+
 同步完成后，`incremental/` 目录会生成 `incremental_YYYYMMDD_HHMMSS.tar.gz`，包含本次新增文件和 `manifest.json`。
 
-在内网服务器解压到仓库目录：
+在内网服务器解压：
 
 ```bash
 tar -xzf incremental_20260503_120000.tar.gz -C /path/to/packages
 ```
 
-然后重新生成索引：
+### Python 解释器离线部署
+
+`packages/python-builds/` 目录包含所有 Python 解释器和 `index.json`，直接复制到内网服务器即可：
+
+```bash
+rsync -av packages/python-builds/ 内网服务器:/path/to/packages/python-builds/
+```
+
+### 启动服务
 
 ```bash
 uv run pip-mirror serve --port 8080
-# 或只生成索引不启动服务（当前版本 serve 会自动生成）
 ```
+
+服务器会自动提供：
+- `http://server:8080/simple` — pip 包索引
+- `http://server:8080/python-builds/index.json` — Python 解释器元数据
