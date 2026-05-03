@@ -81,6 +81,8 @@ jobs:
   test-windows:
     needs: sync
     runs-on: windows-latest
+    env:
+      PYTHONIOENCODING: utf-8
     strategy:
       matrix:
         python: ['3.10', '3.12']
