@@ -20,6 +20,7 @@ from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.version import parse as parse_version
 
+from ._session import make_session
 from .filters import normalize_package_name
 
 logger = logging.getLogger("pip-mirror")
@@ -243,7 +244,7 @@ def resolve_dependencies(
     current_layer_packages = list(processed)
     current_layer_versions = dict(top_versions)
 
-    with requests.Session() as session:
+    with make_session() as session:
         for depth in range(1, max_depth + 1):
             if not current_layer_packages:
                 break
@@ -309,7 +310,7 @@ def resolve_dependencies(
     # 用约束过滤版本，确定最终需要下载的版本
     result: dict[str, list[str]] = {}
 
-    with requests.Session() as session:
+    with make_session() as session:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(_get_all_versions, session, dep_name, pypi_url): dep_name

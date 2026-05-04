@@ -132,15 +132,23 @@ jobs:
 
           cat report.txt
 
+      - name: Pack mirror tar.gz (gzip -9)
+        if: success()
+        run: |
+          echo "===== 打高密度全量包 ====="
+          tar -I 'gzip -9' -cf mirror.tar.gz -C . packages/
+          ls -lh mirror.tar.gz
+          sha256sum mirror.tar.gz | tee mirror.sha256
+
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pip-mirror-incremental-${{ github.run_id }}
+          name: pip-mirror-${{ github.run_id }}
           path: |
-            incremental/
-            packages/python-builds/
+            mirror.tar.gz
+            mirror.sha256
             report.txt
             sync.log
           retention-days: 7
-          compression-level: 9
+          compression-level: 0

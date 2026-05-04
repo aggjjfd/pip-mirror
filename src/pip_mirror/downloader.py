@@ -27,6 +27,7 @@ import requests
 from packaging.version import parse as parse_version
 from tqdm import tqdm
 
+from ._session import make_session
 from .filters import (
     is_accepted_wheel,
     is_pure_python_wheel,
@@ -311,7 +312,7 @@ def download_packages(
 
     use_json_api = _is_official_pypi(pypi_url)
 
-    with requests.Session() as session:
+    with make_session() as session:
         for package_name in packages:
             normalized = normalize_package_name(package_name)
             pkg_dir = repository_dir / "simple" / normalized

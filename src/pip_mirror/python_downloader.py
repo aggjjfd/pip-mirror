@@ -12,6 +12,8 @@ from urllib.parse import unquote
 import requests
 from tqdm import tqdm
 
+from ._session import make_session
+
 logger = logging.getLogger("pip-mirror")
 
 _UV_METADATA_URL = (
@@ -142,7 +144,7 @@ def sync_python_builds(
     output_dir = repository_dir / "python-builds"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    with requests.Session() as session:
+    with make_session() as session:
         metadata = _fetch_uv_metadata(session)
 
         # 过滤目标条目
