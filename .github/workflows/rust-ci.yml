@@ -1,0 +1,48 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [rust-rewrite]
+  pull_request:
+    branches: [rust-rewrite]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Clippy (hard gate)
+        run: cargo clippy -- -D warnings
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Cyclomatic complexity check
+        run: |
+          cargo install cargo-cyclomatic-complexity
+          cargo cyclomatic-complexity --limit 10
+
+      - name: File line count check
+        run: |
+          for f in $(find src -name '*.rs'); do
+            lines=$(wc -l < "$f")
+            if [ "$lines" -gt 350 ]; then
+              echo "ERROR: $f has $lines lines (max 350)"
+              exit 1
+            fi
+          done
