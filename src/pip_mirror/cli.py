@@ -56,6 +56,7 @@ def _sync_wheels(config: Config, packages: list[str], no_deps: bool) -> tuple[li
         workers=config.workers,
         max_versions=config.max_versions,
         allow_prerelease=config.allow_prerelease,
+        backfill_scan_limit=config.backfill_scan_limit,
     )
     all_downloaded.extend(top_result.downloaded)
     all_warnings.extend(top_result.warnings)
@@ -89,8 +90,10 @@ def _sync_wheels(config: Config, packages: list[str], no_deps: bool) -> tuple[li
                 index_url=config.index_url,
                 include_source=config.include_source,
                 workers=config.workers,
-                specific_versions=dep_versions,
+                specific_versions={n: r.versions for n, r in dep_versions.items()},
+                version_specifiers={n: r.merged_spec for n, r in dep_versions.items()},
                 allow_prerelease=config.allow_prerelease,
+                backfill_scan_limit=config.backfill_scan_limit,
             )
             all_downloaded.extend(dep_result.downloaded)
             all_warnings.extend(dep_result.warnings)

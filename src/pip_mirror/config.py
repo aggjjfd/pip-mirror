@@ -37,6 +37,7 @@ class Config:
     incremental_dir: Path
     max_versions: int
     allow_prerelease: bool
+    backfill_scan_limit: int
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Config:
@@ -56,6 +57,7 @@ class Config:
             incremental_dir=incremental,
             max_versions=int(data.get("max_versions", 5)),
             allow_prerelease=bool(data.get("allow_prerelease", False)),
+            backfill_scan_limit=int(data.get("backfill_scan_limit", 50)),
         )
 
     @classmethod

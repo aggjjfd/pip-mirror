@@ -34,6 +34,19 @@ class DepConstraint:
     specifier: str
 
 
+@dataclass(frozen=True)
+class ResolvedDep:
+    """resolver 输出:某个依赖包过滤后的版本 + 合并约束 + 全集.
+
+    `merged_spec` 透传给 downloader,backfill 阶段过滤候选老版本时使用;
+    `all_versions` 提供给上层(如诊断/调试),与 versions 一致都来自 PyPI.
+    """
+
+    versions: list[str]
+    merged_spec: str
+    all_versions: list[str]
+
+
 def extract_extras(package_ref: str) -> tuple[str, set[str]]:
     """从包引用中提取包名和 extras."""
     if "[" not in package_ref:
@@ -246,7 +259,7 @@ def resolve_dependencies(
     workers: int = 8,
     max_depth: int = 5,
     allow_prerelease: bool = False,
-) -> dict[str, list[str]]:
+) -> dict[str, ResolvedDep]:
     """递归解析依赖树，返回需要下载的依赖包版本.
 
     Args:
@@ -258,7 +271,7 @@ def resolve_dependencies(
         allow_prerelease: 是否允许预发行版（rc / alpha / beta / dev），默认 False
 
     Returns:
-        {包名: [版本号列表]} 所有需要下载的依赖
+        {包名: ResolvedDep} 所有需要下载的依赖,含 merged_spec 透传 downloader.
     """
     logger.info("解析依赖...")
 
@@ -344,7 +357,7 @@ def resolve_dependencies(
     logger.info(f"  总共 {len(accumulated_constraints)} 个依赖包，开始过滤版本...")
 
     # 用约束过滤版本，确定最终需要下载的版本
-    result: dict[str, list[str]] = {}
+    result: dict[str, ResolvedDep] = {}
     missing: list[str] = []
 
     with make_session() as session:
@@ -372,8 +385,19 @@ def resolve_dependencies(
                     limit = 10 if "<" in merged_spec else 3
                     to_keep = filtered[:limit]
 
+                    if not to_keep or len(to_keep) < limit:
+                        logger.warning(
+                            f"  ! {dep_name}: spec='{merged_spec or '(empty)'}', "
+                            f"all={len(all_versions)}, filtered={len(filtered)}, "
+                            f"limit={limit}, kept={len(to_keep)}"
+                        )
+
                     if to_keep:
-                        result[dep_name] = to_keep
+                        result[dep_name] = ResolvedDep(
+                            versions=to_keep,
+                            merged_spec=merged_spec,
+                            all_versions=all_versions,
+                        )
                     else:
                         missing.append(dep_name)
 
