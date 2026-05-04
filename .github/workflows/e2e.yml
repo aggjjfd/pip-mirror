@@ -1,7 +1,7 @@
 name: E2E (Four Modes)
 
 # 端到端测试,串完 pip-mirror 对外四种模式 + 真实客户端验证。
-# 包列表与 pyproject.toml 的 [tool.pip-mirror].packages 保持一致(36 包,
+# 包列表与 pyproject.toml 的 [tool.pip-mirror].packages 保持一致(35 包,
 # 含 markitdown[pptx,docx,xls,xlsx,pdf]),不偷工。CI 上 CPU 弱网络强,所以:
 #   - workers 在 CI 配置里拉到 16(只写在 e2e 生成的 toml 里,不改 pyproject)
 #   - PIP_MIRROR_TAR_COMPRESSION=none → mirror.tar.gz 内部 gzip level=0,基本不压缩
@@ -212,6 +212,15 @@ jobs:
           echo "===== tail server.log ====="
           tail -100 server.log 2>/dev/null || echo "(no server.log)"
 
+      - name: 'Upload mirror.tar.gz for Windows client job'
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirror-tarball-${{ github.run_id }}
+          path: mirror.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+
       - name: 'Upload e2e logs'
         if: always()
         uses: actions/upload-artifact@v4
@@ -227,5 +236,160 @@ jobs:
             e2e-full.toml
             stage.toml
             e2e-inc.toml
+          retention-days: 7
+          if-no-files-found: warn
+
+  e2e-windows-client:
+    needs: e2e
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      MIRROR_HOST: 127.0.0.1
+      MIRROR_PORT: '18080'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: 'latest'
+
+      - name: 'Install pip-mirror deps'
+        run: uv sync --no-dev
+
+      - name: 'Download mirror.tar.gz from linux job'
+        uses: actions/download-artifact@v4
+        with:
+          name: mirror-tarball-${{ github.run_id }}
+          path: .
+
+      - name: 'Extract mirror to C:\stage (verify simple/ + python-builds/)'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path C:\stage -Force | Out-Null
+          tar -xzf mirror.tar.gz -C C:\stage
+          if (-not (Test-Path 'C:\stage\packages\simple\requests\index.html')) {
+            throw 'simple/requests/index.html missing after extract'
+          }
+          if (-not (Test-Path 'C:\stage\packages\.store.db')) {
+            throw '.store.db missing after extract'
+          }
+          if (-not (Test-Path 'C:\stage\packages\python-builds\index.json')) {
+            throw 'python-builds/index.json missing after extract'
+          }
+          Write-Host 'staged simple/ (head 10):'
+          Get-ChildItem C:\stage\packages\simple | Select-Object -First 10 | ForEach-Object { $_.Name }
+
+      - name: 'Generate stage.toml for Windows serve'
+        shell: pwsh
+        run: |
+          @'
+          packages = ["requests"]
+          repository_dir = "C:/stage/packages"
+          server_host = "127.0.0.1"
+          server_port = 18080
+          '@ | Out-File -Encoding utf8 -FilePath stage.toml
+
+      - name: 'Mode 3 — start serve in background (Windows)'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $proc = Start-Process -PassThru -WindowStyle Hidden `
+            -FilePath uv -ArgumentList 'run','pip-mirror','serve','-c','stage.toml' `
+            -RedirectStandardOutput server.log -RedirectStandardError server.err
+          $proc.Id | Out-File -Encoding ascii server.pid
+          $up = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            try {
+              Invoke-WebRequest -UseBasicParsing `
+                -Uri "http://$($env:MIRROR_HOST):$($env:MIRROR_PORT)/simple/requests/" `
+                -TimeoutSec 5 | Out-Null
+              Write-Host "server up after $i s"
+              $up = $true
+              break
+            } catch { Start-Sleep -Seconds 1 }
+          }
+          if (-not $up) {
+            Write-Host '----- server.log -----'
+            if (Test-Path server.log) { Get-Content server.log }
+            Write-Host '----- server.err -----'
+            if (Test-Path server.err) { Get-Content server.err }
+            throw 'server did not come up within 60 s'
+          }
+
+      - name: 'Client — uv pip install requests via mirror (Windows)'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          uv venv C:\client
+          $env:VIRTUAL_ENV = 'C:\client'
+          uv pip install --index-url "http://$($env:MIRROR_HOST):$($env:MIRROR_PORT)/simple" requests
+          & C:\client\Scripts\python.exe -c "import requests; print('client requests', requests.__version__)"
+
+      - name: 'Assert installed wheel really has Windows Tag (charset_normalizer)'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:VIRTUAL_ENV = 'C:\client'
+          # charset_normalizer 在 requests 3.x 链路中是 binary wheel,且 PyPI 多版本含 win_amd64 + win32 build。
+          # 如未来 charset-normalizer 全转 pure-python (any wheel),换成 cryptography / pydantic-core / pillow。
+          $info = Get-ChildItem C:\client\Lib\site-packages -Directory `
+            | Where-Object { $_.Name -like 'charset_normalizer-*.dist-info' } | Select-Object -First 1
+          if (-not $info) { throw 'charset_normalizer dist-info not found in C:\client' }
+          $wheelMeta = Join-Path $info.FullName 'WHEEL'
+          if (-not (Test-Path $wheelMeta)) { throw "WHEEL meta not found at $wheelMeta" }
+          $tagLines = Get-Content $wheelMeta | Where-Object { $_ -match '^Tag:.*(win_amd64|win32)' }
+          if (-not $tagLines) {
+            Write-Host '----- WHEEL contents -----'
+            Get-Content $wheelMeta
+            throw 'installed charset_normalizer is NOT a Windows wheel — backfill missed?'
+          }
+          Write-Host "OK: charset_normalizer installed wheel tag(s):"
+          $tagLines | ForEach-Object { Write-Host "  $_" }
+
+      - name: 'Client — uv python install 3.13 via mirror python-builds index (Windows)'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:UV_PYTHON_DOWNLOADS_JSON_URL = "http://$($env:MIRROR_HOST):$($env:MIRROR_PORT)/python-builds/index.json"
+          $env:UV_PYTHON_INSTALL_DIR = 'C:\uv-pythons'
+          uv python install 3.13
+          $pybin = (uv python find 3.13).Trim()
+          Write-Host "uv python find 3.13 -> $pybin"
+          & "$pybin" --version
+          $hits = & sqlite3 'C:\stage\packages\.access_log.db' "SELECT COUNT(*) FROM access_log WHERE path LIKE '/python-builds/%';"
+          Write-Host "python-builds hits in mirror access_log: $hits"
+          if ([int]$hits -lt 1) {
+            throw 'access_log has zero /python-builds/ hits — uv may have bypassed mirror'
+          }
+
+      - name: 'Stop serve (Windows)'
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path server.pid) {
+            $pidVal = Get-Content server.pid
+            try { Stop-Process -Id ([int]$pidVal) -Force -ErrorAction SilentlyContinue } catch {}
+          }
+          Get-Process -Name 'pip-mirror' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Write-Host '===== tail server.log ====='
+          if (Test-Path server.log) { Get-Content server.log -Tail 100 }
+          Write-Host '===== tail server.err ====='
+          if (Test-Path server.err) { Get-Content server.err -Tail 100 }
+
+      - name: 'Upload windows client logs'
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-windows-logs-${{ github.run_id }}
+          path: |
+            server.log
+            server.err
+            stage.toml
           retention-days: 7
           if-no-files-found: warn
