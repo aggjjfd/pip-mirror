@@ -112,8 +112,11 @@ def _get_all_versions(
             versions.sort(key=parse_version, reverse=True)
         except Exception:
             versions.sort(reverse=True)
+        if not versions:
+            logger.warning(f"PyPI 返回空 releases: {package} ({url})")
         return versions
-    except requests.RequestException:
+    except requests.RequestException as e:
+        logger.warning(f"获取 {package} 版本列表失败 ({url}): {e}")
         return []
 
 
@@ -309,6 +312,7 @@ def resolve_dependencies(
 
     # 用约束过滤版本，确定最终需要下载的版本
     result: dict[str, list[str]] = {}
+    missing: list[str] = []
 
     with make_session() as session:
         with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -322,6 +326,7 @@ def resolve_dependencies(
                 try:
                     all_versions = future.result()
                     if not all_versions:
+                        missing.append(dep_name)
                         continue
 
                     merged_spec = ",".join(
@@ -334,9 +339,19 @@ def resolve_dependencies(
 
                     if to_keep:
                         result[dep_name] = to_keep
+                    else:
+                        missing.append(dep_name)
 
                 except Exception as e:
                     logger.warning(f"获取 {dep_name} 版本失败: {e}")
+                    missing.append(dep_name)
+
+    if missing:
+        preview = ", ".join(sorted(missing)[:30])
+        more = "" if len(missing) <= 30 else f" (还有 {len(missing) - 30} 个未列)"
+        logger.warning(
+            f"  ! 跳过 {len(missing)} 个依赖(无法获取版本或过滤后为空): {preview}{more}",
+        )
 
     total_versions = sum(len(v) for v in result.values())
     logger.info(f"  依赖解析完成: {len(result)} 个包, {total_versions} 个版本")
