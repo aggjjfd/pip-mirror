@@ -275,142 +275,44 @@ def _select_latest_versions(files: list[FileInfo], max_versions: int) -> list[Fi
 _BACKFILL_SCAN_LIMIT = 50
 
 
-def _backfill_platform_coverage(
-    package_name: str,
-    selected_files: list[FileInfo],
-    all_files: list[FileInfo],
-    spec: str,
-    allow_prerelease: bool,
-    scan_limit: int = _BACKFILL_SCAN_LIMIT,
-) -> tuple[list[FileInfo], list[str]]:
-    """对每个 missing target,沿更老版本回溯第一个有该 target wheel 的版本.
-
-    触发条件:selected 中无任意 pure-python wheel,且某 target ∉ selected covered.
-    回溯只在严格小于 selected 最低版本的版本中进行,且尊重 caller spec。
-
-    Args:
-        package_name: 包名(用于日志).
-        selected_files: 已通过 max_versions/specific_versions 选出的文件集合.
-        all_files: 该包的全集 file 列表(含老版本).
-        spec: caller 提供的 PEP 440 spec(依赖路径上的合并约束),空串表示不过滤.
-        allow_prerelease: 是否允许预发行版进入回溯候选.
-        scan_limit: 候选老版本扫描上限(防止历史超长包扫到最旧).
-
-    Returns:
-        (附加文件列表, warning 字符串列表).
-        附加文件已按 filename dedup,可直接拼到 selected_files 后。
-    """
-    covered_in_selected: set[str] = set()
-    has_pure_python_in_selected = False
-    for fi in selected_files:
-        if not fi.filename.endswith(".whl"):
-            continue
-        if not is_accepted_wheel(fi.filename):
-            continue
-        if is_pure_python_wheel(fi.filename):
-            has_pure_python_in_selected = True
-        plat = fi.filename[:-4].split("-")[-1]
-        covered_in_selected.update(_platform_to_target(plat))
-
-    if has_pure_python_in_selected:
-        return [], []
-
-    missing = _TARGET_PLATFORMS - covered_in_selected
-    if not missing:
-        return [], []
-
-    selected_versions = {fi.version for fi in selected_files if fi.version}
-    all_versions_grouped: dict[str, list[FileInfo]] = {}
-    for fi in all_files:
-        if fi.version:
-            all_versions_grouped.setdefault(fi.version, []).append(fi)
-
-    min_selected = None
-    if selected_versions:
-        try:
-            min_selected = min(parse_version(v) for v in selected_versions)
-        except Exception:
-            min_selected = None
-
-    older_versions = [v for v in all_versions_grouped if v not in selected_versions]
-    if min_selected is not None:
-        kept: list[str] = []
-        for v in older_versions:
-            try:
-                if parse_version(v) < min_selected:
-                    kept.append(v)
-            except Exception:
-                pass
-        older_versions = kept
-
-    try:
-        older_versions.sort(key=parse_version, reverse=True)
-    except Exception:
-        older_versions.sort(reverse=True)
-    older_versions = older_versions[:scan_limit]
-
-    if spec:
-        try:
-            spec_set = SpecifierSet(spec)
-            older_versions = [
-                v for v in older_versions
-                if spec_set.contains(v, prereleases=allow_prerelease)
-            ]
-        except Exception:
-            pass
-
-    if not allow_prerelease:
-        non_pre: list[str] = []
-        for v in older_versions:
-            try:
-                if not parse_version(v).is_prerelease:
-                    non_pre.append(v)
-            except Exception:
-                non_pre.append(v)
-        if non_pre:
-            older_versions = non_pre
-
-    extras_by_filename: dict[str, FileInfo] = {}
-    warnings_list: list[str] = []
-
-    for target in sorted(missing):
-        found_version: str | None = None
-        for ver in older_versions:
-            for fi in all_versions_grouped.get(ver, []):
-                if not fi.filename.endswith(".whl"):
-                    continue
-                if not is_accepted_wheel(fi.filename):
-                    continue
-                plat = fi.filename[:-4].split("-")[-1]
-                if target in _platform_to_target(plat):
-                    found_version = ver
-                    break
-            if found_version is not None:
+def _backfill_one_target(
+    target: str,
+    older_versions: list[str],
+    all_versions_grouped: dict[str, list[FileInfo]],
+) -> tuple[list[FileInfo] | None, bool]:
+    """回溯单个 target，返回 (文件列表, 是否预发行版命中)。None 表示没找到。"""
+    found_version: str | None = None
+    for ver in older_versions:
+        for fi in all_versions_grouped.get(ver, []):
+            if not fi.filename.endswith(".whl"):
+                continue
+            if not is_accepted_wheel(fi.filename):
+                continue
+            plat = fi.filename[:-4].split("-")[-1]
+            if target in _platform_to_target(plat):
+                found_version = ver
                 break
+        if found_version is not None:
+            break
 
-        if found_version is None:
-            warnings_list.append(
-                f"{package_name}: target {target} 在 {len(older_versions)} 个候选版本均无 wheel,"
-                "放弃"
-            )
-            continue
+    if found_version is None:
+        return None, False
 
-        for fi in all_versions_grouped[found_version]:
-            if fi.filename.endswith(".whl"):
-                if is_accepted_wheel(fi.filename):
-                    extras_by_filename[fi.filename] = fi
-            elif is_source_distribution(fi.filename):
-                extras_by_filename[fi.filename] = fi
+    result: list[FileInfo] = []
+    for fi in all_versions_grouped[found_version]:
+        if fi.filename.endswith(".whl"):
+            if is_accepted_wheel(fi.filename):
+                result.append(fi)
+        elif is_source_distribution(fi.filename):
+            result.append(fi)
 
-        try:
-            if parse_version(found_version).is_prerelease:
-                warnings_list.append(
-                    f"{package_name}: target {target} 仅在预发行版 {found_version} 命中"
-                )
-        except Exception:
-            pass
+    is_pre = False
+    try:
+        is_pre = parse_version(found_version).is_prerelease
+    except Exception:
+        pass
 
-    return list(extras_by_filename.values()), warnings_list
+    return result, is_pre
 
 
 def _drop_prerelease_files(files: list[FileInfo]) -> list[FileInfo]:
@@ -523,25 +425,66 @@ def download_packages(
                         )
                 files = _select_latest_versions(files, max_versions)
 
-            # 平台覆盖回溯:筛选完最新 N 版后,对每个 missing target 沿老版本回溯
+            # 准备回溯上下文（全局只算一次）
             spec = (version_specifiers or {}).get(package_name, "")
-            extra_files, backfill_warns = _backfill_platform_coverage(
-                package_name=package_name,
-                selected_files=files,
-                all_files=all_files,
-                spec=spec,
-                allow_prerelease=allow_prerelease,
-                scan_limit=backfill_scan_limit,
+            all_versions_grouped: dict[str, list[FileInfo]] = {}
+            for fi in all_files:
+                if fi.version:
+                    all_versions_grouped.setdefault(fi.version, []).append(fi)
+
+            selected_versions = {fi.version for fi in files if fi.version}
+            older_versions = [v for v in all_versions_grouped if v not in selected_versions]
+            min_selected = None
+            if selected_versions:
+                try:
+                    min_selected = min(parse_version(v) for v in selected_versions)
+                except Exception:
+                    min_selected = None
+            if min_selected is not None:
+                kept: list[str] = []
+                for v in older_versions:
+                    try:
+                        if parse_version(v) < min_selected:
+                            kept.append(v)
+                    except Exception:
+                        pass
+                older_versions = kept
+            try:
+                older_versions.sort(key=parse_version, reverse=True)
+            except Exception:
+                older_versions.sort(reverse=True)
+            older_versions = older_versions[:backfill_scan_limit]
+
+            if spec:
+                try:
+                    spec_set = SpecifierSet(spec)
+                    older_versions = [
+                        v for v in older_versions
+                        if spec_set.contains(v, prereleases=allow_prerelease)
+                    ]
+                except Exception:
+                    pass
+
+            if not allow_prerelease:
+                non_pre: list[str] = []
+                for v in older_versions:
+                    try:
+                        if not parse_version(v).is_prerelease:
+                            non_pre.append(v)
+                    except Exception:
+                        non_pre.append(v)
+                if non_pre:
+                    older_versions = non_pre
+
+            has_pure_python_global = any(
+                is_pure_python_wheel(fi.filename)
+                for fi in files
+                if fi.filename.endswith(".whl") and is_accepted_wheel(fi.filename)
             )
-            for w in backfill_warns:
-                result.warnings.append(w)
-                logger.warning(f"  ! {w}")
-            if extra_files:
-                logger.info(
-                    f"  ↻ {package_name} 平台回溯补 {len(extra_files)} 个文件 "
-                    f"({len({fi.version for fi in extra_files})} 个老版本)"
-                )
-                files = files + extra_files
+
+            already_backfilled: dict[str, tuple[list[FileInfo] | None, bool]] = {}
+            already_warned: set[str] = set()
+
             version_files: dict[str, list[FileInfo]] = {}
             for fi in files:
                 version_files.setdefault(fi.version, []).append(fi)
@@ -568,7 +511,7 @@ def download_packages(
                 for fi in accepted_wheels:
                     _enqueue_or_skip(fi, existing_hashes, pkg_dir, files_to_download, result)
 
-                # 再处理 sdist
+                # 再处理 sdist / 平台回溯（逐版本逐平台）
                 if include_source and sdists:
                     if not accepted_wheels:
                         # 该版本没有任何符合平台要求的 wheel，下载 sdist 作为 fallback
@@ -578,15 +521,41 @@ def download_packages(
                             )
                     else:
                         missing = _TARGET_PLATFORMS - covered_platforms
-                        if missing and not has_pure_python:
-                            # 缺少平台覆盖，且不是纯 Python 包，无法提供 sdist fallback
-                            missing_list = ", ".join(sorted(missing))
-                            msg = (
-                                f"{package_name}=={version}: 缺少平台覆盖 ({missing_list})，"
-                                f"且不是纯 Python 包，无法提供 sdist fallback"
-                            )
-                            result.warnings.append(msg)
-                            logger.warning(msg)
+                        if missing and not has_pure_python and not has_pure_python_global:
+                            for target in missing:
+                                if target not in already_backfilled:
+                                    extra, is_pre = _backfill_one_target(
+                                        target, older_versions, all_versions_grouped
+                                    )
+                                    already_backfilled[target] = (extra, is_pre)
+
+                                extra, is_pre = already_backfilled[target]
+                                if extra:
+                                    for fi in extra:
+                                        _enqueue_or_skip(
+                                            fi, existing_hashes, pkg_dir,
+                                            files_to_download, result,
+                                        )
+                                    logger.info(
+                                        f"  ↻ {package_name} {version} 回溯补 {target}"
+                                    )
+                                    if is_pre and target not in already_warned:
+                                        already_warned.add(target)
+                                        msg = (
+                                            f"{package_name}: target {target} "
+                                            "仅在预发行版命中"
+                                        )
+                                        result.warnings.append(msg)
+                                        logger.warning(f"  ! {msg}")
+                                elif target not in already_warned:
+                                    already_warned.add(target)
+                                    msg = (
+                                        f"{package_name}: target {target} 在 "
+                                        f"{len(older_versions)} 个候选版本均无 "
+                                        "wheel,放弃"
+                                    )
+                                    result.warnings.append(msg)
+                                    logger.warning(f"  ! {msg}")
 
     if not files_to_download:
         logger.info("所有文件已是最新，无需下载")
