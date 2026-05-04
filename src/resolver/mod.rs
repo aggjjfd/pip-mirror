@@ -1,3 +1,3 @@
-pub mod types;
 pub mod pubgrub;
+pub mod types;
 pub mod window;

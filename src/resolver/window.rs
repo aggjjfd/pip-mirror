@@ -1,5 +1,3 @@
-
-
 /// Re-export. Thin wrapper kept in its own module for testing clarity.
 pub use super::pubgrub::compute_version_windows;
 

@@ -9,6 +9,36 @@ use super::types::TargetEnv;
 /// Result of a per-target dependency resolution.
 pub type Solution = DashMap<String, Version>;
 
+struct EntryCtx<'a> {
+    entry: dashmap::mapref::multiple::RefMulti<'a, String, Version>,
+    all_versions: &'a DashMap<String, Vec<Version>>,
+    result: &'a DashMap<String, Vec<Version>>,
+    half: usize,
+}
+
+fn process_solution_entry(ctx: EntryCtx<'_>) {
+    let pkg = ctx.entry.key();
+    let sol_ver = ctx.entry.value();
+    let Some(versions) = ctx.all_versions.get(pkg) else {
+        return;
+    };
+    let Some(idx) = versions.iter().position(|v| v == sol_ver) else {
+        ctx.result
+            .entry(pkg.clone())
+            .or_default()
+            .push(sol_ver.clone());
+        return;
+    };
+    let start = idx.saturating_sub(ctx.half);
+    let end = (idx + ctx.half + 1).min(versions.len());
+    let mut set = ctx.result.entry(pkg.clone()).or_default();
+    for v in &versions[start..end] {
+        if !set.contains(v) {
+            set.push(v.clone());
+        }
+    }
+}
+
 /// Compute version windows around all target solutions.
 /// For each package, collects all solution versions across targets,
 /// and for each solution version, takes `[idx - half, idx + half]`
@@ -23,36 +53,12 @@ pub fn compute_version_windows(
 
     for sol in target_solutions {
         for entry in sol.iter() {
-            let pkg = entry.key();
-            let sol_ver = entry.value();
-
-            let versions = match all_versions.get(pkg) {
-                Some(v) => v,
-                None => continue,
-            };
-
-            let idx = match versions.iter().position(|v| v == sol_ver) {
-                Some(i) => i,
-                None => {
-                    // solution version not in all_versions (shouldn't happen)
-                    result
-                        .entry(pkg.clone())
-                        .or_default()
-                        .push(sol_ver.clone());
-                    continue;
-                }
-            };
-
-            let start = idx.saturating_sub(half);
-            let end = (idx + half + 1).min(versions.len());
-            let window = versions[start..end].to_vec();
-
-            let mut set = result.entry(pkg.clone()).or_insert_with(Vec::new);
-            for v in window {
-                if !set.contains(&v) {
-                    set.push(v);
-                }
-            }
+            process_solution_entry(EntryCtx {
+                entry,
+                all_versions,
+                result: &result,
+                half,
+            });
         }
     }
 
@@ -92,21 +98,23 @@ pub fn bare_name(package_ref: &str) -> String {
 
 // ── placeholder resolver stub ──
 
+pub struct ResolveParams<'a> {
+    pub top_packages: &'a [String],
+    pub top_versions: &'a DashMap<String, Vec<Version>>,
+    pub pypi_url: &'a str,
+    pub workers: usize,
+    pub max_depth: usize,
+    pub max_versions: usize,
+    pub allow_prerelease: bool,
+}
+
 /// Resolve dependencies for all targets, returning computed version windows.
 ///
 /// This is a **stub** that returns empty results. The full pubgrub-based
 /// resolver will be implemented once the pubgrub API integration is complete.
-pub fn resolve_dependencies(
-    top_packages: &[String],
-    top_versions: &DashMap<String, Vec<Version>>,
-    _pypi_url: &str,
-    _workers: usize,
-    _max_depth: usize,
-    _max_versions: usize,
-    _allow_prerelease: bool,
-) -> DashMap<String, Vec<Version>> {
-    let _ = top_versions;
-    let _ = top_packages;
+pub fn resolve_dependencies(params: &ResolveParams<'_>) -> DashMap<String, Vec<Version>> {
+    let _ = params.top_versions;
+    let _ = params.top_packages;
     warn!("pubgrub resolver not yet implemented — returning empty dependency list");
     DashMap::new()
 }

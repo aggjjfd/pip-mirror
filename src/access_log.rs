@@ -36,7 +36,9 @@ impl AccessLogger {
             );
             CREATE INDEX IF NOT EXISTS idx_access_ts ON access_log(timestamp);",
         )?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn log(&self, record: &AccessRecord) -> Result<(), rusqlite::Error> {

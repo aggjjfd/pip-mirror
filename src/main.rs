@@ -67,17 +67,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     pip_mirror::logging::init(cli.verbose);
 
     match cli.command {
-        Command::Sync { config, packages, no_deps } => {
+        Command::Sync {
+            config,
+            packages,
+            no_deps,
+        } => {
             cmd_sync(config.as_deref(), packages, no_deps).await?;
         }
-        Command::SyncFull { config, packages, no_deps } => {
+        Command::SyncFull {
+            config,
+            packages,
+            no_deps,
+        } => {
             cmd_sync_full(config.as_deref(), packages, no_deps).await?;
         }
         Command::Serve { config, host, port } => {
             cmd_serve(config.as_deref(), host, port).await?;
         }
-        Command::ImportIncremental { archive, config, no_reindex, strict } => {
-            cmd_import_incremental(&archive, config.as_deref(), no_reindex, strict)?;
+        Command::ImportIncremental {
+            archive,
+            config,
+            no_reindex,
+            strict,
+        } => {
+            cmd_import_incremental(ImportIncrementalArgs {
+                archive: &archive,
+                config_path: config.as_deref(),
+                no_reindex,
+                strict,
+            })?;
         }
         Command::AccessLog { config, limit } => {
             cmd_access_log(config.as_deref(), limit)?;
@@ -101,76 +119,93 @@ async fn cmd_sync(
     Ok(())
 }
 
+fn clean_repo(repo: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    for sub in &["simple", "python-builds"] {
+        let dir = repo.join(sub);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir)?;
+        }
+    }
+    let db = repo.join(".store.db");
+    if db.exists() {
+        std::fs::remove_file(&db)?;
+    }
+    std::fs::create_dir_all(repo)?;
+    Ok(())
+}
+
+async fn download_python_builds_batch(
+    client: &reqwest::Client,
+    repo: &std::path::Path,
+) -> Result<Vec<pip_mirror::python_builds::PythonBuildEntry>, Box<dyn std::error::Error>> {
+    let entries = pip_mirror::python_builds::fetch_python_builds(client).await?;
+    let output_dir = repo.join("python-builds");
+    std::fs::create_dir_all(&output_dir)?;
+    for entry in &entries {
+        let result =
+            pip_mirror::python_builds::download_python_build(client, entry, &output_dir).await;
+        match result {
+            Ok((_, true)) => info!("  [OK] {}", entry.filename),
+            Err(e) => tracing::warn!("  [FAIL] {}: {e}", entry.filename),
+            _ => {}
+        }
+    }
+    Ok(entries)
+}
+
+fn build_python_builds_index(
+    entries: &[pip_mirror::python_builds::PythonBuildEntry],
+    repo: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut meta = serde_json::Map::new();
+    for entry in entries {
+        let mut e = serde_json::json!({ "url": format!("/python-builds/{}", entry.filename) });
+        if let Some(sha) = &entry.sha256 {
+            e["sha256"] = serde_json::Value::String(sha.clone());
+        }
+        meta.insert(entry.key.clone(), e);
+    }
+    std::fs::write(
+        repo.join("python-builds/index.json"),
+        serde_json::to_string_pretty(&meta)?,
+    )?;
+    Ok(())
+}
+
+fn pack_mirror_archive(repo: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let level = match std::env::var("PIP_MIRROR_TAR_COMPRESSION").as_deref() {
+        Ok("none") => flate2::Compression::none(),
+        _ => flate2::Compression::best(),
+    };
+    let archive = std::env::current_dir()?.join("mirror.tar.gz");
+    pip_mirror::downloader::pack_full_mirror(repo, &archive, level)?;
+    let sha_path = pip_mirror::packager::write_sha256(&archive)?;
+    let size_mb = std::fs::metadata(&archive)?.len() as f64 / 1024.0 / 1024.0;
+    info!("mirror.tar.gz : {} ({size_mb:.2} MB)", archive.display());
+    info!("mirror.sha256 : {}", sha_path.display());
+    Ok(())
+}
+
 async fn cmd_sync_full(
     config_path: Option<&std::path::Path>,
     packages: Option<Vec<String>>,
     _no_deps: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = pip_mirror::config::Config::load(config_path)?;
-    let pkgs = packages.unwrap_or(config.packages);
-    info!("全量同步: {} 个包", pkgs.len());
-
+    info!(
+        "全量同步: {} 个包",
+        packages.unwrap_or(config.packages).len()
+    );
     let repo = &config.repository_dir;
-    let simple_dir = repo.join("simple");
-    let python_dir = repo.join("python-builds");
-    let store_db = repo.join(".store.db");
 
-    if simple_dir.exists() {
-        std::fs::remove_dir_all(&simple_dir)?;
-    }
-    if python_dir.exists() {
-        std::fs::remove_dir_all(&python_dir)?;
-    }
-    if store_db.exists() {
-        std::fs::remove_file(&store_db)?;
-    }
-    std::fs::create_dir_all(repo)?;
-
+    clean_repo(repo)?;
     info!("TODO: download top packages + resolve deps + download deps (M2-M4)");
 
     let client = reqwest::Client::new();
-    let entries = pip_mirror::python_builds::fetch_python_builds(&client).await?;
-    let output_dir = repo.join("python-builds");
-    std::fs::create_dir_all(&output_dir)?;
-
-    for entry in &entries {
-        match pip_mirror::python_builds::download_python_build(&client, entry, &output_dir).await {
-            Ok((_, downloaded)) => {
-                if downloaded {
-                    info!("  [OK] {}", entry.filename);
-                }
-            }
-            Err(e) => {
-                tracing::warn!("  [FAIL] {}: {e}", entry.filename);
-            }
-        }
-    }
-
-    let mut local_metadata = serde_json::Map::new();
-    for entry in &entries {
-        let mut e = serde_json::json!({ "url": format!("/python-builds/{}", entry.filename) });
-        if let Some(sha) = &entry.sha256 {
-            e["sha256"] = serde_json::Value::String(sha.clone());
-        }
-        local_metadata.insert(entry.key.clone(), e);
-    }
-    let index_path = output_dir.join("index.json");
-    std::fs::write(&index_path, serde_json::to_string_pretty(&local_metadata)?)?;
-
+    let entries = download_python_builds_batch(&client, repo).await?;
+    build_python_builds_index(&entries, repo)?;
     pip_mirror::indexer::generate_index(repo);
-
-    let compression = match std::env::var("PIP_MIRROR_TAR_COMPRESSION").as_deref() {
-        Ok("none") => flate2::Compression::none(),
-        _ => flate2::Compression::best(),
-    };
-    let archive = std::env::current_dir()?.join("mirror.tar.gz");
-    pip_mirror::downloader::pack_full_mirror(repo, &archive, compression)?;
-    let sha_path = pip_mirror::packager::write_sha256(&archive)?;
-
-    let size_mb = std::fs::metadata(&archive)?.len() as f64 / 1024.0 / 1024.0;
-    info!("mirror.tar.gz : {} ({size_mb:.2} MB)", archive.display());
-    info!("mirror.sha256 : {}", sha_path.display());
-
+    pack_mirror_archive(repo)?;
     Ok(())
 }
 
@@ -186,14 +221,23 @@ async fn cmd_serve(
     Ok(())
 }
 
+struct ImportIncrementalArgs<'a> {
+    archive: &'a std::path::Path,
+    config_path: Option<&'a std::path::Path>,
+    no_reindex: bool,
+    strict: bool,
+}
+
 fn cmd_import_incremental(
-    archive: &std::path::Path,
-    config_path: Option<&std::path::Path>,
-    _no_reindex: bool,
-    _strict: bool,
+    args: ImportIncrementalArgs<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let config = pip_mirror::config::Config::load(config_path)?;
-    info!("解包 {} → {}", archive.display(), config.repository_dir.display());
+    let _ = (args.no_reindex, args.strict);
+    let config = pip_mirror::config::Config::load(args.config_path)?;
+    info!(
+        "解包 {} → {}",
+        args.archive.display(),
+        config.repository_dir.display()
+    );
     info!("TODO: import-incremental full logic");
     Ok(())
 }

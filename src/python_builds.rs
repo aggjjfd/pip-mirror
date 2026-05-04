@@ -23,21 +23,17 @@ pub async fn fetch_python_builds(
     client: &Client,
 ) -> Result<Vec<PythonBuildEntry>, Box<dyn std::error::Error>> {
     info!("获取 uv metadata: {UV_METADATA_URL}");
-    let resp: serde_json::Value = client
-        .get(UV_METADATA_URL)
-        .send()
-        .await?
-        .json()
-        .await?;
+    let resp: serde_json::Value = client.get(UV_METADATA_URL).send().await?.json().await?;
 
-    let mut target_entries: Vec<(String, serde_json::Value)> = Vec::new();
-    if let Some(obj) = resp.as_object() {
-        for (key, entry) in obj {
-            if is_target_entry(key, entry) {
-                target_entries.push((key.clone(), entry.clone()));
-            }
-        }
-    }
+    let target_entries: Vec<_> = resp
+        .as_object()
+        .map(|obj| {
+            obj.iter()
+                .filter(|(k, v)| is_target_entry(k, v))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
     info!("过滤后目标条目: {}", target_entries.len());
 
     let latest = group_by_platform(&target_entries);
@@ -47,7 +43,11 @@ pub async fn fetch_python_builds(
         .into_iter()
         .map(|(key, entry)| {
             let url = entry["url"].as_str().unwrap_or("").to_string();
-            let filename = url.split('/').last().unwrap_or("").to_string();
+            let filename = if let Some(pos) = url.rfind('/') {
+                url[pos + 1..].to_string()
+            } else {
+                String::new()
+            };
             PythonBuildEntry {
                 key,
                 url,
@@ -61,14 +61,18 @@ pub async fn fetch_python_builds(
 }
 
 fn is_target_entry(key: &str, entry: &serde_json::Value) -> bool {
-    if entry.get("prerelease").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if entry
+        .get("prerelease")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return false;
     }
     if entry.get("major").and_then(|v| v.as_u64()) != Some(3) {
         return false;
     }
     let minor = entry.get("minor").and_then(|v| v.as_u64());
-    if !minor.map_or(false, |m| TARGET_MINORS.contains(&(m as u32))) {
+    if !minor.is_some_and(|m| TARGET_MINORS.contains(&(m as u32))) {
         return false;
     }
     if key.contains("+debug") {
@@ -96,19 +100,33 @@ fn is_target_entry(key: &str, entry: &serde_json::Value) -> bool {
 fn group_by_platform(
     entries: &[(String, serde_json::Value)],
 ) -> HashMap<String, serde_json::Value> {
-    let mut groups: HashMap<(u64, String, String, String, String), Vec<&(String, serde_json::Value)>> =
-        HashMap::new();
+    type PlatformKey = (u64, String, String, String, String);
+    let mut groups: HashMap<PlatformKey, Vec<&(String, serde_json::Value)>> = HashMap::new();
 
     for item in entries {
         let entry = &item.1;
         let arch = entry.get("arch").unwrap();
-        let variant = arch.get("variant").and_then(|v| v.as_str()).unwrap_or("base");
+        let variant = arch
+            .get("variant")
+            .and_then(|v| v.as_str())
+            .unwrap_or("base");
         let group_key = (
             entry.get("minor").and_then(|v| v.as_u64()).unwrap_or(0),
-            entry.get("os").and_then(|o| o.as_str()).unwrap_or("").to_string(),
-            arch.get("family").and_then(|f| f.as_str()).unwrap_or("").to_string(),
+            entry
+                .get("os")
+                .and_then(|o| o.as_str())
+                .unwrap_or("")
+                .to_string(),
+            arch.get("family")
+                .and_then(|f| f.as_str())
+                .unwrap_or("")
+                .to_string(),
             variant.to_string(),
-            entry.get("libc").and_then(|l| l.as_str()).unwrap_or("").to_string(),
+            entry
+                .get("libc")
+                .and_then(|l| l.as_str())
+                .unwrap_or("")
+                .to_string(),
         );
         groups.entry(group_key).or_default().push(item);
     }
@@ -118,7 +136,7 @@ fn group_by_platform(
         items.sort_by(|a, b| {
             let a_build = a.1.get("build").and_then(|v| v.as_str()).unwrap_or("");
             let b_build = b.1.get("build").and_then(|v| v.as_str()).unwrap_or("");
-            b_build.cmp(&a_build)
+            b_build.cmp(a_build)
         });
         let best = items[0];
         result.insert(best.0.clone(), best.1.clone());
@@ -136,14 +154,13 @@ pub async fn download_python_build(
 
     // Skip if already exists and sha256 matches
     if dest.exists() {
-        if let Some(expected) = &entry.sha256 {
-            if let Ok(actual) = crate::downloader::sha256_file(&dest) {
-                if actual.to_lowercase() == expected.to_lowercase() {
-                    return Ok((dest, false)); // skipped
-                }
-            }
-        } else {
-            return Ok((dest, false)); // exists, no sha to verify
+        let skip = match &entry.sha256 {
+            Some(expected) => crate::downloader::sha256_file(&dest)
+                .is_ok_and(|a| a.to_lowercase() == expected.to_lowercase()),
+            None => true,
+        };
+        if skip {
+            return Ok((dest, false));
         }
     }
 

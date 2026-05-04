@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::{
@@ -16,6 +16,7 @@ use crate::access_log::AccessLogger;
 #[derive(Clone)]
 struct AppState {
     repo_dir: Arc<PathBuf>,
+    #[allow(dead_code)]
     access_logger: Arc<AccessLogger>,
 }
 
@@ -53,33 +54,22 @@ pub async fn start_server(
     tracing::info!("PIP 镜像服务器启动");
     tracing::info!("  地址: http://{host}:{port}");
     tracing::info!("  pip 使用: pip install --index-url http://{host}:{port}/simple <package>");
-    tracing::info!("  Python 解释器: UV_PYTHON_DOWNLOADS_JSON_URL=http://{host}:{port}/python-builds/index.json");
+    tracing::info!(
+        "  Python 解释器: UV_PYTHON_DOWNLOADS_JSON_URL=http://{host}:{port}/python-builds/index.json"
+    );
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-async fn serve_simple(
-    State(state): State<AppState>,
-    axum::extract::Path(tail): axum::extract::Path<String>,
-    req: axum::extract::Request,
-) -> Response {
-    let simple_base = state.repo_dir.join("simple");
+/// Determine the file path to serve: either index.html (for dirs) or the file itself.
+fn resolve_serve_path(base: &Path, tail: &str) -> (PathBuf, PathBuf) {
     let path = if tail.is_empty() {
-        simple_base.clone()
+        base.to_path_buf()
     } else {
-        simple_base.join(&tail)
+        base.join(tail)
     };
-
-    // Content negotiation: JSON vs HTML
-    let accept = req
-        .headers()
-        .get(header::ACCEPT)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    // Try index.json first for PEP 691 clients
     let json_path = if path.is_dir() {
         path.join("index.json")
     } else {
@@ -88,26 +78,43 @@ async fn serve_simple(
             path.file_name().unwrap_or_default().to_string_lossy()
         ))
     };
-
-    if accept.contains("application/vnd.pypi.simple.v1+json") {
-        if json_path.exists() {
-            match tokio::fs::read(&json_path).await {
-                Ok(body) => return Response::builder()
-                    .status(200)
-                    .header("Content-Type", "application/vnd.pypi.simple.v1+json")
-                    .body(axum::body::Body::from(body))
-                    .unwrap(),
-                Err(_) => {}
-            }
-        }
-    }
-
-    // Default: serve HTML index or file
     let serve_path = if path.is_dir() {
         path.join("index.html")
     } else {
         path
     };
+    (json_path, serve_path)
+}
+
+fn try_serve_json(body: Vec<u8>) -> Response {
+    Response::builder()
+        .status(200)
+        .header("Content-Type", "application/vnd.pypi.simple.v1+json")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
+async fn serve_simple(
+    State(state): State<AppState>,
+    axum::extract::Path(tail): axum::extract::Path<String>,
+    req: axum::extract::Request,
+) -> Response {
+    let simple_base = state.repo_dir.join("simple");
+    let (json_path, serve_path) = resolve_serve_path(&simple_base, &tail);
+
+    let accept = req
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    // PEP 691 JSON content negotiation
+    if accept.contains("application/vnd.pypi.simple.v1+json")
+        && json_path.exists()
+        && let Ok(body) = tokio::fs::read(&json_path).await
+    {
+        return try_serve_json(body);
+    }
 
     if !serve_path.exists() {
         return (StatusCode::NOT_FOUND, "Not Found").into_response();
@@ -115,7 +122,7 @@ async fn serve_simple(
 
     match tokio::fs::read(&serve_path).await {
         Ok(body) => {
-            let content_type = if serve_path.extension().map_or(false, |e| e == "json") {
+            let content_type = if serve_path.extension().is_some_and(|e| e == "json") {
                 "application/vnd.pypi.simple.v1+json"
             } else {
                 "application/vnd.pypi.simple.v1+html"
@@ -128,6 +135,20 @@ async fn serve_simple(
                 .unwrap()
         }
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Read error").into_response(),
+    }
+}
+
+fn rewrite_relative_urls(data: &mut serde_json::Value, base: &str) {
+    let Some(obj) = data.as_object_mut() else {
+        return;
+    };
+    for entry in obj.values_mut() {
+        let Some(url) = entry.get("url").and_then(|u| u.as_str()) else {
+            continue;
+        };
+        if url.starts_with('/') {
+            entry["url"] = serde_json::Value::String(format!("{base}{url}"));
+        }
     }
 }
 
@@ -146,29 +167,14 @@ async fn serve_python_builds_index(
         Err(_) => return (StatusCode::NOT_FOUND, "python-builds index not found").into_response(),
     };
 
-    let base = format!("http://{host}");
-    let data: serde_json::Value = match serde_json::from_str(&body) {
+    let mut data: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to parse index.json: {e}"),
-            )
-                .into_response()
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed: {e}")).into_response();
         }
     };
 
-    // Rewrite relative URLs to absolute
-    let mut data = data;
-    if let Some(obj) = data.as_object_mut() {
-        for entry in obj.values_mut() {
-            if let Some(url) = entry.get("url").and_then(|u| u.as_str()) {
-                if url.starts_with('/') {
-                    entry["url"] = serde_json::Value::String(format!("{base}{url}"));
-                }
-            }
-        }
-    }
+    rewrite_relative_urls(&mut data, &format!("http://{host}"));
 
     let body = serde_json::to_string_pretty(&data).unwrap();
     Response::builder()

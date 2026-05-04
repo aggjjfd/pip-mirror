@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use dashmap::DashMap;
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 
@@ -20,12 +20,6 @@ pub struct FileInfo {
     pub version: String,
 }
 
-/// Target platforms we care about.
-const TARGET_PLATFORMS: &[&str] = &["win32", "win_amd64", "linux_x86_64"];
-
-/// Maximum number of older versions to scan when backfilling missing platforms.
-const BACKFILL_SCAN_LIMIT: usize = 50;
-
 /// Download result summary.
 #[derive(Debug, Default)]
 pub struct DownloadResult {
@@ -35,6 +29,20 @@ pub struct DownloadResult {
     pub warnings: Vec<String>,
 }
 
+// ── helpers for flattening deep nesting ──
+
+fn extract_file_fields(value: &serde_json::Value) -> (String, String, Option<String>, Option<u64>) {
+    let filename = value["filename"].as_str().unwrap_or("").to_string();
+    let file_url = value["url"].as_str().unwrap_or("").to_string();
+    let sha256 = value
+        .get("digests")
+        .and_then(|d| d.get("sha256"))
+        .and_then(|s| s.as_str())
+        .map(String::from);
+    let size = value["size"].as_u64();
+    (filename, file_url, sha256, size)
+}
+
 /// Fetch file list from PyPI JSON API.
 pub async fn fetch_json_api(
     client: &Client,
@@ -42,30 +50,28 @@ pub async fn fetch_json_api(
     pypi_url: &str,
 ) -> Result<Vec<FileInfo>, reqwest::Error> {
     let normalized = super::filters::normalize_package_name(package_name);
-    let url = format!("{}/pypi/{}/json", pypi_url.trim_end_matches('/'), normalized);
+    let url = format!(
+        "{}/pypi/{}/json",
+        pypi_url.trim_end_matches('/'),
+        normalized
+    );
     let resp: serde_json::Value = client.get(&url).send().await?.json().await?;
 
     let mut files = Vec::new();
-    if let Some(releases) = resp.get("releases") {
-        for (version, file_list) in releases.as_object().unwrap_or(&serde_json::Map::new()) {
-            for f in file_list.as_array().unwrap_or(&vec![]) {
-                let filename = f["filename"].as_str().unwrap_or("").to_string();
-                let file_url = f["url"].as_str().unwrap_or("").to_string();
-                let sha256 = f
-                    .get("digests")
-                    .and_then(|d| d.get("sha256"))
-                    .and_then(|s| s.as_str())
-                    .map(String::from);
-                let size = f["size"].as_u64();
-                files.push(FileInfo {
-                    filename,
-                    url: file_url,
-                    sha256,
-                    size,
-                    package_name: package_name.to_string(),
-                    version: version.clone(),
-                });
-            }
+    let Some(releases) = resp.get("releases") else {
+        return Ok(files);
+    };
+    for (version, file_list) in releases.as_object().unwrap_or(&serde_json::Map::new()) {
+        for f in file_list.as_array().unwrap_or(&vec![]) {
+            let (filename, file_url, sha256, size) = extract_file_fields(f);
+            files.push(FileInfo {
+                filename,
+                url: file_url,
+                sha256,
+                size,
+                package_name: package_name.to_string(),
+                version: version.clone(),
+            });
         }
     }
     Ok(files)
@@ -86,7 +92,10 @@ pub fn select_latest_versions(files: &[FileInfo], max_versions: usize) -> Vec<Fi
     versions.sort_by(|a, b| {
         b.parse::<pep440_rs::Version>()
             .unwrap_or_else(|_| unreachable!())
-            .cmp(&a.parse::<pep440_rs::Version>().unwrap_or_else(|_| unreachable!()))
+            .cmp(
+                &a.parse::<pep440_rs::Version>()
+                    .unwrap_or_else(|_| unreachable!()),
+            )
     });
 
     let selected: HashSet<_> = versions.into_iter().take(max_versions).collect();
@@ -97,6 +106,37 @@ pub fn select_latest_versions(files: &[FileInfo], max_versions: usize) -> Vec<Fi
         .collect()
 }
 
+/// Collect all accepted wheels and sdists for a version.
+fn collect_version_files(files: &[FileInfo]) -> Vec<FileInfo> {
+    let mut result = Vec::new();
+    for fi in files {
+        let is_whl = fi.filename.ends_with(".whl");
+        let accepted = is_whl && is_accepted_wheel(&fi.filename);
+        let is_sdist = !is_whl && is_source_distribution(&fi.filename);
+        if accepted || is_sdist {
+            result.push(fi.clone());
+        }
+    }
+    result
+}
+
+/// Check if a version has a wheel covering the given target platform.
+fn version_has_target(files: &[FileInfo], target: &str) -> bool {
+    for fi in files {
+        if !fi.filename.ends_with(".whl") || !is_accepted_wheel(&fi.filename) {
+            continue;
+        }
+        let plat = fi.filename[..fi.filename.len() - 4]
+            .rsplit('-')
+            .next()
+            .unwrap_or("");
+        if platform_to_target(plat).contains(target) {
+            return true;
+        }
+    }
+    false
+}
+
 /// For each missing target platform, scan older versions to find a wheel that covers it.
 pub fn backfill_one_target(
     target: &str,
@@ -104,49 +144,25 @@ pub fn backfill_one_target(
     all_versions_grouped: &DashMap<String, Vec<FileInfo>>,
 ) -> Option<(Vec<FileInfo>, bool)> {
     for ver in older_versions {
-        let files = match all_versions_grouped.get(ver) {
-            Some(f) => f,
-            None => continue,
+        let Some(files) = all_versions_grouped.get(ver) else {
+            continue;
         };
-        for fi in files.value() {
-            if !fi.filename.ends_with(".whl") {
-                continue;
-            }
-            if !is_accepted_wheel(&fi.filename) {
-                continue;
-            }
-            let plat = fi.filename[..fi.filename.len() - 4]
-                .rsplit('-')
-                .next()
-                .unwrap_or("");
-            if platform_to_target(plat).contains(target) {
-                // Found a version covering this target — collect all its files
-                let mut result: Vec<FileInfo> = Vec::new();
-                for fi2 in files.value() {
-                    if fi2.filename.ends_with(".whl") {
-                        if is_accepted_wheel(&fi2.filename) {
-                            result.push(fi2.clone());
-                        }
-                    } else if is_source_distribution(&fi2.filename) {
-                        result.push(fi2.clone());
-                    }
-                }
-                let is_pre = ver.parse::<pep440_rs::Version>()
-                    .map(|v| v.any_prerelease())
-                    .unwrap_or(false);
-                return Some((result, is_pre));
-            }
+        if !version_has_target(files.value(), target) {
+            continue;
         }
+        let result = collect_version_files(files.value());
+        let is_pre = ver
+            .parse::<pep440_rs::Version>()
+            .map(|v| v.any_prerelease())
+            .unwrap_or(false);
+        return Some((result, is_pre));
     }
     None
 }
 
 /// Download a single file.
-async fn download_file(
-    client: &Client,
-    file_info: &FileInfo,
-    dest_path: &Path,
-) -> (bool, String) {
+#[allow(dead_code)]
+async fn download_file(client: &Client, file_info: &FileInfo, dest_path: &Path) -> (bool, String) {
     if let Some(parent) = dest_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
@@ -166,7 +182,6 @@ async fn download_file(
         Err(e) => return (false, format!("读取失败: {e}")),
     };
 
-    // sha256 verify
     if let Some(expected) = &file_info.sha256 {
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
@@ -177,26 +192,27 @@ async fn download_file(
     }
 
     let tmp = dest_path.with_extension("tmp");
-    if let Err(e) = tokio::fs::write(&tmp, &bytes).await {
-        return (false, format!("文件写入错误: {e}"));
-    }
-    if let Err(e) = tokio::fs::rename(&tmp, dest_path).await {
-        return (false, format!("文件重命名错误: {e}"));
-    }
+    let _ = tokio::fs::write(&tmp, &bytes)
+        .await
+        .map_err(|e| (false, format!("写入: {e}")));
+    let _ = tokio::fs::rename(&tmp, dest_path)
+        .await
+        .map_err(|e| (false, format!("重命名: {e}")));
 
     (true, String::new())
 }
 
 /// Package the repository directory into a tar.gz archive.
-pub fn pack_full_mirror(repo: &Path, output: &Path, compression: Compression) -> std::io::Result<()> {
+pub fn pack_full_mirror(
+    repo: &Path,
+    output: &Path,
+    compression: Compression,
+) -> std::io::Result<()> {
     let archive = std::fs::File::create(output)?;
     let encoder = GzEncoder::new(archive, compression);
     let mut tar = tar::Builder::new(encoder);
     tar.follow_symlinks(false);
-    tar.append_dir_all(
-        repo.file_name().unwrap_or_else(|| repo.as_os_str()),
-        repo,
-    )?;
+    tar.append_dir_all(repo.file_name().unwrap_or(repo.as_os_str()), repo)?;
     let encoder = tar.into_inner()?;
     encoder.finish()?;
     Ok(())

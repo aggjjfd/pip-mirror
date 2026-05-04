@@ -32,17 +32,7 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
-      - name: Cyclomatic complexity check
+      - name: Cyclomatic complexity + file NLOC
         run: |
-          cargo install cargo-cyclomatic-complexity
-          cargo cyclomatic-complexity --limit 10
-
-      - name: File line count check
-        run: |
-          for f in $(find src -name '*.rs'); do
-            lines=$(wc -l < "$f")
-            if [ "$lines" -gt 350 ]; then
-              echo "ERROR: $f has $lines lines (max 350)"
-              exit 1
-            fi
-          done
+          cargo install lynx_eye
+          python3 scripts/check-complexity.py

@@ -1,0 +1,37 @@
+# 代码复杂度门禁 (pre-commit hooks)
+#
+# 覆盖矩阵（对照 code-complexity-guardrails 基线）:
+#   参数 ≤3              → cargo clippy (too_many_arguments)           [精确覆盖]
+#   函数非空行数 ≤50      → cargo clippy (too_many_lines)              [精确覆盖]
+#   嵌套深度 ≤3           → cargo clippy (excessive_nesting)           [精确覆盖]
+#   圈复杂度 ≤10          → scripts/check-complexity.py (lynx_eye)     [独立工具补]
+#   文件 NLOC ≤350        → scripts/check-complexity.py (lynx_eye)     [独立工具补]
+#   魔法数字               → 无原生规则, #[deny] 代理                   [代理覆盖]
+#
+# 安装: pre-commit install
+# 前置: cargo install lynx_eye
+
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy (params ≤3, lines ≤50, nesting ≤3)
+        entry: cargo clippy -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: complexity
+        name: CCN ≤10 + Score ≤60 + 文件 NLOC ≤350
+        entry: python3 scripts/check-complexity.py
+        language: system
+        types: [rust]
+        pass_filenames: false
+        require_serial: true

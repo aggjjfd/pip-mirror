@@ -1,12 +1,20 @@
+use std::path::Path;
 use std::sync::Mutex;
 
 use dashmap::DashMap;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
-use std::path::Path;
 
 pub struct DownloadStore {
     conn: Mutex<Connection>,
+}
+
+pub struct FileRecord<'a> {
+    pub filename: &'a str,
+    pub package_name: &'a str,
+    pub version: &'a str,
+    pub sha256: &'a str,
+    pub size: Option<u64>,
 }
 
 impl DownloadStore {
@@ -26,27 +34,26 @@ impl DownloadStore {
             CREATE INDEX IF NOT EXISTS idx_dl_package ON downloaded_files(package_name);
             CREATE INDEX IF NOT EXISTS idx_dl_filename ON downloaded_files(filename);",
         )?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
-    pub fn add_file(
-        &self,
-        filename: &str,
-        package_name: &str,
-        version: &str,
-        sha256: &str,
-        size: Option<u64>,
-    ) -> Result<(), rusqlite::Error> {
+    pub fn add_file(&self, rec: &FileRecord<'_>) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO downloaded_files (filename, package_name, version, sha256, size)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![filename, package_name, version, sha256, size],
+            rusqlite::params![rec.filename, rec.package_name, rec.version, rec.sha256, rec.size],
         )?;
         Ok(())
     }
 
-    pub fn set_metadata_sha256(&self, filename: &str, meta_sha256: &str) -> Result<(), rusqlite::Error> {
+    pub fn set_metadata_sha256(
+        &self,
+        filename: &str,
+        meta_sha256: &str,
+    ) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE downloaded_files SET metadata_sha256 = ?1 WHERE filename = ?2",
@@ -55,42 +62,33 @@ impl DownloadStore {
         Ok(())
     }
 
-    pub fn get_all_hashes(&self) -> DashMap<String, String> {
+    fn collect_hash_map(conn: &Connection, query: &str) -> DashMap<String, String> {
         let map = DashMap::new();
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = match conn.prepare("SELECT filename, sha256 FROM downloaded_files") {
-            Ok(s) => s,
-            Err(_) => return map,
+        let Ok(mut stmt) = conn.prepare(query) else {
+            return map;
         };
-        let rows = stmt.query_map([], |row| {
+        let Ok(rows) = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        });
-        if let Ok(rows) = rows {
-            for row in rows.flatten() {
-                map.insert(row.0, row.1);
-            }
+        }) else {
+            return map;
+        };
+        for row in rows.flatten() {
+            map.insert(row.0, row.1);
         }
         map
     }
 
-    pub fn get_all_metadata_hashes(&self) -> DashMap<String, String> {
-        let map = DashMap::new();
+    pub fn get_all_hashes(&self) -> DashMap<String, String> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = match conn.prepare(
+        Self::collect_hash_map(&conn, "SELECT filename, sha256 FROM downloaded_files")
+    }
+
+    pub fn get_all_metadata_hashes(&self) -> DashMap<String, String> {
+        let conn = self.conn.lock().unwrap();
+        Self::collect_hash_map(
+            &conn,
             "SELECT filename, metadata_sha256 FROM downloaded_files WHERE metadata_sha256 IS NOT NULL",
-        ) {
-            Ok(s) => s,
-            Err(_) => return map,
-        };
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        });
-        if let Ok(rows) = rows {
-            for row in rows.flatten() {
-                map.insert(row.0, row.1);
-            }
-        }
-        map
+        )
     }
 
     pub fn hash_file(path: &Path) -> Result<String, std::io::Error> {

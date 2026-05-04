@@ -3,10 +3,10 @@ use std::fmt;
 /// Target environment: (Python version, platform).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TargetEnv {
-    pub python_version: String,       // "3.12"
-    pub python_full_version: String,  // "3.12.0"
-    pub sys_platform: String,         // "linux" / "win32"
-    pub platform_machine: String,     // "x86_64" / "AMD64" / "x86"
+    pub python_version: String,      // "3.12"
+    pub python_full_version: String, // "3.12.0"
+    pub sys_platform: String,        // "linux" / "win32"
+    pub platform_machine: String,    // "x86_64" / "AMD64" / "x86"
 }
 
 impl fmt::Display for TargetEnv {
@@ -22,11 +22,7 @@ impl fmt::Display for TargetEnv {
 /// All 21 targets: 7 Python versions × 3 platforms.
 pub fn all_targets() -> [TargetEnv; 21] {
     let py_versions = ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"];
-    let platforms = [
-        ("linux", "x86_64"),
-        ("win32", "x86"),
-        ("win32", "AMD64"),
-    ];
+    let platforms = [("linux", "x86_64"), ("win32", "x86"), ("win32", "AMD64")];
 
     std::array::from_fn(|i| {
         let pv_idx = i / 3;
