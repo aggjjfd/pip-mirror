@@ -12,6 +12,17 @@
 
 ## 安装
 
+**Rust 版**（推荐）：
+
+```bash
+git clone https://github.com/aggjjfd/pip-mirror.git
+cd pip-mirror
+cargo build --release
+./target/release/pip-mirror --help
+```
+
+**Python 版**（main 分支，功能完整但较慢）：
+
 ```bash
 git clone https://github.com/aggjjfd/pip-mirror.git
 cd pip-mirror
@@ -161,7 +172,7 @@ docker build -t pip-mirror:latest .
 docker compose build
 ```
 
-`Dockerfile` 是 multi-stage,镜像体积大约 130 MB。镜像里不含 `packages/`,运行时通过 volume 挂载来注入仓库数据。
+`Dockerfile` 是 musl 静态编译 + scratch,镜像体积约 10 MB。镜像里不含 `packages/`,运行时通过 volume 挂载来注入仓库数据。
 
 ## 配置
 
