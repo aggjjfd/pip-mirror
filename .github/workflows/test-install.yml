@@ -48,6 +48,7 @@ jobs:
     needs: sync
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python: ['3.8', '3.11', '3.12', '3.13']
     steps:
@@ -84,6 +85,7 @@ jobs:
     env:
       PYTHONIOENCODING: utf-8
     strategy:
+      fail-fast: false
       matrix:
         python: ['3.8', '3.11', '3.12', '3.13']
     steps:
