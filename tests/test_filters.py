@@ -42,6 +42,11 @@ class TestIsAcceptedWheel:
             "foo-1.0-py3-none-win32.whl",
             # 复合接受 tag（两个都是接受的 manylinux 标准）
             "foo-1.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+            # PEP 600 无限版本号 fallback: 不在白名单但含 manylinux + x86_64
+            "foo-1.0-py3-none-manylinux_2_27_x86_64.whl",
+            "foo-1.0-py3-none-manylinux_2_31_x86_64.whl",
+            # 复合 tag 中一个不在白名单、一个 fallback 也能过
+            "foo-1.0-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
         ],
     )
     def test_accepted(self, filename: str) -> None:

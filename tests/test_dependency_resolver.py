@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pip_mirror.dependency_resolver import _get_all_versions, extract_extras
+from pip_mirror.dependency_resolver import (
+    ResolvedDep,
+    _filter_versions,
+    _get_all_versions,
+    extract_extras,
+    resolve_dependencies,
+)
 
 
 def test_extract_extras_no_brackets() -> None:
@@ -103,4 +110,54 @@ def test_get_all_versions_fallback_when_only_prereleases(
         "only-pre" in rec.message and "仅有预发行版" in rec.message and "回退" in rec.message
         for rec in caplog.records
     ), f"应有 fallback warning 日志, got: {[r.message for r in caplog.records]}"
+
+
+# ---------- _filter_versions 对矛盾 spec 返回空 ----------
+
+
+def test_filter_versions_conflicting_spec() -> None:
+    """矛盾约束(如 >=2.0 且 <1.0)导致过滤后版本为空."""
+    versions = ["2.0.0", "1.26.0", "1.21.0", "0.9.0"]
+    result = _filter_versions(versions, ">=2.0,<1.0")
+    assert result == []
+
+
+# ---------- resolve_dependencies 约束矛盾回退 ----------
+
+
+def test_resolve_fallback_on_conflicting_spec(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """约束矛盾导致 filtered=0 时,回退无约束下载 latest 版本,merged_spec 设为空."""
+    with caplog.at_level("WARNING", logger="pip-mirror"), \
+            patch("pip_mirror.dependency_resolver._resolve_one_layer") as mock_layer, \
+            patch("pip_mirror.dependency_resolver._get_all_versions") as mock_versions, \
+            patch("pip_mirror.dependency_resolver.make_session") as mock_session:
+        # depth=1: pandas 依赖 numpy,约束矛盾; depth=2: numpy 无新依赖
+        mock_layer.side_effect = [
+            {"numpy": [">=2.0", "<1.0"]},
+            {},
+        ]
+        mock_versions.return_value = ["2.0.0", "1.26.0", "1.21.0"]
+        mock_cm = MagicMock()
+        mock_cm.__enter__ = MagicMock(return_value=MagicMock())
+        mock_cm.__exit__ = MagicMock(return_value=False)
+        mock_session.return_value = mock_cm
+
+        result = resolve_dependencies(
+            top_packages=["pandas"],
+            top_versions={"pandas": ["2.0.0"]},
+            pypi_url="https://pypi.org",
+            workers=1,
+        )
+
+        assert "numpy" in result
+        dep = result["numpy"]
+        assert isinstance(dep, ResolvedDep)
+        assert dep.versions == ["2.0.0", "1.26.0", "1.21.0"]
+        assert dep.merged_spec == ""
+        assert any(
+            "约束矛盾" in rec.message and "回退无约束" in rec.message
+            for rec in caplog.records
+        ), f"应有回退 warning, got: {[r.message for r in caplog.records]}"
 

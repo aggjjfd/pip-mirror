@@ -398,6 +398,19 @@ def resolve_dependencies(
                             merged_spec=merged_spec,
                             all_versions=all_versions,
                         )
+                    elif all_versions:
+                        # 约束矛盾(如不同路径的 marker 条件冲突)导致过滤后为空,
+                        # 回退无约束下载最新版本,避免包完全失踪
+                        fallback = all_versions[:limit]
+                        logger.warning(
+                            f"  ! {dep_name}: 约束矛盾(filtered=0),"
+                            f"回退无约束下载 latest {len(fallback)} 版本"
+                        )
+                        result[dep_name] = ResolvedDep(
+                            versions=fallback,
+                            merged_spec="",
+                            all_versions=all_versions,
+                        )
                     else:
                         missing.append(dep_name)
 

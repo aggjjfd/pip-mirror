@@ -84,6 +84,9 @@ def is_accepted_wheel(filename: str) -> bool:
     for sub in sub_tags:
         if sub in _ACCEPTED_PLATFORMS:
             return True
+        # PEP 600 manylinux 标准版本号不可穷举,只要含 manylinux + x86_64 就接受
+        if "manylinux" in sub and "x86_64" in sub:
+            return True
 
     return False
 
