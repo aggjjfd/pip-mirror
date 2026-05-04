@@ -5,16 +5,17 @@
 #   ./packages 挂到 /repo/packages,内含 simple/、python-builds/ 与
 #   .store.db / .access_log.db。容器重启数据全部保留在 host。
 #
-# 启动后:
-#   1) 把外网跑出的 mirror.tar.gz 解压到 ./packages
-#      tar -xzf mirror.tar.gz -C .
-#   2) docker compose up -d
-#   3) 客户端走 http://<host-ip>:8080/simple
+# 部署流程(全量首次):
+#   1) 在外网机上 `pip-mirror sync-full` 产出 mirror.tar.gz + mirror.sha256
+#      (或从 GitHub Actions 的 sync 工作流 artifact 下载)
+#   2) 拷到内网 host,在本目录下 `tar -xzf mirror.tar.gz` 解出 ./packages
+#   3) docker compose up -d
+#   4) 客户端走 http://<host-ip>:8080/simple
 #
-# 增量更新(B 方案):
-#   1) 把外网新生成的 incremental_*.tar.gz 拷到 host 任意位置
+# 增量更新:
+#   1) 外网机 `pip-mirror sync` 后,把 incremental/incremental_*.tar.gz 拷到 host
 #   2) docker compose exec pip-mirror pip-mirror import-incremental \
-#         /path/to/incremental_*.tar.gz
+#         /repo/packages/incremental_*.tar.gz
 #      (容器内的 ./packages == host 的 ./packages)
 #
 services:

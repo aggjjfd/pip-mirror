@@ -12,6 +12,8 @@ env/
 # Downloaded packages (not source code)
 packages/
 incremental/
+mirror.tar.gz
+mirror.sha256
 state.json
 
 # Secrets

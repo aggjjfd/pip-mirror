@@ -1,27 +1,25 @@
 name: Sync PyPI Mirror
 
 on:
-  # 手动触发，支持参数
   workflow_dispatch:
     inputs:
       packages:
-        description: '要同步的包列表（空格分隔，空则使用配置文件中默认的）'
+        description: '要同步的包列表(空格分隔,空则使用配置文件中默认的)'
         required: false
         default: ''
       max_versions:
-        description: '每个包保留的最新版本数'
+        description: '每个包保留的最新版本数(留空走 config)'
         required: false
-        default: '5'
+        default: ''
       no_deps:
         description: '是否跳过依赖下载'
         required: false
         default: 'false'
       index_url:
-        description: 'PyPI 镜像源 URL'
+        description: 'PyPI 镜像源 URL(留空走 config)'
         required: false
-        default: 'https://mirrors.ustc.edu.cn/pypi/simple'
+        default: ''
 
-  # 定时触发：每周一凌晨 3 点
   schedule:
     - cron: '0 3 * * 1'
 
@@ -50,41 +48,61 @@ jobs:
       - name: Install dependencies
         run: uv sync --no-dev
 
+      - name: Override config from inputs
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          python <<'PY'
+          import re
+          from pathlib import Path
+
+          MAX_VERSIONS = "${{ github.event.inputs.max_versions }}"
+          INDEX_URL = "${{ github.event.inputs.index_url }}"
+          path = Path("pyproject.toml")
+          text = path.read_text(encoding="utf-8")
+
+          if MAX_VERSIONS.strip():
+              text = re.sub(
+                  r"(?m)^(max_versions\s*=\s*)\d+",
+                  f"\\g<1>{int(MAX_VERSIONS)}",
+                  text,
+              )
+              print(f"max_versions overridden -> {MAX_VERSIONS}")
+
+          if INDEX_URL.strip():
+              text = re.sub(
+                  r"(?m)^(index_url\s*=\s*).+$",
+                  f'\\g<1>"{INDEX_URL}"',
+                  text,
+              )
+              if "index_url" not in text:
+                  text += f'\nindex_url = "{INDEX_URL}"\n'
+              print(f"index_url overridden -> {INDEX_URL}")
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
       - name: Show config
         run: |
           echo "===== 同步配置 ====="
-          echo "PyPI 镜像源: ${{ github.event.inputs.index_url || 'https://mirrors.ustc.edu.cn/pypi/simple' }}"
-          echo "最大版本数: ${{ github.event.inputs.max_versions || '5' }}"
-          echo "跳过依赖: ${{ github.event.inputs.no_deps || 'false' }}"
-          if [ -n "${{ github.event.inputs.packages }}" ]; then
-            echo "指定包: ${{ github.event.inputs.packages }}"
-          else
-            echo "使用 pyproject.toml 默认包列表"
-            grep -A 50 '\[tool.pip-mirror\]' pyproject.toml | grep 'packages' -A 40 || true
-          fi
+          grep -A 50 '\[tool.pip-mirror\]' pyproject.toml | head -60 || true
           echo "===================="
 
-      - name: Sync packages
+      - name: Run sync-full
         id: sync
         run: |
           mkdir -p packages incremental
 
-          SYNC_ARGS=""
+          ARGS=""
           if [ -n "${{ github.event.inputs.packages }}" ]; then
-            SYNC_ARGS="$SYNC_ARGS --packages ${{ github.event.inputs.packages }}"
+            ARGS="$ARGS --packages ${{ github.event.inputs.packages }}"
           fi
           if [ "${{ github.event.inputs.no_deps }}" = "true" ]; then
-            SYNC_ARGS="$SYNC_ARGS --no-deps"
+            ARGS="$ARGS --no-deps"
           fi
 
-          echo "===== 开始同步 ====="
-          uv run pip-mirror sync --no-pack $SYNC_ARGS 2>&1 | tee sync.log
-          SYNC_EXIT=${PIPESTATUS[0]}
-          echo "===== 同步结束 (exit=$SYNC_EXIT) ====="
-          exit $SYNC_EXIT
-
-      - name: Sync Python builds
-        run: uv run pip-mirror sync-python --workers 4 2>&1 | tee -a sync.log
+          echo "===== 开始全量同步 ====="
+          uv run pip-mirror sync-full $ARGS 2>&1 | tee sync.log
+          echo "===== 全量同步结束 ====="
 
       - name: Generate report
         if: always()
@@ -104,7 +122,6 @@ jobs:
 
           echo "--- 仓库目录大小 ---" >> report.txt
           du -sh packages/ 2>/dev/null || echo "packages/ 不存在" >> report.txt
-          du -sh incremental/ 2>/dev/null || echo "incremental/ 不存在" >> report.txt
           echo "" >> report.txt
 
           echo "--- 各包目录大小 ---" >> report.txt
@@ -123,22 +140,14 @@ jobs:
           fi
           echo "" >> report.txt
 
-          echo "--- 增量包列表 ---" >> report.txt
-          ls -lh incremental/ 2>/dev/null || echo "无增量包" >> report.txt
+          echo "--- 全量包 ---" >> report.txt
+          ls -lh mirror.tar.gz mirror.sha256 2>/dev/null || echo "未生成 mirror.tar.gz" >> report.txt
           echo "" >> report.txt
 
           echo "--- 最近日志 (末尾 100 行) ---" >> report.txt
           tail -n 100 sync.log 2>/dev/null >> report.txt
 
           cat report.txt
-
-      - name: Pack mirror tar.gz (gzip -9)
-        if: success()
-        run: |
-          echo "===== 打高密度全量包 ====="
-          tar -I 'gzip -9' -cf mirror.tar.gz -C . packages/
-          ls -lh mirror.tar.gz
-          sha256sum mirror.tar.gz | tee mirror.sha256
 
       - name: Upload artifacts
         if: always()

@@ -7,12 +7,15 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Literal
 from urllib.parse import unquote
 
 import requests
 from tqdm import tqdm
 
 from ._session import make_session
+
+DownloadStatus = Literal["downloaded", "skipped", "failed"]
 
 logger = logging.getLogger("pip-mirror")
 
@@ -90,17 +93,18 @@ def _download_one(
     url: str,
     dest: Path,
     expected_sha256: str | None,
-) -> bool:
-    """下载单个文件，存在且 sha256 匹配则跳过.
+) -> DownloadStatus:
+    """下载单个文件,返回三态结果.
 
     Returns:
-        True 如果文件已存在且匹配（跳过），或下载成功
-        False 如果下载/校验失败
+        "skipped"    : 文件已存在且 sha256 匹配
+        "downloaded" : 本次实际下载完成
+        "failed"     : 下载或校验失败
     """
     if dest.exists() and expected_sha256:
         actual = hashlib.sha256(dest.read_bytes()).hexdigest()
         if actual.lower() == expected_sha256.lower():
-            return True
+            return "skipped"
 
     try:
         resp = session.get(url, timeout=300, stream=True)
@@ -119,19 +123,19 @@ def _download_one(
             if actual.lower() != expected_sha256.lower():
                 logger.error(f"sha256 校验失败: {dest.name}")
                 tmp.unlink(missing_ok=True)
-                return False
+                return "failed"
 
         tmp.rename(dest)
-        return True
+        return "downloaded"
     except Exception as e:
         logger.error(f"下载失败 {url}: {e}")
-        return False
+        return "failed"
 
 
 def sync_python_builds(
     repository_dir: Path,
     workers: int = 4,
-) -> Path:
+) -> tuple[Path, list[Path]]:
     """同步 Python 解释器并生成 index.json.
 
     Args:
@@ -139,10 +143,12 @@ def sync_python_builds(
         workers: 并发下载线程数
 
     Returns:
-        生成的 index.json 路径
+        (index.json 路径, 本次实际新下载的文件路径列表)
     """
     output_dir = repository_dir / "python-builds"
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    new_files: list[Path] = []
 
     with make_session() as session:
         metadata = _fetch_uv_metadata(session)
@@ -182,12 +188,12 @@ def sync_python_builds(
                 for future in as_completed(futures):
                     key, dest = futures[future]
                     try:
-                        success = future.result()
-                        if success:
-                            if dest.exists() and dest.stat().st_size > 0:
-                                downloaded += 1
-                            else:
-                                skipped += 1
+                        status = future.result()
+                        if status == "downloaded":
+                            downloaded += 1
+                            new_files.append(dest)
+                        elif status == "skipped":
+                            skipped += 1
                         else:
                             failed += 1
                     except Exception as e:
@@ -214,4 +220,4 @@ def sync_python_builds(
     )
     logger.info(f"index.json 已生成: {index_path} ({len(local_metadata)} 个条目)")
 
-    return index_path
+    return index_path, new_files

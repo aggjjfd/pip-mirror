@@ -3,45 +3,47 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import logging
+import shutil
 import sys
+import tarfile
 from pathlib import Path
 
 from .access_logger import AccessLogger
 from .config import Config, write_example_config
 from .dependency_resolver import extract_extras, resolve_dependencies
-from .downloader import download_packages
+from .downloader import _extract_version_from_filename, download_packages
 from .indexer import generate_index
 from .log import setup_logging
 from .packager import create_incremental_package
 from .python_downloader import sync_python_builds
 from .server import start_server
+from .sqlite_store import DownloadStore
 
 logger = logging.getLogger("pip-mirror")
 
 
-def _cmd_sync(args: argparse.Namespace) -> int:
-    """执行同步命令."""
-    config = Config.load(Path(args.config) if args.config else None)
+# ============================================================================
+#                           内部:wheel / python-builds 同步
+# ============================================================================
 
-    packages = args.packages if args.packages else config.packages
 
-    if not packages:
-        logger.error("未指定要同步的包")
-        logger.info("请在配置文件中设置 packages，或通过 --packages 参数指定")
-        return 1
+def _sync_wheels(config: Config, packages: list[str], no_deps: bool) -> tuple[list, list[str]]:
+    """同步 wheel/sdist,返回 (本次新下载的 FileInfo 列表, 警告列表).
 
-    # 区分顶层包（可能包含 extras）和纯包名
+    会抛任何 download_packages 内部未捕获的异常,由调用方 try/except 隔离。
+    """
     top_packages = packages
     top_pkg_names = [extract_extras(p)[0] for p in top_packages]
 
     all_downloaded: list = []
-    all_warnings: list = []
+    all_warnings: list[str] = []
 
-    # ========== 第一遍：下载顶层包 ==========
     logger.info("")
     logger.info("=" * 50)
-    logger.info("第 1/2 步：下载顶层包")
+    logger.info("第 1/2 步:下载顶层包")
     logger.info("=" * 50)
 
     top_result = download_packages(
@@ -54,11 +56,9 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         max_versions=config.max_versions,
         allow_prerelease=config.allow_prerelease,
     )
-
     all_downloaded.extend(top_result.downloaded)
     all_warnings.extend(top_result.warnings)
 
-    # 收集顶层包已下载的版本
     top_versions: dict[str, list[str]] = {}
     for fi in top_result.downloaded + top_result.skipped:
         if fi.version:
@@ -66,11 +66,10 @@ def _cmd_sync(args: argparse.Namespace) -> int:
             if fi.version not in versions:
                 versions.append(fi.version)
 
-    # ========== 第二遍：解析并下载依赖 ==========
-    if not args.no_deps:
+    if not no_deps:
         logger.info("")
         logger.info("=" * 50)
-        logger.info("第 2/2 步：解析并下载依赖")
+        logger.info("第 2/2 步:解析并下载依赖")
         logger.info("=" * 50)
 
         dep_versions = resolve_dependencies(
@@ -80,7 +79,6 @@ def _cmd_sync(args: argparse.Namespace) -> int:
             workers=config.workers,
             allow_prerelease=config.allow_prerelease,
         )
-
         if dep_versions:
             dep_names = list(dep_versions.keys())
             dep_result = download_packages(
@@ -93,67 +91,179 @@ def _cmd_sync(args: argparse.Namespace) -> int:
                 specific_versions=dep_versions,
                 allow_prerelease=config.allow_prerelease,
             )
-
             all_downloaded.extend(dep_result.downloaded)
             all_warnings.extend(dep_result.warnings)
 
-    # ========== 生成索引和增量包 ==========
+    return all_downloaded, all_warnings
+
+
+def _sync_python(config: Config) -> tuple[Path, list[Path]]:
+    """同步 Python 解释器,返回 (index.json 路径, 本次新下载的 .tar.gz 列表)."""
+    return sync_python_builds(
+        repository_dir=config.repository_dir,
+        workers=config.workers,
+    )
+
+
+# ============================================================================
+#                                      命令实现
+# ============================================================================
+
+
+def _cmd_sync(args: argparse.Namespace) -> int:
+    """增量同步:wheel/sdist + Python 解释器,产出单一 incremental_*.tar.gz."""
+    config = Config.load(Path(args.config) if args.config else None)
+    packages = args.packages if args.packages else config.packages
+
+    if not packages:
+        logger.error("未指定要同步的包")
+        logger.info("请在配置文件中设置 packages,或通过 --packages 参数指定")
+        return 1
+
+    wheel_files: list = []
+    wheel_warnings: list[str] = []
+    wheel_failed = False
+
+    try:
+        wheel_files, wheel_warnings = _sync_wheels(config, packages, args.no_deps)
+    except Exception as e:
+        wheel_failed = True
+        logger.exception(f"wheel 同步失败:{e}")
+
+    new_python_files: list[Path] = []
+    python_index_path: Path | None = None
+    python_failed = False
+
+    try:
+        python_index_path, new_python_files = _sync_python(config)
+    except Exception as e:
+        python_failed = True
+        logger.exception(f"Python 解释器同步失败:{e}")
+
     generate_index(config.repository_dir)
 
-    if all_downloaded and not args.no_pack:
-        create_incremental_package(
-            downloaded_files=all_downloaded,
-            repository_dir=config.repository_dir,
-            output_dir=config.incremental_dir,
-            compress=not args.no_compress,
-        )
+    archive = create_incremental_package(
+        simple_files=wheel_files,
+        python_builds_files=new_python_files,
+        python_builds_index=python_index_path if new_python_files else None,
+        repository_dir=config.repository_dir,
+        output_dir=config.incremental_dir,
+    )
+    if archive is None:
+        logger.info("no changes:本次没有新文件下载,未产生增量包")
 
     logger.info("")
     logger.info("=" * 50)
-    logger.info("同步完成")
+    logger.info("增量同步完成")
     logger.info("=" * 50)
 
-    if all_warnings:
-        logger.warning(f"警告 ({len(all_warnings)} 条):")
-        for w in all_warnings:
+    if wheel_warnings:
+        logger.warning(f"wheel 警告 ({len(wheel_warnings)} 条):")
+        for w in wheel_warnings:
             logger.warning(f"  ! {w}")
+
+    return 1 if (wheel_failed or python_failed) else 0
+
+
+def _cmd_sync_full(args: argparse.Namespace) -> int:
+    """全量同步:清空仓库 → 重拉 wheel + Python → 打包 mirror.tar.gz + sha256."""
+    config = Config.load(Path(args.config) if args.config else None)
+    packages = args.packages if args.packages else config.packages
+
+    if not packages:
+        logger.error("未指定要同步的包")
+        return 1
+
+    repo = config.repository_dir
+    simple_dir = repo / "simple"
+    python_dir = repo / "python-builds"
+    store_db = repo / ".store.db"
+
+    logger.info("=" * 50)
+    logger.info("全量同步:清空仓库")
+    logger.info("=" * 50)
+    if simple_dir.exists():
+        shutil.rmtree(simple_dir)
+    if python_dir.exists():
+        shutil.rmtree(python_dir)
+    if store_db.exists():
+        store_db.unlink()
+    repo.mkdir(parents=True, exist_ok=True)
+
+    wheel_failed = False
+    python_failed = False
+
+    try:
+        _sync_wheels(config, packages, args.no_deps)
+    except Exception as e:
+        wheel_failed = True
+        logger.exception(f"wheel 同步失败:{e}")
+
+    try:
+        _sync_python(config)
+    except Exception as e:
+        python_failed = True
+        logger.exception(f"Python 解释器同步失败:{e}")
+
+    generate_index(repo)
+
+    if wheel_failed or python_failed:
+        logger.error("同步阶段存在失败,跳过 mirror.tar.gz 打包")
+        return 1
+
+    archive = _pack_full_mirror(repo)
+    sha_path = _write_sha256(archive)
+    logger.info("")
+    logger.info("=" * 50)
+    logger.info("全量同步完成")
+    logger.info("=" * 50)
+    logger.info(f"mirror.tar.gz : {archive} ({archive.stat().st_size / 1024 / 1024:.2f} MB)")
+    logger.info(f"mirror.sha256 : {sha_path}")
 
     return 0
 
 
-def _cmd_serve(args: argparse.Namespace) -> int:
-    """执行服务命令."""
-    config = Config.load(Path(args.config) if args.config else None)
+def _pack_full_mirror(repo: Path) -> Path:
+    """把 packages/ 整个目录打包到项目根的 mirror.tar.gz(gzip -9,排除 .access_log.db)."""
+    project_root = Path.cwd()
+    archive_path = project_root / "mirror.tar.gz"
+    if archive_path.exists():
+        archive_path.unlink()
 
+    excluded_names = {".access_log.db"}
+
+    def _filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        leaf = Path(tarinfo.name).name
+        if leaf in excluded_names:
+            return None
+        return tarinfo
+
+    logger.info(f"打包 {repo} → {archive_path} (gzip -9)")
+    with tarfile.open(archive_path, "w:gz", compresslevel=9) as tar:
+        tar.add(repo, arcname=repo.name, filter=_filter)
+    return archive_path
+
+
+def _write_sha256(archive: Path) -> Path:
+    """流式算 sha256,写成 sha256sum 兼容格式."""
+    hasher = hashlib.sha256()
+    with open(archive, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    digest = hasher.hexdigest()
+    sha_path = archive.parent / "mirror.sha256"
+    sha_path.write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
+    return sha_path
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """启动 HTTP 服务."""
+    config = Config.load(Path(args.config) if args.config else None)
     host = args.host or config.server_host
     port = args.port or config.server_port
 
     generate_index(config.repository_dir)
     start_server(host=host, port=port, repository_dir=config.repository_dir)
-    return 0
-
-
-def _cmd_sync_python(args: argparse.Namespace) -> int:
-    """同步 Python 解释器."""
-    config = Config.load(Path(args.config) if args.config else None)
-
-    workers = args.workers if args.workers else config.workers
-
-    index_path = sync_python_builds(
-        repository_dir=config.repository_dir,
-        workers=workers,
-    )
-
-    logger.info("")
-    logger.info("=" * 50)
-    logger.info("Python 解释器同步完成")
-    logger.info("=" * 50)
-    logger.info(f"index.json: {index_path}")
-    logger.info("")
-    logger.info("内网 uv 使用方式:")
-    logger.info("  export UV_PYTHON_DOWNLOADS_JSON_URL=http://<服务器>:<端口>/python-builds/index.json")
-    logger.info("  uv python install 3.12")
-
     return 0
 
 
@@ -216,16 +326,52 @@ def _cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+# ============================================================================
+#                                  import-incremental
+# ============================================================================
+
+
+class _ImportError(Exception):
+    """strict 模式下用于触发整体 fail-fast 的内部异常."""
+
+
+def _safe_extract_path(repo: Path, member_name: str) -> Path:
+    """解析 archive 内的相对路径并校验落在 repo 内,防 path traversal."""
+    target = (repo / member_name).resolve()
+    repo_resolved = repo.resolve()
+    try:
+        target.relative_to(repo_resolved)
+    except ValueError as e:
+        raise _ImportError(f"非法路径(traversal): {member_name}") from e
+    return target
+
+
+def _hash_file(path: Path) -> str:
+    """流式算 sha256."""
+    hasher = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _parse_simple_member(name: str) -> tuple[str, str] | None:
+    """从 'simple/<pkg>/<filename>' 解析 (pkg, filename),非 simple 路径返回 None."""
+    parts = name.split("/")
+    if len(parts) != 3 or parts[0] != "simple":
+        return None
+    return parts[1], parts[2]
+
+
 def _cmd_import_incremental(args: argparse.Namespace) -> int:
-    """从 incremental tar.gz 合并到本地仓库:解包 + 写 .store.db + 重建索引."""
-    import json
-    import tarfile
+    """合并增量包到本地仓库:解包 → 现算 sha256 写库 → 重建索引.
 
-    from .sqlite_store import DownloadStore
-
+    默认宽松:单文件失败 → WARNING 跳过其它继续。
+    --strict :任一失败 → 整体 fail-fast,exit 1 且不重建索引。
+    """
     config = Config.load(Path(args.config) if args.config else None)
     archive = Path(args.archive)
-    repo = config.repository_dir
+    repo = config.repository_dir.resolve()
 
     if not archive.exists():
         logger.error(f"增量包不存在: {archive}")
@@ -235,83 +381,123 @@ def _cmd_import_incremental(args: argparse.Namespace) -> int:
     logger.info(f"解包 {archive} → {repo}")
 
     with tarfile.open(archive, "r:*") as tar:
+        members = tar.getmembers()
+        try:
+            for m in members:
+                _safe_extract_path(repo, m.name)
+        except _ImportError as e:
+            logger.error(str(e))
+            return 1
+
         try:
             tar.extractall(repo, filter="data")  # Python 3.12+
         except TypeError:
             tar.extractall(repo)  # Python <3.12
 
     manifest_path = repo / "manifest.json"
-    if not manifest_path.exists():
-        logger.error(f"增量包缺 manifest.json: {archive}")
-        return 1
-
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    entries = manifest.get("files", [])
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            stats = manifest.get("stats", {})
+            logger.info(
+                f"manifest: created_at={manifest.get('created_at')} stats={stats}"
+            )
+        except Exception as e:
+            logger.warning(f"manifest.json 读取失败: {e}")
+        manifest_path.unlink()
 
     store = DownloadStore(repo / ".store.db")
     file_count = 0
     metadata_count = 0
-    for entry in entries:
-        if not entry.get("sha256"):
-            logger.warning(f"跳过 {entry.get('filename')}: 缺 sha256")
-            continue
-        store.add_file(
-            filename=entry["filename"],
-            package_name=entry["package"],
-            version=entry["version"],
-            sha256=entry["sha256"],
-            size=entry.get("size"),
-        )
-        file_count += 1
-        meta_sha = entry.get("metadata_sha256")
-        if meta_sha:
-            store.set_metadata_sha256(entry["filename"], meta_sha)
-            metadata_count += 1
+    failed_files: list[str] = []
 
-    manifest_path.unlink()  # 不污染 repository_dir
+    simple_entries = [
+        (parsed, m)
+        for m in members
+        if (parsed := _parse_simple_member(m.name)) is not None
+        and not parsed[1].endswith(".metadata")
+    ]
+
+    for (pkg, filename), _ in simple_entries:
+        target_path = repo / "simple" / pkg / filename
+        try:
+            if not target_path.exists():
+                raise _ImportError(f"解包后文件不存在: {target_path}")
+            sha256 = _hash_file(target_path)
+            version = _extract_version_from_filename(filename, pkg) or ""
+            store.add_file(
+                filename=filename,
+                package_name=pkg,
+                version=version,
+                sha256=sha256,
+                size=target_path.stat().st_size,
+            )
+            file_count += 1
+
+            meta_path = target_path.with_suffix(target_path.suffix + ".metadata")
+            if filename.endswith(".whl") and meta_path.exists():
+                meta_sha = _hash_file(meta_path)
+                store.set_metadata_sha256(filename, meta_sha)
+                metadata_count += 1
+        except Exception as e:
+            failed_files.append(filename)
+            if args.strict:
+                logger.error(f"strict 模式失败:{filename}: {e}")
+                return 1
+            logger.warning(f"跳过 {filename}: {e}")
+
     logger.info(f"已写入 store: 文件 {file_count} 条, metadata {metadata_count} 条")
+    if failed_files:
+        logger.warning(f"跳过 {len(failed_files)} 个文件: {failed_files[:5]}...")
 
     if args.no_reindex:
         logger.info("--no-reindex 指定,跳过索引重建")
     else:
-        from .indexer import generate_index
         generate_index(repo)
 
     return 0
+
+
+# ============================================================================
+#                                       main
+# ============================================================================
 
 
 def main() -> int:
     """CLI 入口."""
     parser = argparse.ArgumentParser(
         prog="pip-mirror",
-        description="轻量级私有 PIP 仓库，支持增量同步",
+        description="轻量级私有 PIP 仓库,支持增量与全量两种同步模式",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-示例:
-  pip-mirror sync                          # 同步配置文件中的包
-  pip-mirror sync --packages requests numpy # 同步指定包
-  pip-mirror sync --no-deps                # 不同步依赖
-  pip-mirror serve --port 8080             # 启动 HTTP 服务
-  pip-mirror init                          # 生成示例配置
-  pip-mirror import-incremental incr.tar.gz # 内网合并增量包
+四种模式:
+  增量更新   pip-mirror sync                    → incremental/incremental_*.tar.gz
+  全量更新   pip-mirror sync-full               → mirror.tar.gz + mirror.sha256
+  服务启动   pip-mirror serve                   → HTTP server
+  内网导入   pip-mirror import-incremental ...  → 合并增量包到本地仓库
         """,
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="显示 DEBUG 级别日志",
     )
 
     subparsers = parser.add_subparsers(dest="command", help="可用命令")
 
-    sync_parser = subparsers.add_parser("sync", help="从 PyPI 同步包")
-    sync_parser.add_argument("-c", "--config", help="配置文件路径（TOML 格式）")
+    sync_parser = subparsers.add_parser(
+        "sync",
+        help="增量同步:wheel + Python 解释器,产 incremental_*.tar.gz",
+    )
+    sync_parser.add_argument("-c", "--config", help="配置文件路径(TOML)")
     sync_parser.add_argument("-p", "--packages", nargs="+", help="要同步的包名")
     sync_parser.add_argument("--no-deps", action="store_true", help="不下载依赖")
-    sync_parser.add_argument("--no-pack", action="store_true", help="跳过增量打包")
-    sync_parser.add_argument(
-        "--no-compress", action="store_true",
-        help="增量包不压缩（纯 tar，适合 GitHub Actions）",
-    )
 
-    sync_python_parser = subparsers.add_parser("sync-python", help="同步 Python 解释器")
-    sync_python_parser.add_argument("-c", "--config", help="配置文件路径")
-    sync_python_parser.add_argument("--workers", type=int, help="并发下载线程数")
+    full_parser = subparsers.add_parser(
+        "sync-full",
+        help="全量同步:清空仓库 → 重拉 → 产 mirror.tar.gz + mirror.sha256",
+    )
+    full_parser.add_argument("-c", "--config", help="配置文件路径(TOML)")
+    full_parser.add_argument("-p", "--packages", nargs="+", help="要同步的包名")
+    full_parser.add_argument("--no-deps", action="store_true", help="不下载依赖")
 
     serve_parser = subparsers.add_parser("serve", help="启动 HTTP 服务")
     serve_parser.add_argument("-c", "--config", help="配置文件路径")
@@ -320,7 +506,9 @@ def main() -> int:
 
     access_log_parser = subparsers.add_parser("access-log", help="查看访问日志统计")
     access_log_parser.add_argument("-c", "--config", help="配置文件路径")
-    access_log_parser.add_argument("-n", "--limit", type=int, default=20, help="显示最近 N 条记录")
+    access_log_parser.add_argument(
+        "-n", "--limit", type=int, default=20, help="显示最近 N 条记录",
+    )
 
     init_parser = subparsers.add_parser("init", help="生成示例配置文件")
     init_parser.add_argument("-o", "--output", default="pip-mirror.toml", help="输出文件名")
@@ -328,17 +516,16 @@ def main() -> int:
 
     import_parser = subparsers.add_parser(
         "import-incremental",
-        help="将 incremental tar.gz 合并到本地仓库(写 .store.db 并重建索引)",
+        help="合并增量包到本地仓库(解包 + 写 .store.db + 重建索引)",
     )
     import_parser.add_argument("archive", help="incremental tar.gz 路径")
     import_parser.add_argument("-c", "--config", help="配置文件路径")
     import_parser.add_argument(
         "--no-reindex", action="store_true", help="跳过自动重建 PEP 503/691 索引",
     )
-
-    parser.add_argument(
-        "-v", "--verbose", action="store_true",
-        help="显示 DEBUG 级别日志",
+    import_parser.add_argument(
+        "--strict", action="store_true",
+        help="任一文件 sha256 计算/写库失败则整体 fail-fast,不重建索引",
     )
 
     args = parser.parse_args()
@@ -352,7 +539,7 @@ def main() -> int:
 
     commands = {
         "sync": _cmd_sync,
-        "sync-python": _cmd_sync_python,
+        "sync-full": _cmd_sync_full,
         "serve": _cmd_serve,
         "access-log": _cmd_access_log,
         "init": _cmd_init,
