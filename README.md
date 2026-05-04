@@ -171,6 +171,27 @@ trusted-host = 192.168.1.100
 pip install --config-file pip.conf requests
 ```
 
+## Docker 部署
+
+仓库根目录提供 `Dockerfile` 与 `docker-compose.yml`(基于 `python:3.12-slim` 多阶段构建,镜像约 130 MB,只装运行依赖,不打包任何 packages)。
+
+```bash
+# 1. 把外网跑出来的 mirror.tar.gz 解压到本地 packages/
+tar -xzf mirror.tar.gz
+
+# 2. 起服务(host 网络模式,直接用 host 8080)
+docker compose up -d --build
+
+# 3. 验证
+curl http://localhost:8080/simple
+```
+
+挂载点:`./packages` → `/repo/packages`,内含 `simple/`、`python-builds/`、`.store.db`、`.access_log.db`,容器重启后数据全部保留在 host。
+
+**为什么用 `network_mode: host`**:默认 bridge 网络下 Docker 会做 SNAT,服务里 `client_address[0]` 永远是 docker bridge 网关 IP(如 `172.17.0.1`),`access-log` 统计的所有客户端 IP 都成了同一个值,毫无区分意义。host 模式下容器直接共享 host 网络栈,看到真实客户端 IP。
+
+如果你必须用 bridge 网络(例如 Windows/Mac、要做端口隔离),前面架 nginx/traefik 反向代理,把 `proxy_set_header X-Forwarded-For $remote_addr` 配上,服务端会优先读 `X-Forwarded-For`。
+
 ## GitHub Actions 自动同步
 
 项目包含 `.github/workflows/sync.yml`，支持：
@@ -180,21 +201,44 @@ pip install --config-file pip.conf requests
 
 在 GitHub 仓库页面的 Actions > Sync PyPI Mirror > Run workflow 中手动执行。
 
+跑完后产物 `mirror.tar.gz`(用 `gzip -9` 高密度压缩) 作为 artifact 上传,内含完整的 `packages/` 目录(simple/ + python-builds/ + .store.db),解压挂上即可使用。
+
 ## 增量部署
 
-### pip 包增量部署
+### 全量首次部署
 
-同步完成后，`incremental/` 目录会生成 `incremental_YYYYMMDD_HHMMSS.tar.gz`，包含本次新增文件和 `manifest.json`。
-
-在内网服务器解压：
+把 GitHub Actions 跑出的 `mirror.tar.gz` 拷到内网,解压到 `repository_dir`(默认 `./packages`):
 
 ```bash
-tar -xzf incremental_20260503_120000.tar.gz -C /path/to/packages
+tar -xzf mirror.tar.gz   # 解压后得到 packages/
+docker compose up -d
 ```
+
+### 增量更新(B 方案)
+
+外网每次 `pip-mirror sync` 跑完后,`incremental/` 目录会生成 `incremental_YYYYMMDD_HHMMSS.tar.gz`,内含本次新增的 wheel/sdist、对应的 `.whl.metadata` 文件,以及一份 `manifest.json`(含 sha256 与 metadata_sha256)。
+
+把这一个增量包拷到内网,然后跑 `import-incremental` 命令一次合并:
+
+```bash
+# 在内网服务器(裸跑)
+pip-mirror import-incremental ./incremental_20260504_120000.tar.gz
+
+# 或容器化部署:
+docker compose exec pip-mirror \
+    pip-mirror import-incremental /repo/packages/incremental_20260504_120000.tar.gz
+```
+
+`import-incremental` 会:
+1. 把 tar 解到 `repository_dir`(新 wheel + 新 .metadata 落到 `simple/<pkg>/`)
+2. 读 `manifest.json`,把每条记录 `INSERT OR REPLACE` 进 `.store.db` 的 `downloaded_files` + `file_metadata` 表
+3. 调用 `generate_index()` 重建 PEP 503 / PEP 691 索引,生成的 `index.html`/`index.json` 自动带上新文件的 `data-sha256`、`data-core-metadata` 与 PEP 658 metadata 链接
+
+完成后客户端立刻能看到新版本,**不必重启服务**(server 是静态文件 + 内容协商,新生成的索引文件下次请求即生效)。如要跳过自动重建索引(例如批量导入多个增量包),加 `--no-reindex`,最后再手动跑一次。
 
 ### Python 解释器离线部署
 
-`packages/python-builds/` 目录包含所有 Python 解释器和 `index.json`，直接复制到内网服务器即可：
+`packages/python-builds/` 目录已经在 `mirror.tar.gz` 里,首次部署解压后即可。增量同步 `python-build-standalone` 在当前阶段不通过 `import-incremental`,直接用 `rsync` 覆盖目录:
 
 ```bash
 rsync -av packages/python-builds/ 内网服务器:/path/to/packages/python-builds/

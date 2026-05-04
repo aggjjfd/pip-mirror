@@ -1,0 +1,28 @@
+# Host 网络模式:容器直接共享 host 网络栈,server 看到的 client_address[0]
+# 即真实客户端 IP,access_logger 的 IP 统计能正常区分内网各客户端。
+#
+# 数据持久化:
+#   ./packages 挂到 /repo/packages,内含 simple/、python-builds/ 与
+#   .store.db / .access_log.db。容器重启数据全部保留在 host。
+#
+# 启动后:
+#   1) 把外网跑出的 mirror.tar.gz 解压到 ./packages
+#      tar -xzf mirror.tar.gz -C .
+#   2) docker compose up -d
+#   3) 客户端走 http://<host-ip>:8080/simple
+#
+# 增量更新(B 方案):
+#   1) 把外网新生成的 incremental_*.tar.gz 拷到 host 任意位置
+#   2) docker compose exec pip-mirror pip-mirror import-incremental \
+#         /path/to/incremental_*.tar.gz
+#      (容器内的 ./packages == host 的 ./packages)
+#
+services:
+  pip-mirror:
+    build: .
+    image: pip-mirror:latest
+    container_name: pip-mirror
+    network_mode: host
+    volumes:
+      - ./packages:/repo/packages
+    restart: unless-stopped

@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 from .downloader import FileInfo
 from .filters import normalize_package_name
+from .sqlite_store import DownloadStore
 
 logger = logging.getLogger("pip-mirror")
 
@@ -25,6 +26,11 @@ def create_incremental_package(
     compress: bool = True,
 ) -> Path | None:
     """将本次新增下载的文件打包成增量压缩包.
+
+    内容:
+        - simple/<pkg>/<filename>      : wheel / sdist 本体
+        - simple/<pkg>/<filename>.metadata : 若是 wheel 且 PEP 658 metadata 存在则一起打入
+        - manifest.json                : 文件清单含 sha256 + metadata_sha256
 
     Args:
         downloaded_files: 本次新下载的文件列表
@@ -46,6 +52,9 @@ def create_incremental_package(
     archive_name = f"incremental_{timestamp}{ext}"
     archive_path = output_dir / archive_name
 
+    store = DownloadStore(repository_dir / ".store.db")
+    metadata_hashes = store.get_all_metadata_hashes()
+
     manifest = {
         "timestamp": timestamp,
         "iso_time": datetime.now(timezone.utc).isoformat(),
@@ -58,6 +67,7 @@ def create_incremental_package(
                 "filename": f.filename,
                 "size": f.size,
                 "sha256": f.sha256,
+                "metadata_sha256": metadata_hashes.get(f.filename),
             }
             for f in downloaded_files
         ],
@@ -80,6 +90,12 @@ def create_incremental_package(
 
             arcname = f"simple/{normalized}/{file_info.filename}"
             tar.add(file_path, arcname=arcname)
+
+            # 一并打包 PEP 658 .whl.metadata(若存在)
+            if file_info.filename.endswith(".whl"):
+                meta_path = file_path.with_suffix(".whl.metadata")
+                if meta_path.exists():
+                    tar.add(meta_path, arcname=arcname + ".metadata")
 
         manifest_bytes = json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8")
         manifest_info = tarfile.TarInfo(name="manifest.json")

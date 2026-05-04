@@ -213,6 +213,70 @@ def _cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_import_incremental(args: argparse.Namespace) -> int:
+    """从 incremental tar.gz 合并到本地仓库:解包 + 写 .store.db + 重建索引."""
+    import json
+    import tarfile
+
+    from .sqlite_store import DownloadStore
+
+    config = Config.load(Path(args.config) if args.config else None)
+    archive = Path(args.archive)
+    repo = config.repository_dir
+
+    if not archive.exists():
+        logger.error(f"增量包不存在: {archive}")
+        return 1
+
+    repo.mkdir(parents=True, exist_ok=True)
+    logger.info(f"解包 {archive} → {repo}")
+
+    with tarfile.open(archive, "r:*") as tar:
+        try:
+            tar.extractall(repo, filter="data")  # Python 3.12+
+        except TypeError:
+            tar.extractall(repo)  # Python <3.12
+
+    manifest_path = repo / "manifest.json"
+    if not manifest_path.exists():
+        logger.error(f"增量包缺 manifest.json: {archive}")
+        return 1
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entries = manifest.get("files", [])
+
+    store = DownloadStore(repo / ".store.db")
+    file_count = 0
+    metadata_count = 0
+    for entry in entries:
+        if not entry.get("sha256"):
+            logger.warning(f"跳过 {entry.get('filename')}: 缺 sha256")
+            continue
+        store.add_file(
+            filename=entry["filename"],
+            package_name=entry["package"],
+            version=entry["version"],
+            sha256=entry["sha256"],
+            size=entry.get("size"),
+        )
+        file_count += 1
+        meta_sha = entry.get("metadata_sha256")
+        if meta_sha:
+            store.set_metadata_sha256(entry["filename"], meta_sha)
+            metadata_count += 1
+
+    manifest_path.unlink()  # 不污染 repository_dir
+    logger.info(f"已写入 store: 文件 {file_count} 条, metadata {metadata_count} 条")
+
+    if args.no_reindex:
+        logger.info("--no-reindex 指定,跳过索引重建")
+    else:
+        from .indexer import generate_index
+        generate_index(repo)
+
+    return 0
+
+
 def main() -> int:
     """CLI 入口."""
     parser = argparse.ArgumentParser(
@@ -226,6 +290,7 @@ def main() -> int:
   pip-mirror sync --no-deps                # 不同步依赖
   pip-mirror serve --port 8080             # 启动 HTTP 服务
   pip-mirror init                          # 生成示例配置
+  pip-mirror import-incremental incr.tar.gz # 内网合并增量包
         """,
     )
 
@@ -258,6 +323,16 @@ def main() -> int:
     init_parser.add_argument("-o", "--output", default="pip-mirror.toml", help="输出文件名")
     init_parser.add_argument("-f", "--force", action="store_true", help="覆盖已存在的文件")
 
+    import_parser = subparsers.add_parser(
+        "import-incremental",
+        help="将 incremental tar.gz 合并到本地仓库(写 .store.db 并重建索引)",
+    )
+    import_parser.add_argument("archive", help="incremental tar.gz 路径")
+    import_parser.add_argument("-c", "--config", help="配置文件路径")
+    import_parser.add_argument(
+        "--no-reindex", action="store_true", help="跳过自动重建 PEP 503/691 索引",
+    )
+
     parser.add_argument(
         "-v", "--verbose", action="store_true",
         help="显示 DEBUG 级别日志",
@@ -278,6 +353,7 @@ def main() -> int:
         "serve": _cmd_serve,
         "access-log": _cmd_access_log,
         "init": _cmd_init,
+        "import-incremental": _cmd_import_incremental,
     }
 
     return commands[args.command](args)

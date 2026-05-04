@@ -1,0 +1,22 @@
+# Build context 排除项 — 让 docker build 不复制大目录与无关元数据
+.git
+.github
+.venv
+.vscode
+.idea
+.pytest_cache
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+
+# 同步产物 / 增量包 / 镜像产物 — 不进 image
+packages
+incremental
+dist
+*.tar.gz
+*.tar
+*.whl
+
+# 测试与文档
+tests
+README.md
