@@ -253,16 +253,29 @@ async fn cmd_sync_full(
     _no_deps: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = pip_mirror::config::Config::load(config_path)?;
-    info!(
-        "全量同步: {} 个包",
-        packages.unwrap_or(config.packages).len()
-    );
+    let pkgs = packages.unwrap_or(config.packages);
+    info!("全量同步: {} 个包", pkgs.len());
     let repo = &config.repository_dir;
 
     clean_repo(repo)?;
-    info!("TODO: download top packages + resolve deps + download deps (M2-M4)");
 
     let client = reqwest::Client::new();
+    // Download top packages
+    for pkg in &pkgs {
+        match pip_mirror::downloader::fetch_json_api(&client, pkg, &config.pypi_url).await {
+            Ok(files) => {
+                let selected = pip_mirror::downloader::select_latest_versions(&files, config.max_versions);
+                info!("  [OK] {pkg}: {} files", selected.len());
+                for fi in &selected {
+                    let dest = repo.join("simple").join(&fi.package_name).join(&fi.filename);
+                    let _ = pip_mirror::downloader::download_file(&client, fi, &dest).await;
+                }
+            }
+            Err(e) => tracing::warn!("  [FAIL] {pkg}: {e}"),
+        }
+    }
+    // TODO: resolve + download deps (when --no-deps is false)
+
     let entries = download_python_builds_batch(&client, repo).await?;
     build_python_builds_index(&entries, repo)?;
     pip_mirror::indexer::generate_index(repo);

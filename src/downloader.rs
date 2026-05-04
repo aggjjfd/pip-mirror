@@ -195,8 +195,7 @@ async fn write_atomic(dest_path: &Path, bytes: &[u8]) -> (bool, String) {
 }
 
 /// Download a single file.
-#[allow(dead_code)]
-async fn download_file(
+pub async fn download_file(
     client: &Client,
     fi: &FileInfo,
     dest: &Path,
