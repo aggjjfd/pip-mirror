@@ -1,21 +1,20 @@
-"""依赖解析器：递归解析包依赖树.
+"""依赖解析器：按 (Python 版本 × 平台) Target 解析 + 版本窗口下载.
 
 策略:
-1. 从顶层包开始，逐层递归解析依赖
-2. 每层解析该层所有包的 requires_dist
-3. 合并同一依赖包的所有版本约束
-4. 用约束过滤后下载满足条件的版本
-5. 递归直到没有新包或达到最大深度
+1. 对每个 target = (py_ver, platform) 分别用 SAT 求解一个可行版本组合
+2. 不同 target 的约束互不干扰,避免 AND 合并导致的矛盾
+3. 每个 target 的解中,每个依赖只保留一个版本
+4. 最终对所有 target 的解取版本窗口并集作为下载清单
 """
 
 from __future__ import annotations
 
 import logging
-import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
 
+import pycosat
 import requests
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
@@ -28,6 +27,16 @@ logger = logging.getLogger("pip-mirror")
 
 
 @dataclass(frozen=True)
+class TargetEnv:
+    """目标运行环境 (Python 版本 × 平台)."""
+
+    python_version: str       # e.g. "3.12"
+    python_full_version: str  # e.g. "3.12.0"
+    sys_platform: str         # e.g. "linux", "win32"
+    platform_machine: str     # e.g. "x86_64", "AMD64"
+
+
+@dataclass(frozen=True)
 class DepConstraint:
     """依赖约束."""
 
@@ -35,17 +44,30 @@ class DepConstraint:
     specifier: str
 
 
-@dataclass(frozen=True)
-class ResolvedDep:
-    """resolver 输出:某个依赖包过滤后的版本 + 合并约束 + 全集.
-
-    `merged_spec` 透传给 downloader,backfill 阶段过滤候选老版本时使用;
-    `all_versions` 提供给上层(如诊断/调试),与 versions 一致都来自 PyPI.
-    """
-
-    versions: list[str]
-    merged_spec: str
-    all_versions: list[str]
+# 21 个 target: 7 Python 版本 × 3 平台
+_TARGET_ENVS: list[TargetEnv] = [
+    TargetEnv("3.8",  "3.8.0",  "linux",   "x86_64"),
+    TargetEnv("3.9",  "3.9.0",  "linux",   "x86_64"),
+    TargetEnv("3.10", "3.10.0", "linux",   "x86_64"),
+    TargetEnv("3.11", "3.11.0", "linux",   "x86_64"),
+    TargetEnv("3.12", "3.12.0", "linux",   "x86_64"),
+    TargetEnv("3.13", "3.13.0", "linux",   "x86_64"),
+    TargetEnv("3.14", "3.14.0", "linux",   "x86_64"),
+    TargetEnv("3.8",  "3.8.0",  "win32",   "x86"),
+    TargetEnv("3.9",  "3.9.0",  "win32",   "x86"),
+    TargetEnv("3.10", "3.10.0", "win32",   "x86"),
+    TargetEnv("3.11", "3.11.0", "win32",   "x86"),
+    TargetEnv("3.12", "3.12.0", "win32",   "x86"),
+    TargetEnv("3.13", "3.13.0", "win32",   "x86"),
+    TargetEnv("3.14", "3.14.0", "win32",   "x86"),
+    TargetEnv("3.8",  "3.8.0",  "win32",   "AMD64"),
+    TargetEnv("3.9",  "3.9.0",  "win32",   "AMD64"),
+    TargetEnv("3.10", "3.10.0", "win32",   "AMD64"),
+    TargetEnv("3.11", "3.11.0", "win32",   "AMD64"),
+    TargetEnv("3.12", "3.12.0", "win32",   "AMD64"),
+    TargetEnv("3.13", "3.13.0", "win32",   "AMD64"),
+    TargetEnv("3.14", "3.14.0", "win32",   "AMD64"),
+]
 
 
 def extract_extras(package_ref: str) -> tuple[str, set[str]]:
@@ -76,15 +98,15 @@ def _get_version_info(
 def _parse_requires_dist(
     requires_dist: list[str] | None,
     extras: set[str] | None = None,
-    python_version: str | None = None,
+    target: TargetEnv | None = None,
 ) -> list[DepConstraint]:
     """解析 requires_dist，返回依赖约束列表.
 
     Args:
         requires_dist: PyPI JSON API 的 requires_dist 列表.
         extras: 当前包激活的 extra 集合.
-        python_version: 目标 Python 版本(如 "3.12")，用于过滤 python_version marker.
-                       None 表示不过滤，保留所有约束(旧行为).
+        target: 目标运行环境,用于过滤 python_version / sys_platform / platform_machine marker.
+                None 表示不过滤,保留所有约束(旧行为).
     """
     if not requires_dist:
         return []
@@ -114,19 +136,17 @@ def _parse_requires_dist(
             if not has_match:
                 continue
 
-        # 按环境 marker 过滤: 只保留匹配当前运行环境/目标 Python 版本的约束.
-        # mirror 在 Linux 上构建,sys_platform=="win32" 的约束会被跳过;
-        # 这是设计取舍:跨平台版本约束矛盾极少见,避免 AND 合并后无解.
+        # 按环境 marker 过滤: 只保留匹配目标运行环境的约束.
         if marker is not None:
             env: dict[str, str] = {}
-            if python_version is not None and "python_version" in marker_str:
-                env["python_version"] = python_version
-                env["python_full_version"] = python_version + ".0"
-            if "sys_platform" in marker_str:
-                env["sys_platform"] = sys.platform
-            if "platform_machine" in marker_str:
-                import platform
-                env["platform_machine"] = platform.machine()
+            if target is not None:
+                if "python_version" in marker_str:
+                    env["python_version"] = target.python_version
+                    env["python_full_version"] = target.python_full_version
+                if "sys_platform" in marker_str:
+                    env["sys_platform"] = target.sys_platform
+                if "platform_machine" in marker_str:
+                    env["platform_machine"] = target.platform_machine
             if env:
                 try:
                     if not marker.evaluate(env):
@@ -208,7 +228,7 @@ def _filter_versions(versions: list[str], specifier: str) -> list[str]:
 
     for part in specifier.split(","):
         part = part.strip()
-        if part.startswith("=="):
+        if part.startswith("==") and "*" not in part:
             exact_versions.add(part[2:].strip())
         elif part:
             range_parts.append(part)
@@ -239,189 +259,271 @@ def _filter_versions(versions: list[str], specifier: str) -> list[str]:
     return versions
 
 
-def _resolve_one_layer(
-    packages: list[str],
-    package_versions: dict[str, list[str]],
-    pkg_extras: dict[str, set[str]],
-    pypi_url: str,
-    workers: int,
-    session: requests.Session,
-    python_version: str | None = None,
-) -> dict[str, list[str]]:
-    """解析一层的依赖约束.
-
-    Returns:
-        {dep_name: [specifier1, specifier2, ...]}
-    """
-    all_constraints: dict[str, list[str]] = {}
-
-    tasks = []
-    for pkg_name in packages:
-        extras = pkg_extras.get(pkg_name, set())
-        versions = package_versions.get(pkg_name, [])
-        for version in versions:
-            tasks.append((pkg_name, version, extras))
-
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(_get_version_info, session, pkg, ver, pypi_url): (pkg, ver, extras)
-            for pkg, ver, extras in tasks
-        }
-
-        for future in as_completed(futures):
-            pkg, ver, extras = futures[future]
-            try:
-                info = future.result()
-                if not info:
-                    continue
-                requires_dist = info.get("info", {}).get("requires_dist")
-                deps = _parse_requires_dist(requires_dist, extras, python_version)
-                for dep in deps:
-                    all_constraints.setdefault(dep.name, []).append(dep.specifier)
-            except Exception as e:
-                logger.warning(f"解析 {pkg}=={ver} 依赖失败: {e}")
-
-    return all_constraints
-
-
-# mirror 需要服务的 Python 版本范围(对应 pyproject.toml requires-python ">=3.8")
-_TARGET_PYTHON_VERSIONS = ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
-
-
-def _resolve_single_tree(
-    top_package: str,
+def _resolve_one_target_sat(
+    top_packages: list[str],
     top_versions: dict[str, list[str]],
     pkg_extras: dict[str, set[str]],
+    target: TargetEnv,
     pypi_url: str,
-    workers: int,
-    max_depth: int,
-    allow_prerelease: bool,
-    python_version: str | None = None,
-) -> dict[str, ResolvedDep]:
-    """解析单个顶层包的完整依赖树,约束只在树内累积,不跨树污染."""
-    processed: set[str] = {top_package}
-    tree_pkg_extras = dict(pkg_extras)
-    accumulated_constraints: dict[str, list[str]] = {}
+    session: requests.Session,
+    max_depth: int = 5,
+    allow_prerelease: bool = False,
+) -> dict[str, str]:
+    """对单个 target 用 SAT 求解一个可行解.
 
-    current_layer_packages = [top_package]
-    current_layer_versions = {top_package: top_versions.get(top_package, [])}
+    Returns:
+        {package_name: chosen_version}
+    """
+    # 缓存
+    version_info_cache: dict[tuple[str, str], dict[str, Any] | None] = {}
+    all_versions_cache: dict[str, list[str]] = {}
 
-    with make_session() as session:
-        for depth in range(1, max_depth + 1):
-            if not current_layer_packages:
-                break
+    # ---------- 1. BFS 收集所有相关包 ----------
+    packages_to_resolve: set[str] = set()
+    queue: list[tuple[str, int]] = []
 
-            py_tag = f"(py{python_version}) " if python_version else ""
-            logger.info(
-                f"  [{top_package}] {py_tag}第 {depth} 层: {len(current_layer_packages)} 个包"
+    for pkg_ref in top_packages:
+        name, _ = extract_extras(pkg_ref)
+        if name not in packages_to_resolve:
+            packages_to_resolve.add(name)
+            queue.append((name, 0))
+
+    while queue:
+        pkg_name, depth = queue.pop(0)
+        if depth >= max_depth:
+            continue
+
+        if pkg_name not in all_versions_cache:
+            all_versions_cache[pkg_name] = _get_all_versions(
+                session, pkg_name, pypi_url, allow_prerelease,
             )
 
-            constraints = _resolve_one_layer(
-                current_layer_packages,
-                current_layer_versions,
-                tree_pkg_extras,
-                pypi_url,
-                workers,
-                session,
-                python_version,
+        versions = all_versions_cache[pkg_name]
+        if not versions:
+            continue
+
+        # 用哪些版本探索依赖树
+        if pkg_name in top_versions:
+            explore_versions = top_versions[pkg_name]
+        else:
+            explore_versions = versions[:3]
+
+        for ver in explore_versions:
+            key = (pkg_name, ver)
+            if key not in version_info_cache:
+                version_info_cache[key] = _get_version_info(
+                    session, pkg_name, ver, pypi_url,
+                )
+            info = version_info_cache[key]
+            if not info:
+                continue
+
+            requires_dist = info.get("info", {}).get("requires_dist")
+            extras = pkg_extras.get(pkg_name, set())
+            deps = _parse_requires_dist(requires_dist, extras, target)
+
+            for dep in deps:
+                dep_norm = normalize_package_name(dep.name)
+                if dep_norm not in packages_to_resolve:
+                    packages_to_resolve.add(dep_norm)
+                    queue.append((dep.name, depth + 1))
+
+    # ---------- 2. 为所有相关包获取全部版本 ----------
+    for pkg in list(packages_to_resolve):
+        if pkg not in all_versions_cache:
+            all_versions_cache[pkg] = _get_all_versions(
+                session, pkg, pypi_url, allow_prerelease,
             )
 
-            if not constraints:
-                break
+    # 过滤掉没有版本的包
+    packages_to_resolve = {
+        pkg for pkg in packages_to_resolve
+        if all_versions_cache.get(pkg)
+    }
 
-            for dep_name, specs in constraints.items():
-                accumulated_constraints.setdefault(dep_name, []).extend(specs)
+    if not packages_to_resolve:
+        return {}
 
-            new_packages = []
-            for dep_name in constraints:
-                normalized = normalize_package_name(dep_name)
-                if normalized not in processed:
-                    processed.add(normalized)
-                    new_packages.append(dep_name)
+    # ---------- 3. 确定每个包参与 SAT 的版本 ----------
+    # 顶层包用 caller 指定的全部版本;
+    # 依赖包限制为最新 10 个版本,避免变量爆炸.
+    pkg_sat_versions: dict[str, list[str]] = {}
+    for pkg in packages_to_resolve:
+        all_vers = all_versions_cache[pkg]
+        if pkg in top_versions:
+            pkg_sat_versions[pkg] = top_versions[pkg]
+        else:
+            pkg_sat_versions[pkg] = all_vers[:10]
 
-            if not new_packages:
-                logger.info(f"  [{top_package}] {py_tag}第 {depth} 层无新包")
-                break
+    # ---------- 4. 变量映射 ----------
+    var_id: dict[tuple[str, str], int] = {}
+    id_to_pkg_ver: dict[int, tuple[str, str]] = {}
+    next_id = 1
 
-            current_layer_packages = []
-            current_layer_versions = {}
+    for pkg in packages_to_resolve:
+        for ver in pkg_sat_versions[pkg]:
+            var_id[(pkg, ver)] = next_id
+            id_to_pkg_ver[next_id] = (pkg, ver)
+            next_id += 1
 
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {
-                    executor.submit(
-                        _get_all_versions, session, pkg, pypi_url, allow_prerelease,
-                    ): pkg
-                    for pkg in new_packages
-                }
+    # ---------- 5. 编码 CNF ----------
+    clauses: list[list[int]] = []
 
-                for future in as_completed(futures):
-                    pkg = futures[future]
+    # 每个包恰好一个版本
+    for pkg in packages_to_resolve:
+        versions = pkg_sat_versions[pkg]
+        # 至少一个
+        clauses.append([var_id[(pkg, v)] for v in versions])
+        # 最多一个（两两互斥）
+        n = len(versions)
+        for i in range(n):
+            for j in range(i + 1, n):
+                clauses.append([-var_id[(pkg, versions[i])], -var_id[(pkg, versions[j])]])
+
+    # requires_dist 蕴含约束
+    for pkg in packages_to_resolve:
+        for ver in pkg_sat_versions[pkg]:
+            key = (pkg, ver)
+            info = version_info_cache.get(key)
+            if info is None:
+                info = _get_version_info(session, pkg, ver, pypi_url)
+                version_info_cache[key] = info
+            if not info:
+                continue
+
+            requires_dist = info.get("info", {}).get("requires_dist")
+            extras = pkg_extras.get(pkg, set())
+            deps = _parse_requires_dist(requires_dist, extras, target)
+
+            for dep in deps:
+                dep_norm = normalize_package_name(dep.name)
+                if dep_norm not in packages_to_resolve:
+                    continue
+
+                dep_versions = pkg_sat_versions.get(dep_norm, [])
+                spec = SpecifierSet(dep.specifier) if dep.specifier else SpecifierSet("")
+                valid_versions = []
+                for dv in dep_versions:
                     try:
-                        versions = future.result()
-                        if versions:
-                            current_layer_packages.append(pkg)
-                            current_layer_versions[pkg] = versions[:5]
+                        if parse_version(dv) in spec:
+                            valid_versions.append(dv)
                     except Exception:
                         pass
 
-            logger.info(
-                f"  [{top_package}] {py_tag}第 {depth} 层发现 {len(current_layer_packages)} 个新包"
-            )
+                if valid_versions:
+                    # x_{pkg,ver} -> OR(x_{dep,dv} for dv in valid_versions)
+                    clause = [-var_id[(pkg, ver)]]
+                    for dv in valid_versions:
+                        clause.append(var_id[(dep_norm, dv)])
+                    clauses.append(clause)
 
-    if not accumulated_constraints:
+    # ---------- 6. SAT 求解 ----------
+    # 顶层包版本固定(硬子句)
+    fixed_clauses = list(clauses)
+    for pkg_ref in top_packages:
+        name, _ = extract_extras(pkg_ref)
+        if name in top_versions and top_versions[name]:
+            top_ver = top_versions[name][0]
+            if (name, top_ver) in var_id:
+                fixed_clauses.append([var_id[(name, top_ver)]])
+
+    # 解码辅助
+    def _decode(solution: list[int]) -> dict[str, str]:
+        chosen: dict[str, str] = {}
+        for lit in solution:
+            if lit > 0:
+                pkg, ver = id_to_pkg_ver[lit]
+                chosen[pkg] = ver
+        return chosen
+
+    # 先找任意可行解
+    sol = pycosat.solve(fixed_clauses)
+    if sol == "UNSAT":
+        logger.warning(
+            f"  target {target.python_version}/{target.sys_platform} "
+            f"({target.platform_machine}) UNSAT",
+        )
         return {}
 
-    # 过滤版本
-    result: dict[str, ResolvedDep] = {}
-    missing: list[str] = []
+    chosen = _decode(sol)
 
-    with make_session() as session:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                executor.submit(
-                    _get_all_versions, session, dep_name, pypi_url, allow_prerelease,
-                ): dep_name
-                for dep_name in accumulated_constraints
-            }
+    # iterative strengthening: 尝试把每个包升到更高版本
+    improved = True
+    while improved:
+        improved = False
+        for pkg in packages_to_resolve:
+            if pkg not in chosen:
+                continue
+            current_ver = chosen[pkg]
+            versions = pkg_sat_versions[pkg]
+            try:
+                current_idx = versions.index(current_ver)
+            except ValueError:
+                continue
 
-            for future in as_completed(futures):
-                dep_name = futures[future]
-                try:
-                    all_versions = future.result()
-                    if not all_versions:
-                        missing.append(dep_name)
-                        continue
+            # 尝试更高版本
+            for better_ver in versions[:current_idx]:
+                # 强制选 better_ver: 排除所有比它旧的版本
+                worse_versions = versions[versions.index(better_ver) + 1:]
+                temp_clauses = fixed_clauses + [
+                    [-var_id[(pkg, v)]] for v in worse_versions
+                ]
+                new_sol = pycosat.solve(temp_clauses)
+                if new_sol != "UNSAT":
+                    chosen = _decode(new_sol)
+                    improved = True
+                    break
+            if improved:
+                break
 
-                    merged_spec = ",".join(
-                        s.strip() for s in accumulated_constraints[dep_name] if s.strip()
-                    )
-                    filtered = _filter_versions(all_versions, merged_spec)
+    return chosen
 
-                    limit = 10 if "<" in merged_spec else 3
-                    to_keep = filtered[:limit]
 
-                    if not to_keep:
-                        logger.warning(
-                            f"  ! [{top_package}] {dep_name}: "
-                            f"spec='{merged_spec or '(empty)'}', "
-                            f"all={len(all_versions)}, filtered={len(filtered)}, "
-                            f"limit={limit}, kept={len(to_keep)}"
-                        )
+def _compute_version_windows(
+    target_solutions: list[dict[str, str]],
+    all_versions: dict[str, list[str]],
+    max_versions: int,
+) -> dict[str, list[str]]:
+    """把多个 target 的解合并成每个包的下载版本列表.
 
-                    if to_keep:
-                        result[dep_name] = ResolvedDep(
-                            versions=to_keep,
-                            merged_spec=merged_spec,
-                            all_versions=all_versions,
-                        )
-                    else:
-                        missing.append(dep_name)
+    对每个包:
+    1. 收集所有 target 中该包的 solution versions(去重).
+    2. 对每个 solution version,在 all_versions[pkg] 中找到它的索引.
+    3. 取 [idx - N//2, idx + N//2] 窗口内的版本(含自身).
+    4. 所有窗口取并集、去重、保持降序.
+    """
+    if not target_solutions:
+        return {}
 
-                except Exception as e:
-                    logger.warning(f"获取 {dep_name} 版本失败: {e}")
-                    missing.append(dep_name)
+    half = max_versions // 2
+    result: dict[str, set[str]] = {}
 
-    return result
+    for sol in target_solutions:
+        for pkg, ver in sol.items():
+            pkg_versions = all_versions.get(pkg, [])
+            if not pkg_versions:
+                continue
+            if ver not in pkg_versions:
+                # solution version 不在可用版本列表中(理论上不应发生)
+                result.setdefault(pkg, set()).add(ver)
+                continue
+
+            idx = pkg_versions.index(ver)
+            start = max(0, idx - half)
+            end = min(len(pkg_versions), idx + half + 1)
+            window = pkg_versions[start:end]
+            result.setdefault(pkg, set()).update(window)
+
+    # 保持降序,去重
+    final: dict[str, list[str]] = {}
+    for pkg, ver_set in result.items():
+        pkg_versions = all_versions.get(pkg, [])
+        ordered = [v for v in pkg_versions if v in ver_set]
+        if not ordered:
+            ordered = sorted(ver_set, key=parse_version, reverse=True)
+        final[pkg] = ordered
+
+    return final
 
 
 def resolve_dependencies(
@@ -430,63 +532,112 @@ def resolve_dependencies(
     pypi_url: str,
     workers: int = 8,
     max_depth: int = 5,
+    max_versions: int = 5,
     allow_prerelease: bool = False,
-) -> dict[str, ResolvedDep]:
-    """对每个顶层包 × 每个 Python 版本分别解析,最后合并去重.
+) -> dict[str, list[str]]:
+    """对每个 target 分别解析一个可行解,合并版本窗口后返回下载清单.
 
-    不同 Python 版本的路径独立解析,避免 python_version marker 被错误 AND 合并;
-    多棵树之间不交叉污染约束;同一依赖在不同树/版本里版本不同时取并集.
+    Returns:
+        {package_name: [version1, version2, ...]} 降序
     """
     logger.info("解析依赖...")
 
-    all_results: dict[str, ResolvedDep] = {}
-
+    # 提取 extras
+    pkg_extras: dict[str, set[str]] = {}
     for pkg_ref in top_packages:
         name, extras = extract_extras(pkg_ref)
-        tree_extras: dict[str, set[str]] = {}
         if extras:
-            tree_extras[name] = extras
+            pkg_extras[name] = extras
 
-        for py_ver in _TARGET_PYTHON_VERSIONS:
-            tree_result = _resolve_single_tree(
-                top_package=name,
-                top_versions=top_versions,
-                pkg_extras=tree_extras,
-                pypi_url=pypi_url,
-                workers=workers,
-                max_depth=max_depth,
-                allow_prerelease=allow_prerelease,
-                python_version=py_ver,
-            )
+    target_solutions: list[dict[str, str]] = []
 
-            for dep_name, dep in tree_result.items():
-                if dep_name in all_results:
-                    existing = all_results[dep_name]
-                    seen = set(existing.versions)
-                    merged = list(existing.versions)
-                    for v in dep.versions:
-                        if v not in seen:
-                            seen.add(v)
-                            merged.append(v)
-                    try:
-                        merged.sort(key=parse_version, reverse=True)
-                    except Exception:
-                        merged.sort(reverse=True)
-                    unique: list[str] = []
-                    seen2: set[str] = set()
-                    for v in merged:
-                        if v not in seen2:
-                            seen2.add(v)
-                            unique.append(v)
-                    all_results[dep_name] = ResolvedDep(
-                        versions=unique,
-                        merged_spec="",
-                        all_versions=dep.all_versions,
+    with make_session() as session:
+        # 并发对 21 个 target 调用 SAT 求解
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    _resolve_one_target_sat,
+                    top_packages,
+                    top_versions,
+                    pkg_extras,
+                    target,
+                    pypi_url,
+                    session,
+                    max_depth,
+                    allow_prerelease,
+                ): target
+                for target in _TARGET_ENVS
+            }
+
+            for future in as_completed(futures):
+                target = futures[future]
+                try:
+                    sol = future.result()
+                    if sol:
+                        target_solutions.append(sol)
+                        logger.debug(
+                            f"  target {target.python_version}/{target.sys_platform} "
+                            f"解: {len(sol)} 个包",
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"  target {target.python_version}/{target.sys_platform} "
+                        f"解析失败: {e}",
                     )
-                else:
-                    all_results[dep_name] = dep
 
-    total_versions = sum(len(r.versions) for r in all_results.values())
-    logger.info(f"  依赖解析完成: {len(all_results)} 个包, {total_versions} 个版本")
+    if not target_solutions:
+        logger.warning("所有 target 均无有效解")
+        return {}
 
-    return all_results
+    # 收集所有出现在任一解中的包
+    all_pkgs: set[str] = set()
+    for sol in target_solutions:
+        all_pkgs.update(sol.keys())
+
+    # 去重顶层包(它们由 caller 单独处理)
+    top_names = {extract_extras(p)[0] for p in top_packages}
+    dep_pkgs = all_pkgs - top_names
+
+    if not dep_pkgs:
+        logger.info("  无依赖需要下载")
+        return {}
+
+    # 获取所有依赖包的全部版本
+    all_versions: dict[str, list[str]] = {}
+    with make_session() as session:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    _get_all_versions, session, pkg, pypi_url, allow_prerelease,
+                ): pkg
+                for pkg in dep_pkgs
+            }
+            for future in as_completed(futures):
+                pkg = futures[future]
+                try:
+                    versions = future.result()
+                    if versions:
+                        all_versions[pkg] = versions
+                except Exception as e:
+                    logger.warning(f"获取 {pkg} 版本列表失败: {e}")
+
+    # 计算版本窗口
+    dep_versions = _compute_version_windows(target_solutions, all_versions, max_versions)
+
+    # 截断保护: 单个包版本数过多时截断
+    for pkg in list(dep_versions.keys()):
+        versions = dep_versions[pkg]
+        if len(versions) > 20:
+            logger.warning(
+                f"  ! {pkg}: 窗口合并后版本数过多 ({len(versions)}), "
+                f"截断到最新 20 个",
+            )
+            dep_versions[pkg] = versions[:20]
+
+    total_versions = sum(len(v) for v in dep_versions.values())
+    logger.info(
+        f"  依赖解析完成: {len(dep_versions)} 个包, {total_versions} 个版本 "
+        f"(来自 {len(target_solutions)} 个 target 的解)",
+    )
+
+    return dep_versions

@@ -79,6 +79,8 @@ def _sync_wheels(config: Config, packages: list[str], no_deps: bool) -> tuple[li
             top_versions=top_versions,
             pypi_url=config.pypi_url,
             workers=config.workers,
+            max_depth=5,
+            max_versions=config.max_versions,
             allow_prerelease=config.allow_prerelease,
         )
         if dep_versions:
@@ -90,8 +92,7 @@ def _sync_wheels(config: Config, packages: list[str], no_deps: bool) -> tuple[li
                 index_url=config.index_url,
                 include_source=config.include_source,
                 workers=config.workers,
-                specific_versions={n: r.versions for n, r in dep_versions.items()},
-                version_specifiers={n: r.merged_spec for n, r in dep_versions.items()},
+                specific_versions=dep_versions,
                 allow_prerelease=config.allow_prerelease,
                 backfill_scan_limit=config.backfill_scan_limit,
             )

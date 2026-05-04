@@ -9,6 +9,7 @@ dependencies = [
     "tomli>=2.0.0;python_version<'3.11'",
     "tqdm>=4.66.0",
     "colorlog>=6.10.1",
+    "pycosat>=0.6.6",
 ]
 
 [project.optional-dependencies]

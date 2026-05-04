@@ -8,7 +8,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pip_mirror.dependency_resolver import (
-    ResolvedDep,
+    TargetEnv,
+    _compute_version_windows,
     _filter_versions,
     _get_all_versions,
     _parse_requires_dist,
@@ -123,31 +124,42 @@ def test_filter_versions_conflicting_spec() -> None:
     assert result == []
 
 
-# ---------- _parse_requires_dist 按 python_version marker 过滤 ----------
+def test_filter_versions_compatible_release() -> None:
+    """==1.* 是 compatible release,应匹配 1.x 系列版本."""
+    versions = ["2.0.0", "1.1.0", "1.0.0", "0.9.0"]
+    result = _filter_versions(versions, "==1.*")
+    assert result == ["1.1.0", "1.0.0"]
 
 
-def test_parse_requires_dist_filters_by_python_version() -> None:
-    """传入 python_version 时,只保留匹配该版本的约束."""
+# ---------- _parse_requires_dist 按 target 环境过滤 ----------
+
+
+def test_parse_requires_dist_filters_by_target() -> None:
+    """传入 target 时,只保留匹配该 target 的约束."""
     reqs = [
         'dep>=1.0; python_version >= "3.11"',
         'dep<1.0; python_version < "3.11"',
         'other; extra == "dev"',
+        'windep; sys_platform == "win32"',
     ]
-    # python 3.12 应只保留 >=1.0
-    deps = _parse_requires_dist(reqs, extras=set(), python_version="3.12")
-    specs = [d.specifier for d in deps]
+    target = TargetEnv("3.12", "3.12.0", "linux", "x86_64")
+    deps = _parse_requires_dist(reqs, extras=set(), target=target)
+    specs = {d.specifier for d in deps}
     assert ">=1.0" in specs
     assert "<1.0" not in specs
+    # win32 约束在 linux target 下被过滤
+    assert not any(d.name == "windep" for d in deps)
 
-    # python 3.9 应只保留 <1.0
-    deps = _parse_requires_dist(reqs, extras=set(), python_version="3.9")
-    specs = [d.specifier for d in deps]
-    assert "<1.0" in specs
-    assert ">=1.0" not in specs
+    target_win = TargetEnv("3.9", "3.9.0", "win32", "AMD64")
+    deps_win = _parse_requires_dist(reqs, extras=set(), target=target_win)
+    specs_win = {d.specifier for d in deps_win}
+    assert "<1.0" in specs_win
+    assert ">=1.0" not in specs_win
+    assert any(d.name == "windep" for d in deps_win)
 
 
-def test_parse_requires_dist_no_python_version_keeps_all() -> None:
-    """不传 python_version 时保留所有约束(旧行为)."""
+def test_parse_requires_dist_no_target_keeps_all() -> None:
+    """不传 target 时保留所有约束(旧行为)."""
     reqs = [
         'dep>=1.0; python_version >= "3.11"',
         'dep<1.0; python_version < "3.11"',
@@ -157,56 +169,71 @@ def test_parse_requires_dist_no_python_version_keeps_all() -> None:
     assert specs == {">=1.0", "<1.0"}
 
 
-# ---------- resolve_dependencies 按 Python 版本分组,避免跨版本污染 ----------
+# ---------- _compute_version_windows ----------
 
 
-def test_resolve_per_python_version_isolates_markers(
+def test_compute_version_windows_basic() -> None:
+    """两个 target 不同解,窗口并集正确."""
+    target_solutions = [
+        {"dep": "2.0.0"},
+        {"dep": "1.0.0"},
+    ]
+    all_versions = {"dep": ["2.0.0", "1.5.0", "1.0.0", "0.5.0"]}
+    result = _compute_version_windows(target_solutions, all_versions, max_versions=3)
+    # target1(2.0.0) 窗口 = [2.0.0, 1.5.0, 1.0.0]
+    # target2(1.0.0) 窗口 = [1.5.0, 1.0.0, 0.5.0]
+    # 并集 = [2.0.0, 1.5.0, 1.0.0, 0.5.0]
+    assert result["dep"] == ["2.0.0", "1.5.0", "1.0.0", "0.5.0"]
+
+
+def test_compute_version_windows_overlap() -> None:
+    """两个 target 解相同,窗口重叠,结果不应重复."""
+    target_solutions = [
+        {"dep": "1.5.0"},
+        {"dep": "1.5.0"},
+    ]
+    all_versions = {"dep": ["2.0.0", "1.5.0", "1.0.0", "0.5.0"]}
+    result = _compute_version_windows(target_solutions, all_versions, max_versions=3)
+    # 窗口 = [2.0.0, 1.5.0, 1.0.0]
+    assert result["dep"] == ["2.0.0", "1.5.0", "1.0.0"]
+
+
+def test_compute_version_windows_not_in_all_versions() -> None:
+    """solution version 不在 all_versions 中,只保留该版本本身."""
+    target_solutions = [{"dep": "9.9.9"}]
+    all_versions = {"dep": ["2.0.0", "1.0.0"]}
+    result = _compute_version_windows(target_solutions, all_versions, max_versions=3)
+    assert result["dep"] == ["9.9.9"]
+
+
+# ---------- resolve_dependencies 集成 ----------
+
+
+def test_resolve_dependencies_returns_dict_of_lists(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """python_version marker 在不同版本间互斥,不应 AND 合并成矛盾."""
+    """新 resolver 返回 dict[str, list[str]],不与旧 ResolvedDep 耦合."""
     with caplog.at_level("WARNING", logger="pip-mirror"), \
-            patch("pip_mirror.dependency_resolver._resolve_one_layer") as mock_layer, \
+            patch("pip_mirror.dependency_resolver._resolve_one_target_sat") as mock_sat, \
             patch("pip_mirror.dependency_resolver._get_all_versions") as mock_versions, \
             patch("pip_mirror.dependency_resolver.make_session") as mock_session:
-        # 模拟 magika 的 requires_dist 结构:
-        # py3.12: onnxruntime>=1.21.0
-        # py3.14: onnxruntime>=1.24.1
-        # 如果不分组 AND 合并,会得到 >=1.21.0,>=1.24.1(不矛盾);
-        # 但真实矛盾场景是: py3.9 <1.20.0 vs py3.14 >=1.24.1
-        def side_effect(
-            packages, pkg_versions, pkg_extras, pypi_url, workers, session,
-            python_version=None,
-        ):
-            if python_version == "3.9":
-                return {"onnxruntime": ["<1.20.0", ">=1.17.0"]}
-            if python_version == "3.14":
-                return {"onnxruntime": [">=1.24.1"]}
-            return {}
 
-        mock_layer.side_effect = side_effect
-        mock_versions.return_value = ["1.24.1", "1.21.0", "1.17.0"]
+        mock_sat.return_value = {"dep": "1.0.0"}
+        mock_versions.return_value = ["1.0.0"]
         mock_cm = MagicMock()
         mock_cm.__enter__ = MagicMock(return_value=MagicMock())
         mock_cm.__exit__ = MagicMock(return_value=False)
         mock_session.return_value = mock_cm
 
         result = resolve_dependencies(
-            top_packages=["magika"],
-            top_versions={"magika": ["1.0.0"]},
+            top_packages=["pkg"],
+            top_versions={"pkg": ["1.0.0"]},
             pypi_url="https://pypi.org",
             workers=1,
+            max_versions=3,
         )
 
-        assert "onnxruntime" in result
-        dep = result["onnxruntime"]
-        assert isinstance(dep, ResolvedDep)
-        # 3.9 约束 <1.20.0,>=1.17.0 → 过滤后只剩 1.17.0
-        # 3.14 约束 >=1.24.1 → 过滤后只剩 1.24.1
-        # 并集 = [1.24.1, 1.17.0]
-        assert set(dep.versions) == {"1.24.1", "1.17.0"}
-        # 没有 "约束矛盾" / "回退" 日志
-        assert not any(
-            "约束矛盾" in rec.message or "回退" in rec.message
-            for rec in caplog.records
-        ), f"不应有 fallback warning, got: {[r.message for r in caplog.records]}"
-
+        assert isinstance(result, dict)
+        assert "dep" in result
+        assert isinstance(result["dep"], list)
+        assert result["dep"] == ["1.0.0"]
