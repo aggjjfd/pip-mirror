@@ -36,6 +36,7 @@ class Config:
     server_host: str
     incremental_dir: Path
     max_versions: int
+    allow_prerelease: bool
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Config:
@@ -54,6 +55,7 @@ class Config:
             server_host=data.get("server_host", "0.0.0.0"),
             incremental_dir=incremental,
             max_versions=int(data.get("max_versions", 5)),
+            allow_prerelease=bool(data.get("allow_prerelease", False)),
         )
 
     @classmethod
@@ -145,6 +147,11 @@ workers = 4
 
 # 每个包保留的最新版本数
 max_versions = 3
+
+# 是否允许下载预发行版（rc / alpha / beta / dev）
+# 默认 false：只下载正式版本（含 .postN）
+# 设为 true 后会同时下载预发行版
+allow_prerelease = false
 
 # HTTP 服务配置
 server_port = 8080

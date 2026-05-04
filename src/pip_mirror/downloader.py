@@ -271,6 +271,19 @@ def _select_latest_versions(files: list[FileInfo], max_versions: int) -> list[Fi
     return [fi for fi in files if fi.version in selected]
 
 
+def _drop_prerelease_files(files: list[FileInfo]) -> list[FileInfo]:
+    """过滤掉版本为预发行版（rc / alpha / beta / dev）的文件."""
+    kept: list[FileInfo] = []
+    for fi in files:
+        try:
+            if parse_version(fi.version).is_prerelease:
+                continue
+        except Exception:
+            pass
+        kept.append(fi)
+    return kept
+
+
 def download_packages(
     packages: list[str],
     repository_dir: Path,
@@ -280,6 +293,7 @@ def download_packages(
     workers: int,
     max_versions: int = 3,
     specific_versions: dict[str, list[str]] | None = None,
+    allow_prerelease: bool = False,
 ) -> DownloadResult:
     """下载指定包的文件.
 
@@ -293,6 +307,8 @@ def download_packages(
         max_versions: 每个包最多保留的最新版本数
         specific_versions: {包名: [版本号列表]} 指定要下载的确切版本，
                           如果提供则忽略 max_versions
+        allow_prerelease: 是否允许预发行版（rc / alpha / beta / dev），默认 False;
+                          特例：若一个包仅有预发行版，会回退保留并打 WARNING 日志
 
     Returns:
         下载结果
@@ -346,6 +362,17 @@ def download_packages(
                 allowed = set(specific_versions[package_name])
                 files = [fi for fi in files if fi.version in allowed]
             else:
+                if not allow_prerelease and files:
+                    filtered = _drop_prerelease_files(files)
+                    if filtered:
+                        files = filtered
+                    else:
+                        # 仅有预发行版时回退保留全部，不静默丢弃
+                        logger.warning(
+                            f"  ! {package_name} 仅有预发行版 "
+                            f"({len({fi.version for fi in files})} 个版本), "
+                            "回退保留全部",
+                        )
                 files = _select_latest_versions(files, max_versions)
             version_files: dict[str, list[FileInfo]] = {}
             for fi in files:

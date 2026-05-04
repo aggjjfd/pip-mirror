@@ -52,6 +52,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
         include_source=config.include_source,
         workers=config.workers,
         max_versions=config.max_versions,
+        allow_prerelease=config.allow_prerelease,
     )
 
     all_downloaded.extend(top_result.downloaded)
@@ -77,6 +78,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
             top_versions=top_versions,
             pypi_url=config.pypi_url,
             workers=config.workers,
+            allow_prerelease=config.allow_prerelease,
         )
 
         if dep_versions:
@@ -89,6 +91,7 @@ def _cmd_sync(args: argparse.Namespace) -> int:
                 include_source=config.include_source,
                 workers=config.workers,
                 specific_versions=dep_versions,
+                allow_prerelease=config.allow_prerelease,
             )
 
             all_downloaded.extend(dep_result.downloaded)

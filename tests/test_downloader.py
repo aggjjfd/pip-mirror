@@ -13,6 +13,7 @@ from pip_mirror import downloader as downloader_mod
 from pip_mirror.downloader import (
     DownloadResult,
     FileInfo,
+    _drop_prerelease_files,
     _enqueue_or_skip,
     _log_fetch_error,
     download_packages,
@@ -154,3 +155,202 @@ def test_metadata_lands_in_correct_package_dir(
         assert f"Name: {name}" in text, (
             f"metadata of {name} contained wrong package name — F1 regression. text={text!r}"
         )
+
+
+# ---------- prerelease 过滤行为 ----------
+
+
+def _wheel(name: str, version: str) -> FileInfo:
+    fname = f"{name.replace('-', '_')}-{version}-py3-none-any.whl"
+    return FileInfo(
+        filename=fname,
+        url=f"https://example.com/{fname}",
+        sha256="a" * 64,
+        size=10,
+        package_name=name,
+        version=version,
+    )
+
+
+def test_drop_prerelease_files_removes_rc_alpha_beta_dev() -> None:
+    files = [
+        _wheel("pkg", "1.0.0"),
+        _wheel("pkg", "2.0.0rc1"),
+        _wheel("pkg", "3.0.0a1"),
+        _wheel("pkg", "4.0.0b2"),
+        _wheel("pkg", "5.0.0.dev1"),
+        _wheel("pkg", "1.5.0"),
+    ]
+    kept = _drop_prerelease_files(files)
+    assert {fi.version for fi in kept} == {"1.0.0", "1.5.0"}
+
+
+def test_drop_prerelease_files_keeps_post_release() -> None:
+    files = [_wheel("pkg", "1.0.0"), _wheel("pkg", "1.0.0.post1")]
+    kept = _drop_prerelease_files(files)
+    assert {fi.version for fi in kept} == {"1.0.0", "1.0.0.post1"}
+
+
+def test_download_packages_filters_prerelease_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """默认 allow_prerelease=False: 顶层包路径过滤掉 rc / dev 版本."""
+    repo = tmp_path / "packages"
+    versions = ["1.0.0", "2.0.0rc1", "3.0.0", "3.1.0a1"]
+
+    def fake_fetch_json(session, package_name, pypi_url):
+        return [_wheel(package_name, v) for v in versions]
+
+    def fake_download_file(session, file_info: FileInfo, dest_path: Path):
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dist_info = (
+            f"{file_info.package_name.replace('-', '_')}-{file_info.version}.dist-info"
+        )
+        with zipfile.ZipFile(dest_path, "w") as zf:
+            zf.writestr(
+                f"{dist_info}/METADATA",
+                f"Metadata-Version: 2.1\nName: {file_info.package_name}\n"
+                f"Version: {file_info.version}\n",
+            )
+        return True, ""
+
+    monkeypatch.setattr(downloader_mod, "_fetch_json_api", fake_fetch_json)
+    monkeypatch.setattr(downloader_mod, "_download_file", fake_download_file)
+
+    result = download_packages(
+        packages=["pkg-x"],
+        repository_dir=repo,
+        pypi_url="https://pypi.org",
+        index_url="https://pypi.org/simple",
+        include_source=False,
+        workers=2,
+        max_versions=10,
+    )
+
+    downloaded_versions = {fi.version for fi in result.downloaded}
+    assert downloaded_versions == {"1.0.0", "3.0.0"}, (
+        f"应只下载正式版, got {downloaded_versions}"
+    )
+
+
+def test_download_packages_allow_prerelease_keeps_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """allow_prerelease=True: 不过滤."""
+    repo = tmp_path / "packages"
+    versions = ["1.0.0", "2.0.0rc1"]
+
+    def fake_fetch_json(session, package_name, pypi_url):
+        return [_wheel(package_name, v) for v in versions]
+
+    def fake_download_file(session, file_info: FileInfo, dest_path: Path):
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dist_info = (
+            f"{file_info.package_name.replace('-', '_')}-{file_info.version}.dist-info"
+        )
+        with zipfile.ZipFile(dest_path, "w") as zf:
+            zf.writestr(
+                f"{dist_info}/METADATA",
+                f"Metadata-Version: 2.1\nName: {file_info.package_name}\n"
+                f"Version: {file_info.version}\n",
+            )
+        return True, ""
+
+    monkeypatch.setattr(downloader_mod, "_fetch_json_api", fake_fetch_json)
+    monkeypatch.setattr(downloader_mod, "_download_file", fake_download_file)
+
+    result = download_packages(
+        packages=["pkg-x"],
+        repository_dir=repo,
+        pypi_url="https://pypi.org",
+        index_url="https://pypi.org/simple",
+        include_source=False,
+        workers=2,
+        max_versions=10,
+        allow_prerelease=True,
+    )
+
+    assert {fi.version for fi in result.downloaded} == {"1.0.0", "2.0.0rc1"}
+
+
+def test_download_packages_falls_back_when_only_prereleases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """fallback: 包仅有预发行版 → 保留全部 + 打 WARNING."""
+    repo = tmp_path / "packages"
+    versions = ["1.0.0rc1", "2.0.0a1"]
+
+    def fake_fetch_json(session, package_name, pypi_url):
+        return [_wheel(package_name, v) for v in versions]
+
+    def fake_download_file(session, file_info: FileInfo, dest_path: Path):
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dist_info = (
+            f"{file_info.package_name.replace('-', '_')}-{file_info.version}.dist-info"
+        )
+        with zipfile.ZipFile(dest_path, "w") as zf:
+            zf.writestr(
+                f"{dist_info}/METADATA",
+                f"Metadata-Version: 2.1\nName: {file_info.package_name}\n"
+                f"Version: {file_info.version}\n",
+            )
+        return True, ""
+
+    monkeypatch.setattr(downloader_mod, "_fetch_json_api", fake_fetch_json)
+    monkeypatch.setattr(downloader_mod, "_download_file", fake_download_file)
+
+    with caplog.at_level("WARNING", logger="pip-mirror"):
+        result = download_packages(
+            packages=["only-pre"],
+            repository_dir=repo,
+            pypi_url="https://pypi.org",
+            index_url="https://pypi.org/simple",
+            include_source=False,
+            workers=2,
+            max_versions=10,
+        )
+
+    assert {fi.version for fi in result.downloaded} == {"1.0.0rc1", "2.0.0a1"}
+    assert any(
+        "only-pre" in rec.message and "仅有预发行版" in rec.message and "回退" in rec.message
+        for rec in caplog.records
+    ), f"应有 fallback warning 日志, got: {[r.message for r in caplog.records]}"
+
+
+def test_download_packages_specific_versions_path_unaffected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """specific_versions 路径不被 prerelease 过滤(尊重显式指定 + resolve 已过滤过)."""
+    repo = tmp_path / "packages"
+    versions = ["1.0.0", "2.0.0rc1"]
+
+    def fake_fetch_json(session, package_name, pypi_url):
+        return [_wheel(package_name, v) for v in versions]
+
+    def fake_download_file(session, file_info: FileInfo, dest_path: Path):
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dist_info = (
+            f"{file_info.package_name.replace('-', '_')}-{file_info.version}.dist-info"
+        )
+        with zipfile.ZipFile(dest_path, "w") as zf:
+            zf.writestr(
+                f"{dist_info}/METADATA",
+                f"Metadata-Version: 2.1\nName: {file_info.package_name}\n"
+                f"Version: {file_info.version}\n",
+            )
+        return True, ""
+
+    monkeypatch.setattr(downloader_mod, "_fetch_json_api", fake_fetch_json)
+    monkeypatch.setattr(downloader_mod, "_download_file", fake_download_file)
+
+    result = download_packages(
+        packages=["pkg-x"],
+        repository_dir=repo,
+        pypi_url="https://pypi.org",
+        index_url="https://pypi.org/simple",
+        include_source=False,
+        workers=2,
+        specific_versions={"pkg-x": ["2.0.0rc1"]},
+    )
+
+    assert {fi.version for fi in result.downloaded} == {"2.0.0rc1"}

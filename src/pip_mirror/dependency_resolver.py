@@ -98,9 +98,19 @@ def _parse_requires_dist(
 
 
 def _get_all_versions(
-    session: requests.Session, package: str, pypi_url: str,
+    session: requests.Session,
+    package: str,
+    pypi_url: str,
+    allow_prerelease: bool = False,
 ) -> list[str]:
-    """获取包的所有版本号列表（降序）."""
+    """获取包的所有版本号列表（降序）.
+
+    默认过滤掉预发行版（rc / alpha / beta / dev）;
+    将 allow_prerelease 设为 True 可保留全部版本.
+
+    若过滤后为空但原列表非空（包仅有预发行版）, 回退保留全部并打 WARNING 日志,
+    不静默丢弃.
+    """
     normalized = normalize_package_name(package)
     url = f"{pypi_url.rstrip('/')}/pypi/{normalized}/json"
     try:
@@ -112,6 +122,25 @@ def _get_all_versions(
             versions.sort(key=parse_version, reverse=True)
         except Exception:
             versions.sort(reverse=True)
+        if not allow_prerelease and versions:
+            kept: list[str] = []
+            for v in versions:
+                try:
+                    if parse_version(v).is_prerelease:
+                        continue
+                except Exception:
+                    pass
+                kept.append(v)
+            dropped = len(versions) - len(kept)
+            if not kept:
+                logger.warning(
+                    f"  ! {package} 仅有预发行版 ({len(versions)} 个), "
+                    "回退保留全部版本",
+                )
+            else:
+                if dropped:
+                    logger.debug(f"  {package}: 过滤掉 {dropped} 个预发行版")
+                versions = kept
         if not versions:
             logger.warning(f"PyPI 返回空 releases: {package} ({url})")
         return versions
@@ -216,6 +245,7 @@ def resolve_dependencies(
     pypi_url: str,
     workers: int = 8,
     max_depth: int = 5,
+    allow_prerelease: bool = False,
 ) -> dict[str, list[str]]:
     """递归解析依赖树，返回需要下载的依赖包版本.
 
@@ -225,6 +255,7 @@ def resolve_dependencies(
         pypi_url: PyPI JSON API URL
         workers: 并发数
         max_depth: 最大递归深度
+        allow_prerelease: 是否允许预发行版（rc / alpha / beta / dev），默认 False
 
     Returns:
         {包名: [版本号列表]} 所有需要下载的依赖
@@ -288,7 +319,9 @@ def resolve_dependencies(
 
             with ThreadPoolExecutor(max_workers=workers) as executor:
                 futures = {
-                    executor.submit(_get_all_versions, session, pkg, pypi_url): pkg
+                    executor.submit(
+                        _get_all_versions, session, pkg, pypi_url, allow_prerelease,
+                    ): pkg
                     for pkg in new_packages
                 }
 
@@ -317,7 +350,9 @@ def resolve_dependencies(
     with make_session() as session:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
-                executor.submit(_get_all_versions, session, dep_name, pypi_url): dep_name
+                executor.submit(
+                    _get_all_versions, session, dep_name, pypi_url, allow_prerelease,
+                ): dep_name
                 for dep_name in accumulated_constraints
             }
 
