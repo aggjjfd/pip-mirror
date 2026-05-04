@@ -1,0 +1,42 @@
+[package]
+name = "pip-mirror"
+version = "0.2.0"
+description = "轻量级私有 PIP 仓库 — Rust rewrite（增量/全量同步 + PEP 503/691 服务）"
+edition = "2024"
+license = "MIT"
+
+[[bin]]
+name = "pip-mirror"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "gzip", "brotli", "json"] }
+tokio = { version = "1", features = ["full"] }
+rayon = "1"
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["clock"] }
+pubgrub = "0.4"
+pep440_rs = "0.7"
+pep508_rs = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+indicatif = "0.17"
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+dashmap = "6"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
