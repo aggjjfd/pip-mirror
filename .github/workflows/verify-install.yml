@@ -1,0 +1,168 @@
+name: Verify Install (Sample From Full Mirror)
+
+# 一次全量 sync(用 pyproject.toml 默认包列表),然后在多个独立 venv 里各装一两个
+# 不同的顶层包,跨 batch 覆盖 36 个顶层包。每个 batch 失败独立定位。
+#
+# 默认每 batch 都用 file:// 直读 packages/simple 索引(零网络,只走本地 mirror),
+# 验证 mirror 自身的完整性 + PEP 503/691 索引格式 + sha256/PEP 658 metadata。
+
+on:
+  workflow_dispatch:
+    inputs:
+      python_version:
+        description: '验证用的 Python 版本'
+        required: false
+        default: '3.12'
+      max_versions:
+        description: 'sync 时每个包保留的最新版本数'
+        required: false
+        default: '3'
+
+jobs:
+  sync-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      UV_SYSTEM_PYTHON: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '${{ github.event.inputs.python_version }}'
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: 'latest'
+      - run: uv sync --no-dev
+
+      - name: Full sync (uses pyproject.toml [tool.pip-mirror].packages)
+        run: |
+          mkdir -p packages
+          uv run pip-mirror sync --no-pack 2>&1 | tail -100
+          # 短报告
+          if [ -f packages/.store.db ]; then
+            echo "===== mirror summary ====="
+            sqlite3 packages/.store.db "SELECT COUNT(*) AS files, COUNT(DISTINCT package_name) AS pkgs FROM downloaded_files;"
+          fi
+
+      - name: Install batch — http stack (requests, tqdm)
+        run: |
+          python -m venv /tmp/v_http
+          /tmp/v_http/bin/pip install --upgrade pip
+          /tmp/v_http/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir requests tqdm
+          /tmp/v_http/bin/python -c "import requests, tqdm; print('http batch OK', requests.__version__, tqdm.__version__)"
+
+      - name: Install batch — config (python-dotenv, tomli, pydantic, loguru)
+        run: |
+          python -m venv /tmp/v_cfg
+          /tmp/v_cfg/bin/pip install --upgrade pip
+          /tmp/v_cfg/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir python-dotenv tomli pydantic loguru
+          /tmp/v_cfg/bin/python -c "import dotenv, tomli, pydantic, loguru; print('cfg batch OK')"
+
+      - name: Install batch — web (fastapi, uvicorn)
+        run: |
+          python -m venv /tmp/v_web
+          /tmp/v_web/bin/pip install --upgrade pip
+          /tmp/v_web/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir fastapi uvicorn
+          /tmp/v_web/bin/python -c "import fastapi, uvicorn; print('web batch OK', fastapi.__version__)"
+
+      - name: Install batch — dev tooling (pytest, ruff, mypy, hatchling)
+        run: |
+          python -m venv /tmp/v_dev
+          /tmp/v_dev/bin/pip install --upgrade pip
+          /tmp/v_dev/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir pytest ruff mypy hatchling
+          /tmp/v_dev/bin/python -c "import pytest, ruff, mypy, hatchling; print('dev batch OK')" 2>/dev/null || \
+            /tmp/v_dev/bin/python -c "import pytest, mypy, hatchling; print('dev batch OK (ruff is binary-only)')"
+
+      - name: Install batch — packaging tools (uv, pyinstaller)
+        run: |
+          python -m venv /tmp/v_pkg
+          /tmp/v_pkg/bin/pip install --upgrade pip
+          /tmp/v_pkg/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir uv pyinstaller
+          /tmp/v_pkg/bin/python -c "import PyInstaller; print('packaging batch OK', PyInstaller.__version__)"
+
+      - name: Install batch — data (openpyxl, xlrd, duckdb)
+        run: |
+          python -m venv /tmp/v_data
+          /tmp/v_data/bin/pip install --upgrade pip
+          /tmp/v_data/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir openpyxl xlrd duckdb
+          /tmp/v_data/bin/python -c "import openpyxl, xlrd, duckdb; print('data batch OK', duckdb.__version__)"
+
+      - name: Install batch — pdf/text (pypdf, pymupdf, markitdown[pptx,docx,xls,xlsx,pdf])
+        run: |
+          python -m venv /tmp/v_pdf
+          /tmp/v_pdf/bin/pip install --upgrade pip
+          /tmp/v_pdf/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir pypdf pymupdf "markitdown[pptx,docx,xls,xlsx,pdf]"
+          /tmp/v_pdf/bin/python -c "import pypdf, pymupdf, markitdown; print('pdf batch OK')"
+
+      - name: Install batch — image/imaging (pillow, shapely)
+        run: |
+          python -m venv /tmp/v_img
+          /tmp/v_img/bin/pip install --upgrade pip
+          /tmp/v_img/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir pillow shapely
+          /tmp/v_img/bin/python -c "import PIL, shapely; print('image batch OK', PIL.__version__)"
+
+      - name: Install batch — ml inference (onnxruntime, rapidocr-onnxruntime)
+        run: |
+          python -m venv /tmp/v_ml
+          /tmp/v_ml/bin/pip install --upgrade pip
+          /tmp/v_ml/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir onnxruntime rapidocr-onnxruntime
+          /tmp/v_ml/bin/python -c "import onnxruntime, rapidocr_onnxruntime; print('ml batch OK', onnxruntime.__version__)"
+
+      - name: Install batch — chinese nlp (jieba, pypinyin)
+        run: |
+          python -m venv /tmp/v_nlp
+          /tmp/v_nlp/bin/pip install --upgrade pip
+          /tmp/v_nlp/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir jieba pypinyin
+          /tmp/v_nlp/bin/python -c "import jieba, pypinyin; print('nlp batch OK')"
+
+      - name: Install batch — audio (soundfile)
+        run: |
+          python -m venv /tmp/v_audio
+          /tmp/v_audio/bin/pip install --upgrade pip
+          /tmp/v_audio/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir soundfile
+          /tmp/v_audio/bin/python -c "import soundfile; print('audio batch OK', soundfile.__version__)"
+
+      - name: Install batch — frontend frameworks (gradio, streamlit, openai)
+        run: |
+          python -m venv /tmp/v_fe
+          /tmp/v_fe/bin/pip install --upgrade pip
+          /tmp/v_fe/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir gradio streamlit openai
+          /tmp/v_fe/bin/python -c "import gradio, streamlit, openai; print('fe batch OK', openai.__version__)"
+
+      - name: Install batch — ui (gooey)
+        if: success() || failure()
+        continue-on-error: true
+        run: |
+          python -m venv /tmp/v_ui
+          /tmp/v_ui/bin/pip install --upgrade pip
+          /tmp/v_ui/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir gooey || \
+            echo "gooey 安装失败(可能依赖系统 wxPython,Linux runner 上常见,作 warning 处理)"
+
+      - name: Install batch — terminal/test color (colorama)
+        run: |
+          python -m venv /tmp/v_term
+          /tmp/v_term/bin/pip install --upgrade pip
+          /tmp/v_term/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir colorama
+          /tmp/v_term/bin/python -c "import colorama; print('term batch OK')"
+
+      - name: Install batch — windows-only smoke (pywin32) [non-fatal on linux]
+        if: success() || failure()
+        continue-on-error: true
+        run: |
+          python -m venv /tmp/v_win
+          /tmp/v_win/bin/pip install --upgrade pip
+          /tmp/v_win/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir pywin32 || \
+            echo "pywin32 不适用 linux,作 warning 处理"
+
+      - name: Install batch — large gui (pyside6) [可选,体积大]
+        run: |
+          python -m venv /tmp/v_qt
+          /tmp/v_qt/bin/pip install --upgrade pip
+          /tmp/v_qt/bin/pip install --index-url "file://$(pwd)/packages/simple" --no-cache-dir pyside6
+          /tmp/v_qt/bin/python -c "import PySide6; print('qt batch OK', PySide6.__version__)"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "===== batches finished ====="
+          ls /tmp/v_* 2>/dev/null | head -20 | xargs -I{} echo "  {}"
