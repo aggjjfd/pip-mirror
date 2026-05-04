@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
+import sqlite3
 import threading
 import time
 import urllib.request
@@ -100,3 +102,56 @@ def test_python_builds_index_404_when_missing(tmp_path: Path) -> None:
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_binary_download_full_body(tmp_path: Path) -> None:
+    """回归: copyfile 必须把整个文件写出去,Content-Length 与实际 body 字节数必须一致.
+
+    历史故障: copyfile 早期实现先调 outputfile.tell() 统计字节数,但 socket 包装的
+    BufferedWriter 调 tell 抛 io.UnsupportedOperation,导致 200 头已发但 body 0
+    字节,客户端拿到 'end of file before message length reached'。这个测试用一个
+    >64KB 文件(覆盖多次 read/write 循环)+ sha256 校验 body 完整性。
+    """
+    pb_dir = tmp_path / "python-builds"
+    pb_dir.mkdir(parents=True)
+    payload = (b"PIPMIRROR" * 130_000)[:1_048_576]  # 正好 1 MiB,跨多次 64 KiB 读循环
+    target = pb_dir / "cpython-fake.tar.gz"
+    target.write_bytes(payload)
+    expected_sha = hashlib.sha256(payload).hexdigest()
+
+    httpd, _, port = _start_server(tmp_path)
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/python-builds/cpython-fake.tar.gz"
+        ) as resp:
+            content_length = resp.headers.get("Content-Length")
+            body = resp.read()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+    assert content_length == str(len(payload)), (
+        f"Content-Length 与文件大小不匹配: header={content_length}, "
+        f"file={len(payload)}"
+    )
+    assert len(body) == len(payload), (
+        f"body 字节数与 Content-Length 不一致: body={len(body)}, "
+        f"expected={len(payload)}"
+    )
+    assert hashlib.sha256(body).hexdigest() == expected_sha, (
+        "body 内容哈希与磁盘文件不一致(可能被截断或乱序)"
+    )
+
+    # access_log 应记录正确的 bytes_sent
+    with sqlite3.connect(tmp_path / ".access_log.db") as conn:
+        rows = conn.execute(
+            "SELECT path, status_code, bytes_sent FROM access_log "
+            "WHERE path = '/python-builds/cpython-fake.tar.gz'"
+        ).fetchall()
+    assert rows, "access_log 没记录到这次下载"
+    _, status, bytes_sent = rows[-1]
+    assert status == 200
+    assert bytes_sent == len(payload), (
+        f"access_log.bytes_sent 与实际不符: got {bytes_sent}, "
+        f"expected {len(payload)}"
+    )

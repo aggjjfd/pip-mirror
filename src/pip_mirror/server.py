@@ -50,6 +50,12 @@ class _RequestHandler(http.server.SimpleHTTPRequestHandler):
             return forwarded.split(",")[0].strip()
         return self.client_address[0]
 
+    def log_request(self, code="-", size="-"):
+        """抑制默认 per-response 日志:send_response 触发时 body 还没写,
+        bytes_sent 一定是 0。改在 do_GET finally 里统一记日志。
+        """
+        return
+
     def log_message(self, format: str, *args):
         """覆盖默认日志，使用 AccessLogger 记录到 SQLite."""
         if self._access_logger is None:
@@ -69,13 +75,19 @@ class _RequestHandler(http.server.SimpleHTTPRequestHandler):
         logger.info(f"{record.client_ip} {self.command} {self.path} {self._status_code}")
 
     def copyfile(self, source, outputfile):
-        """覆盖 copyfile 以统计发送字节数."""
-        import shutil
+        """覆盖 copyfile 以统计发送字节数.
 
-        pos = outputfile.tell() if hasattr(outputfile, "tell") else 0
-        shutil.copyfileobj(source, outputfile)
-        if hasattr(outputfile, "tell"):
-            self._response_bytes = outputfile.tell() - pos
+        不能用 outputfile.tell():socket 包装的 BufferedWriter 调 tell 会抛
+        io.UnsupportedOperation。直接读写循环里累加字节数。
+        """
+        sent = 0
+        while True:
+            buf = source.read(64 * 1024)
+            if not buf:
+                break
+            outputfile.write(buf)
+            sent += len(buf)
+        self._response_bytes = sent
 
     def _wants_json(self) -> bool:
         """判断客户端是否请求 JSON 格式（PEP 691）."""
@@ -134,20 +146,23 @@ class _RequestHandler(http.server.SimpleHTTPRequestHandler):
         self._status_code = 200
         self._response_bytes = 0
 
-        parsed_path = urlparse(self.path).path
+        try:
+            parsed_path = urlparse(self.path).path
 
-        if parsed_path == "/python-builds/index.json":
-            self._serve_python_builds_index()
-            return
-
-        if self._is_simple_api_path(parsed_path) and self._wants_json():
-            json_path = self._translate_path_to_json(self.path)
-            if json_path:
-                self._serve_json(json_path)
+            if parsed_path == "/python-builds/index.json":
+                self._serve_python_builds_index()
                 return
 
-        # 默认：调用父类处理（返回 HTML 或文件）
-        super().do_GET()
+            if self._is_simple_api_path(parsed_path) and self._wants_json():
+                json_path = self._translate_path_to_json(self.path)
+                if json_path:
+                    self._serve_json(json_path)
+                    return
+
+            # 默认：调用父类处理（返回 HTML 或文件）
+            super().do_GET()
+        finally:
+            self.log_message("")
 
     def _public_base_url(self) -> str:
         """从 Host header 推导 absolute base URL,fallback 到绑定地址."""
