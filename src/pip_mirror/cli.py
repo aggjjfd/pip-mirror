@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import shutil
 import sys
 import tarfile
@@ -224,7 +225,13 @@ def _cmd_sync_full(args: argparse.Namespace) -> int:
 
 
 def _pack_full_mirror(repo: Path) -> Path:
-    """把 packages/ 整个目录打包到项目根的 mirror.tar.gz(gzip -9,排除 .access_log.db)."""
+    """把 packages/ 整个目录打包到项目根的 mirror.tar.gz(排除 .access_log.db).
+
+    压缩等级由 env `PIP_MIRROR_TAR_COMPRESSION` 控制:
+      - 默认或任何其它值:compresslevel=9(本机/内网部署,体积优先)
+      - `none`:compresslevel=0,只保留 gzip framing,基本不压缩
+        (CI 上 CPU 弱网络强时用,文件名仍是 .tar.gz,外部接口零变化)
+    """
     project_root = Path.cwd()
     archive_path = project_root / "mirror.tar.gz"
     if archive_path.exists():
@@ -238,8 +245,13 @@ def _pack_full_mirror(repo: Path) -> Path:
             return None
         return tarinfo
 
-    logger.info(f"打包 {repo} → {archive_path} (gzip -9)")
-    with tarfile.open(archive_path, "w:gz", compresslevel=9) as tar:
+    if os.environ.get("PIP_MIRROR_TAR_COMPRESSION", "").lower() == "none":
+        compresslevel = 0
+    else:
+        compresslevel = 9
+
+    logger.info(f"打包 {repo} → {archive_path} (gzip level={compresslevel})")
+    with tarfile.open(archive_path, "w:gz", compresslevel=compresslevel) as tar:
         tar.add(repo, arcname=repo.name, filter=_filter)
     return archive_path
 
