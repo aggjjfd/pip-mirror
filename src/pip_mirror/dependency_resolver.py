@@ -73,9 +73,18 @@ def _get_version_info(
 
 
 def _parse_requires_dist(
-    requires_dist: list[str] | None, extras: set[str] | None = None,
+    requires_dist: list[str] | None,
+    extras: set[str] | None = None,
+    python_version: str | None = None,
 ) -> list[DepConstraint]:
-    """解析 requires_dist，返回依赖约束列表."""
+    """解析 requires_dist，返回依赖约束列表.
+
+    Args:
+        requires_dist: PyPI JSON API 的 requires_dist 列表.
+        extras: 当前包激活的 extra 集合.
+        python_version: 目标 Python 版本(如 "3.12")，用于过滤 python_version marker.
+                       None 表示不过滤，保留所有约束(旧行为).
+    """
     if not requires_dist:
         return []
 
@@ -88,7 +97,8 @@ def _parse_requires_dist(
         except Exception:
             continue
 
-        marker_str = str(req.marker) if req.marker else ""
+        marker = req.marker
+        marker_str = str(marker) if marker else ""
         marker_lower = marker_str.lower()
 
         # 跳过 extra 不匹配的依赖
@@ -103,7 +113,19 @@ def _parse_requires_dist(
             if not has_match:
                 continue
 
-        # 忽略环境 marker，尽量多包含依赖
+        # 按 python_version marker 过滤: 只保留匹配当前目标版本的约束
+        if marker is not None and "python_version" in marker_str and python_version is not None:
+            try:
+                env = {
+                    "python_version": python_version,
+                    "python_full_version": python_version + ".0",
+                }
+                if not marker.evaluate(env):
+                    continue
+            except Exception:
+                # evaluate 失败时保守保留
+                pass
+
         specifier = str(req.specifier) if req.specifier else ""
         deps.append(DepConstraint(name=req.name, specifier=specifier))
 
@@ -215,6 +237,7 @@ def _resolve_one_layer(
     pypi_url: str,
     workers: int,
     session: requests.Session,
+    python_version: str | None = None,
 ) -> dict[str, list[str]]:
     """解析一层的依赖约束.
 
@@ -243,13 +266,17 @@ def _resolve_one_layer(
                 if not info:
                     continue
                 requires_dist = info.get("info", {}).get("requires_dist")
-                deps = _parse_requires_dist(requires_dist, extras)
+                deps = _parse_requires_dist(requires_dist, extras, python_version)
                 for dep in deps:
                     all_constraints.setdefault(dep.name, []).append(dep.specifier)
             except Exception as e:
                 logger.warning(f"解析 {pkg}=={ver} 依赖失败: {e}")
 
     return all_constraints
+
+
+# mirror 需要服务的 Python 版本范围(对应 pyproject.toml requires-python ">=3.8")
+_TARGET_PYTHON_VERSIONS = ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
 
 
 def _resolve_single_tree(
@@ -260,6 +287,7 @@ def _resolve_single_tree(
     workers: int,
     max_depth: int,
     allow_prerelease: bool,
+    python_version: str | None = None,
 ) -> dict[str, ResolvedDep]:
     """解析单个顶层包的完整依赖树,约束只在树内累积,不跨树污染."""
     processed: set[str] = {top_package}
@@ -274,8 +302,9 @@ def _resolve_single_tree(
             if not current_layer_packages:
                 break
 
+            py_tag = f"(py{python_version}) " if python_version else ""
             logger.info(
-                f"  [{top_package}] 第 {depth} 层: {len(current_layer_packages)} 个包"
+                f"  [{top_package}] {py_tag}第 {depth} 层: {len(current_layer_packages)} 个包"
             )
 
             constraints = _resolve_one_layer(
@@ -285,6 +314,7 @@ def _resolve_single_tree(
                 pypi_url,
                 workers,
                 session,
+                python_version,
             )
 
             if not constraints:
@@ -301,7 +331,7 @@ def _resolve_single_tree(
                     new_packages.append(dep_name)
 
             if not new_packages:
-                logger.info(f"  [{top_package}] 第 {depth} 层无新包")
+                logger.info(f"  [{top_package}] {py_tag}第 {depth} 层无新包")
                 break
 
             current_layer_packages = []
@@ -326,7 +356,7 @@ def _resolve_single_tree(
                         pass
 
             logger.info(
-                f"  [{top_package}] 第 {depth} 层发现 {len(current_layer_packages)} 个新包"
+                f"  [{top_package}] {py_tag}第 {depth} 层发现 {len(current_layer_packages)} 个新包"
             )
 
     if not accumulated_constraints:
@@ -375,17 +405,6 @@ def _resolve_single_tree(
                             merged_spec=merged_spec,
                             all_versions=all_versions,
                         )
-                    elif all_versions:
-                        fallback = all_versions[:limit]
-                        logger.warning(
-                            f"  ! [{top_package}] {dep_name}: 约束矛盾(filtered=0),"
-                            f"回退无约束下载 latest {len(fallback)} 版本"
-                        )
-                        result[dep_name] = ResolvedDep(
-                            versions=fallback,
-                            merged_spec="",
-                            all_versions=all_versions,
-                        )
                     else:
                         missing.append(dep_name)
 
@@ -404,9 +423,10 @@ def resolve_dependencies(
     max_depth: int = 5,
     allow_prerelease: bool = False,
 ) -> dict[str, ResolvedDep]:
-    """对每个顶层包单独解析完整依赖树,最后简单合并去重.
+    """对每个顶层包 × 每个 Python 版本分别解析,最后合并去重.
 
-    多棵树之间不交叉污染约束;同一依赖在不同树里版本不同时取并集.
+    不同 Python 版本的路径独立解析,避免 python_version marker 被错误 AND 合并;
+    多棵树之间不交叉污染约束;同一依赖在不同树/版本里版本不同时取并集.
     """
     logger.info("解析依赖...")
 
@@ -418,43 +438,44 @@ def resolve_dependencies(
         if extras:
             tree_extras[name] = extras
 
-        tree_result = _resolve_single_tree(
-            top_package=name,
-            top_versions=top_versions,
-            pkg_extras=tree_extras,
-            pypi_url=pypi_url,
-            workers=workers,
-            max_depth=max_depth,
-            allow_prerelease=allow_prerelease,
-        )
+        for py_ver in _TARGET_PYTHON_VERSIONS:
+            tree_result = _resolve_single_tree(
+                top_package=name,
+                top_versions=top_versions,
+                pkg_extras=tree_extras,
+                pypi_url=pypi_url,
+                workers=workers,
+                max_depth=max_depth,
+                allow_prerelease=allow_prerelease,
+                python_version=py_ver,
+            )
 
-        for dep_name, dep in tree_result.items():
-            if dep_name in all_results:
-                existing = all_results[dep_name]
-                # 版本并集,降序去重
-                seen = set(existing.versions)
-                merged = list(existing.versions)
-                for v in dep.versions:
-                    if v not in seen:
-                        seen.add(v)
-                        merged.append(v)
-                try:
-                    merged.sort(key=parse_version, reverse=True)
-                except Exception:
-                    merged.sort(reverse=True)
-                unique: list[str] = []
-                seen2: set[str] = set()
-                for v in merged:
-                    if v not in seen2:
-                        seen2.add(v)
-                        unique.append(v)
-                all_results[dep_name] = ResolvedDep(
-                    versions=unique,
-                    merged_spec="",
-                    all_versions=dep.all_versions,
-                )
-            else:
-                all_results[dep_name] = dep
+            for dep_name, dep in tree_result.items():
+                if dep_name in all_results:
+                    existing = all_results[dep_name]
+                    seen = set(existing.versions)
+                    merged = list(existing.versions)
+                    for v in dep.versions:
+                        if v not in seen:
+                            seen.add(v)
+                            merged.append(v)
+                    try:
+                        merged.sort(key=parse_version, reverse=True)
+                    except Exception:
+                        merged.sort(reverse=True)
+                    unique: list[str] = []
+                    seen2: set[str] = set()
+                    for v in merged:
+                        if v not in seen2:
+                            seen2.add(v)
+                            unique.append(v)
+                    all_results[dep_name] = ResolvedDep(
+                        versions=unique,
+                        merged_spec="",
+                        all_versions=dep.all_versions,
+                    )
+                else:
+                    all_results[dep_name] = dep
 
     total_versions = sum(len(r.versions) for r in all_results.values())
     logger.info(f"  依赖解析完成: {len(all_results)} 个包, {total_versions} 个版本")

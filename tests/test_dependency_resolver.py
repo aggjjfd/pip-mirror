@@ -11,6 +11,7 @@ from pip_mirror.dependency_resolver import (
     ResolvedDep,
     _filter_versions,
     _get_all_versions,
+    _parse_requires_dist,
     extract_extras,
     resolve_dependencies,
 )
@@ -122,42 +123,90 @@ def test_filter_versions_conflicting_spec() -> None:
     assert result == []
 
 
-# ---------- resolve_dependencies 约束矛盾回退 ----------
+# ---------- _parse_requires_dist 按 python_version marker 过滤 ----------
 
 
-def test_resolve_fallback_on_conflicting_spec(
+def test_parse_requires_dist_filters_by_python_version() -> None:
+    """传入 python_version 时,只保留匹配该版本的约束."""
+    reqs = [
+        'dep>=1.0; python_version >= "3.11"',
+        'dep<1.0; python_version < "3.11"',
+        'other; extra == "dev"',
+    ]
+    # python 3.12 应只保留 >=1.0
+    deps = _parse_requires_dist(reqs, extras=set(), python_version="3.12")
+    specs = [d.specifier for d in deps]
+    assert ">=1.0" in specs
+    assert "<1.0" not in specs
+
+    # python 3.9 应只保留 <1.0
+    deps = _parse_requires_dist(reqs, extras=set(), python_version="3.9")
+    specs = [d.specifier for d in deps]
+    assert "<1.0" in specs
+    assert ">=1.0" not in specs
+
+
+def test_parse_requires_dist_no_python_version_keeps_all() -> None:
+    """不传 python_version 时保留所有约束(旧行为)."""
+    reqs = [
+        'dep>=1.0; python_version >= "3.11"',
+        'dep<1.0; python_version < "3.11"',
+    ]
+    deps = _parse_requires_dist(reqs, extras=set())
+    specs = {d.specifier for d in deps}
+    assert specs == {">=1.0", "<1.0"}
+
+
+# ---------- resolve_dependencies 按 Python 版本分组,避免跨版本污染 ----------
+
+
+def test_resolve_per_python_version_isolates_markers(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """约束矛盾导致 filtered=0 时,回退无约束下载 latest 版本,merged_spec 设为空."""
+    """python_version marker 在不同版本间互斥,不应 AND 合并成矛盾."""
     with caplog.at_level("WARNING", logger="pip-mirror"), \
             patch("pip_mirror.dependency_resolver._resolve_one_layer") as mock_layer, \
             patch("pip_mirror.dependency_resolver._get_all_versions") as mock_versions, \
             patch("pip_mirror.dependency_resolver.make_session") as mock_session:
-        # depth=1: pandas 依赖 numpy,约束矛盾; depth=2: numpy 无新依赖
-        mock_layer.side_effect = [
-            {"numpy": [">=2.0", "<1.0"]},
-            {},
-        ]
-        mock_versions.return_value = ["2.0.0", "1.26.0", "1.21.0"]
+        # 模拟 magika 的 requires_dist 结构:
+        # py3.12: onnxruntime>=1.21.0
+        # py3.14: onnxruntime>=1.24.1
+        # 如果不分组 AND 合并,会得到 >=1.21.0,>=1.24.1(不矛盾);
+        # 但真实矛盾场景是: py3.9 <1.20.0 vs py3.14 >=1.24.1
+        def side_effect(
+            packages, pkg_versions, pkg_extras, pypi_url, workers, session,
+            python_version=None,
+        ):
+            if python_version == "3.9":
+                return {"onnxruntime": ["<1.20.0", ">=1.17.0"]}
+            if python_version == "3.14":
+                return {"onnxruntime": [">=1.24.1"]}
+            return {}
+
+        mock_layer.side_effect = side_effect
+        mock_versions.return_value = ["1.24.1", "1.21.0", "1.17.0"]
         mock_cm = MagicMock()
         mock_cm.__enter__ = MagicMock(return_value=MagicMock())
         mock_cm.__exit__ = MagicMock(return_value=False)
         mock_session.return_value = mock_cm
 
         result = resolve_dependencies(
-            top_packages=["pandas"],
-            top_versions={"pandas": ["2.0.0"]},
+            top_packages=["magika"],
+            top_versions={"magika": ["1.0.0"]},
             pypi_url="https://pypi.org",
             workers=1,
         )
 
-        assert "numpy" in result
-        dep = result["numpy"]
+        assert "onnxruntime" in result
+        dep = result["onnxruntime"]
         assert isinstance(dep, ResolvedDep)
-        assert dep.versions == ["2.0.0", "1.26.0", "1.21.0"]
-        assert dep.merged_spec == ""
-        assert any(
-            "约束矛盾" in rec.message and "回退无约束" in rec.message
+        # 3.9 约束 <1.20.0,>=1.17.0 → 过滤后只剩 1.17.0
+        # 3.14 约束 >=1.24.1 → 过滤后只剩 1.24.1
+        # 并集 = [1.24.1, 1.17.0]
+        assert set(dep.versions) == {"1.24.1", "1.17.0"}
+        # 没有 "约束矛盾" / "回退" 日志
+        assert not any(
+            "约束矛盾" in rec.message or "回退" in rec.message
             for rec in caplog.records
-        ), f"应有回退 warning, got: {[r.message for r in caplog.records]}"
+        ), f"不应有 fallback warning, got: {[r.message for r in caplog.records]}"
 
