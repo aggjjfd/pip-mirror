@@ -1,0 +1,219 @@
+name: E2E (Four Modes)
+
+# 端到端测试,串完 pip-mirror 对外四种模式 + 真实客户端验证。
+# 流程(对照 README "四种使用模式"):
+#   1) 模式二 sync-full    → 在 workspace 产 mirror.tar.gz + mirror.sha256
+#   2) 模拟内网            → 解到 /tmp/stage,验证 simple/ 与 python-builds/ 都在
+#   3) 模式三 serve(后台)→ 用 stage 仓库做服务
+#   4) 客户端 uv pip install requests              走镜像装 wheel
+#   5) 客户端 uv python install 3.13               走镜像装 cpython,验证 python-builds 链路
+#   6) 模式一 sync          → 加 colorama 触发 incremental_*.tar.gz
+#   7) import-incremental   → 现算 sha256 写入 stage 的 store.db,客户端立即可装新包
+#   8) --strict happy path  → 同一个 archive 再 import 一次,strict 不报错
+# 模式四(docker build)不在 e2e 内,因为它的产出物是镜像而非数据,与运行时验证无关。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      MIRROR_HOST: 127.0.0.1
+      MIRROR_PORT: '18080'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: 'latest'
+
+      - name: Install pip-mirror deps
+        run: uv sync --no-dev
+
+      - name: Generate sync config (workspace 仓库)
+        run: |
+          cat > e2e.toml <<EOF
+          packages = ["requests"]
+          repository_dir = "${{ github.workspace }}/packages"
+          incremental_dir = "${{ github.workspace }}/incremental"
+          pypi_url = "https://pypi.org"
+          index_url = "https://pypi.org/simple"
+          server_host = "${MIRROR_HOST}"
+          server_port = ${MIRROR_PORT}
+          EOF
+          echo "----- e2e.toml -----"
+          cat e2e.toml
+
+      - name: 'Mode 2 — sync-full produces mirror.tar.gz + mirror.sha256'
+        run: |
+          set -euo pipefail
+          uv run pip-mirror sync-full -c e2e.toml 2>&1 | tee sync-full.log
+          ls -lh mirror.tar.gz mirror.sha256
+          sha256sum -c mirror.sha256
+
+      - name: 'Stage extracted mirror to /tmp/stage (simulate intranet host)'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/stage
+          tar -xzf mirror.tar.gz -C /tmp/stage
+          test -d /tmp/stage/packages/simple/requests
+          test -f /tmp/stage/packages/simple/requests/index.html
+          test -f /tmp/stage/packages/simple/requests/index.json
+          test -f /tmp/stage/packages/.store.db
+          test -f /tmp/stage/packages/python-builds/index.json
+          # access_log.db 不应进 mirror.tar.gz
+          if [ -f /tmp/stage/packages/.access_log.db ]; then
+            echo "BUG: .access_log.db should be filtered out of mirror.tar.gz"
+            exit 1
+          fi
+          echo "----- staged simple/requests/ -----"
+          ls /tmp/stage/packages/simple/requests/
+          echo "----- staged python-builds/ (head 5) -----"
+          ls /tmp/stage/packages/python-builds/ | head -5
+          echo "python-builds index entries: $(python -c 'import json; print(len(json.load(open("/tmp/stage/packages/python-builds/index.json"))))')"
+
+      - name: 'Generate stage config (serve + import-incremental 都用这份)'
+        run: |
+          cat > stage.toml <<EOF
+          packages = ["requests", "colorama"]
+          repository_dir = "/tmp/stage/packages"
+          incremental_dir = "${{ github.workspace }}/incremental"
+          server_host = "${MIRROR_HOST}"
+          server_port = ${MIRROR_PORT}
+          EOF
+          cat stage.toml
+
+      - name: 'Mode 3 — start serve in background'
+        run: |
+          set -euo pipefail
+          uv run pip-mirror serve -c stage.toml > server.log 2>&1 &
+          echo $! > server.pid
+          # 等 server up
+          for i in $(seq 1 30); do
+            if curl -sf "http://${MIRROR_HOST}:${MIRROR_PORT}/simple/requests/" > /dev/null; then
+              echo "server up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          # 必须能拿到 simple/requests/ 与 python-builds/index.json
+          curl -sfI "http://${MIRROR_HOST}:${MIRROR_PORT}/simple/requests/" | head -3
+          curl -sf "http://${MIRROR_HOST}:${MIRROR_PORT}/python-builds/index.json" \
+            | python -c 'import json, sys; d=json.load(sys.stdin); k=next(iter(d)); print(len(d), "entries; first:", k, "->", d[k]["url"])'
+
+      - name: 'Client — uv pip install requests via mirror'
+        run: |
+          set -euo pipefail
+          uv venv /tmp/client
+          export VIRTUAL_ENV=/tmp/client
+          uv pip install --index-url "http://${MIRROR_HOST}:${MIRROR_PORT}/simple" requests
+          /tmp/client/bin/python -c "import requests; print('client requests', requests.__version__)"
+
+      - name: 'Client — uv python install 3.13 via mirror python-builds index'
+        run: |
+          set -euo pipefail
+          export UV_PYTHON_DOWNLOADS_JSON_URL="http://${MIRROR_HOST}:${MIRROR_PORT}/python-builds/index.json"
+          export UV_PYTHON_INSTALL_DIR=/tmp/uv-pythons
+          uv python install 3.13
+          ls /tmp/uv-pythons
+          PYBIN=$(uv python find 3.13)
+          echo "uv python find 3.13 → $PYBIN"
+          "$PYBIN" --version
+          # 确认服务器真的被打过 python-builds 流量(不是 uv 走了上游)
+          PYHITS=$(sqlite3 /tmp/stage/packages/.access_log.db \
+            "SELECT COUNT(*) FROM access_log WHERE path LIKE '/python-builds/%';")
+          echo "python-builds hits in mirror access_log: $PYHITS"
+          test "$PYHITS" -ge 1
+
+      - name: 'Mode 1 — incremental sync(adds colorama)'
+        run: |
+          set -euo pipefail
+          # 用同样的 workspace 仓库,但 packages 列表多一个 colorama
+          cat > e2e-inc.toml <<EOF
+          packages = ["requests", "colorama"]
+          repository_dir = "${{ github.workspace }}/packages"
+          incremental_dir = "${{ github.workspace }}/incremental"
+          pypi_url = "https://pypi.org"
+          index_url = "https://pypi.org/simple"
+          server_host = "${MIRROR_HOST}"
+          server_port = ${MIRROR_PORT}
+          EOF
+          uv run pip-mirror sync -c e2e-inc.toml 2>&1 | tee sync.log
+          ls -lh incremental/incremental_*.tar.gz
+          ARCHIVE=$(ls incremental/incremental_*.tar.gz | head -1)
+          echo "INCREMENTAL=$ARCHIVE" >> "$GITHUB_ENV"
+          # 增量包必须含 colorama;不该再含 requests(已写入 store)
+          tar -tzf "$ARCHIVE" | tee /tmp/inc-list.txt
+          grep -E '^simple/colorama/' /tmp/inc-list.txt
+          if grep -E '^simple/requests/' /tmp/inc-list.txt; then
+            echo "BUG: incremental should NOT re-include already-synced requests files"
+            exit 1
+          fi
+
+      - name: 'import-incremental into stage(recompute sha256)'
+        run: |
+          set -euo pipefail
+          uv run pip-mirror import-incremental "$INCREMENTAL" -c stage.toml 2>&1 | tee import.log
+          # stage 的 .store.db 必须有 colorama 行,且 sha256 长度 64
+          NCOL=$(sqlite3 /tmp/stage/packages/.store.db \
+            "SELECT COUNT(*) FROM downloaded_files WHERE package_name='colorama' AND LENGTH(sha256)=64;")
+          echo "colorama rows in stage store: $NCOL"
+          test "$NCOL" -ge 1
+          # 索引也要被重建
+          test -f /tmp/stage/packages/simple/colorama/index.html
+          test -f /tmp/stage/packages/simple/colorama/index.json
+          # manifest.json 不应被留在仓库根
+          if [ -f /tmp/stage/packages/manifest.json ]; then
+            echo "BUG: manifest.json should be cleaned up after import"
+            exit 1
+          fi
+
+      - name: 'Client — uv pip install colorama (now served by live mirror)'
+        run: |
+          set -euo pipefail
+          export VIRTUAL_ENV=/tmp/client
+          uv pip install --index-url "http://${MIRROR_HOST}:${MIRROR_PORT}/simple" colorama
+          /tmp/client/bin/python -c "import colorama; print('client colorama OK')"
+
+      - name: '--strict happy path (re-import succeeds, no failures)'
+        run: |
+          set -euo pipefail
+          uv run pip-mirror import-incremental "$INCREMENTAL" -c stage.toml --strict 2>&1 | tee strict.log
+
+      - name: 'Stop server'
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill "$(cat server.pid)" 2>/dev/null || true
+          fi
+          pkill -f 'pip-mirror serve' 2>/dev/null || true
+          echo "===== tail server.log ====="
+          tail -100 server.log 2>/dev/null || echo "(no server.log)"
+
+      - name: 'Upload e2e logs'
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ github.run_id }}
+          path: |
+            sync-full.log
+            sync.log
+            import.log
+            strict.log
+            server.log
+            mirror.sha256
+            e2e.toml
+            stage.toml
+            e2e-inc.toml
+          retention-days: 7
+          if-no-files-found: warn
