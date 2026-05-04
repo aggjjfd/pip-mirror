@@ -1,15 +1,22 @@
 """Wheel 文件平台过滤逻辑."""
 
 # 接受的平台 tag
+# 所有 x86_64 manylinux 标准都接受 —— 老的 manylinux 标准声明
+# 更宽的 glibc 兼容范围（向后兼容），同样能在现代 Linux 上运行。
+# PEP 600 复合 tag（如 manylinux1_x86_64.manylinux_2_28_x86_64）是 OR 语义，
+# 不能因为出现“老”标准就拒绝整个 wheel。
 _ACCEPTED_PLATFORMS = {
     # Windows x86 (32-bit)
     "win32",
     # Windows x64 (64-bit)
     "win_amd64",
-    # Linux x86_64 - 保留 manylinux2014 (glibc 2.17) 及以上
-    # manylinux2014 对应 CentOS 7，在 Ubuntu 20+ (glibc 2.31) 上可运行
-    "manylinux2014_x86_64",
-    "manylinux_2_17_x86_64",
+    # Linux x86_64 - 全系列 manylinux 标准（向后兼容）
+    "manylinux1_x86_64",          # PEP 513, glibc 2.5
+    "manylinux2010_x86_64",       # PEP 571, glibc 2.12
+    "manylinux2014_x86_64",       # PEP 599, glibc 2.17
+    "manylinux_2_5_x86_64",       # PEP 600 ≡ manylinux1
+    "manylinux_2_12_x86_64",      # PEP 600 ≡ manylinux2010
+    "manylinux_2_17_x86_64",      # PEP 600 ≡ manylinux2014
     "manylinux_2_24_x86_64",
     "manylinux_2_28_x86_64",
     "manylinux_2_31_x86_64",
@@ -22,6 +29,7 @@ _ACCEPTED_PLATFORMS = {
 }
 
 # 拒绝的平台 tag（包含这些子串的直接排除）
+# 仅排除真正不兼容的架构 / libc，不要在此列出“老旧但 x86_64 兼容”的 manylinux 标准。
 _REJECTED_SUBSTRINGS = (
     # ARM 架构
     "aarch64",
@@ -41,11 +49,6 @@ _REJECTED_SUBSTRINGS = (
     "ppc64",
     "riscv64",
     "wasm32",
-    # 特别老旧的 manylinux
-    "manylinux1_",
-    "manylinux2010_",
-    "manylinux_2_5_",
-    "manylinux_2_12_",
 )
 
 
