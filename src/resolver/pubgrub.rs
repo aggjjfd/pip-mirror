@@ -5,9 +5,6 @@ use dashmap::DashMap;
 use pep440_rs::Version;
 use pubgrub::OfflineDependencyProvider;
 use pubgrub::Ranges;
-use tracing::{info, warn};
-
-use super::types::all_targets;
 
 /// Result of a per-target dependency resolution.
 pub type Solution = DashMap<String, Version>;
@@ -69,19 +66,19 @@ pub fn compute_version_windows(
     result
 }
 
-// ── pubgrub resolver ──
+// ── pubgrub solver ──
 
-pub type DepSpec = (String, String); // (package_name, pep440_specifier)
+pub type DepSpec = (String, String);
 
-struct ProviderCtx<'a> {
-    packages: &'a HashSet<String>,
-    top_pkg: &'a str,
-    top_ver: &'a Version,
-    versions: &'a HashMap<String, Vec<Version>>,
-    deps: &'a HashMap<(String, usize), Vec<DepSpec>>,
+pub struct ProviderCtx<'a> {
+    pub packages: &'a HashSet<String>,
+    pub top_pkg: &'a str,
+    pub top_ver: &'a Version,
+    pub versions: &'a HashMap<String, Vec<Version>>,
+    pub deps: &'a HashMap<(String, usize), Vec<DepSpec>>,
 }
 
-fn dep_to_range(
+pub fn dep_to_range(
     dep_name: &str,
     spec: &str,
     versions: &HashMap<String, Vec<Version>>,
@@ -110,7 +107,7 @@ fn pkg_deps(
         .unwrap_or_default()
 }
 
-fn build_provider(
+pub fn build_provider(
     ctx: &ProviderCtx<'_>,
 ) -> OfflineDependencyProvider<String, Ranges<u32>> {
     let mut p = OfflineDependencyProvider::new();
@@ -160,7 +157,6 @@ fn parse_specs(spec: &str) -> Option<Vec<pep440_rs::VersionSpecifier>> {
     if specs.is_empty() { None } else { Some(specs) }
 }
 
-/// Convert a PEP 440 specifier to a Ranges<u32> over version indices (descending).
 fn spec_to_range(versions: &[Version], spec: &str) -> Option<Ranges<u32>> {
     let specs = match parse_specs(spec) {
         Some(s) => s,
@@ -171,8 +167,7 @@ fn spec_to_range(versions: &[Version], spec: &str) -> Option<Ranges<u32>> {
         if !specs.iter().all(|s| s.contains(ver)) {
             continue;
         }
-        let idx_u: u32 = u32::try_from(idx).ok()?;
-        let s = Ranges::singleton(idx_u);
+        let s = Ranges::singleton(u32::try_from(idx).ok()?);
         range = Some(match range {
             None => s,
             Some(r) => r.union(&s),
@@ -185,8 +180,9 @@ pub fn extract_extras(package_ref: &str) -> (String, HashSet<String>) {
     match package_ref.split_once('[') {
         None => (package_ref.to_string(), HashSet::new()),
         Some((name, rest)) => {
-            let extras_part = rest.strip_suffix(']').unwrap_or(rest);
-            let extras: HashSet<_> = extras_part
+            let extras: HashSet<_> = rest
+                .strip_suffix(']')
+                .unwrap_or(rest)
                 .split(',')
                 .map(|e| e.trim().to_string())
                 .filter(|e| !e.is_empty())
@@ -202,40 +198,19 @@ pub fn bare_name(package_ref: &str) -> String {
         .map_or(package_ref.to_string(), |(n, _)| n.to_string())
 }
 
-// ── resolver entry point ──
-
-pub struct ResolveParams<'a> {
-    pub top_packages: &'a [String],
-    pub top_versions: &'a DashMap<String, Vec<Version>>,
-    pub pypi_url: &'a str,
-    pub max_versions: usize,
-}
-
-pub async fn resolve_dependencies(
-    params: &ResolveParams<'_>,
-    session: &reqwest::Client,
-) -> DashMap<String, Vec<Version>> {
-    let targets = all_targets();
-    let all_solutions: Vec<Solution> = Vec::new();
-
-    for target in &targets {
-        info!("  解析 target {target}");
-        // Verify build_provider compiles (real HTTP fetch next step)
-        let dummy_versions = HashMap::new();
-        let dummy_deps = HashMap::new();
-        let dummy_pkgs = HashSet::new();
-        let dummy_ver = Version::from_str("1.0.0").unwrap();
-        let _provider = build_provider(&ProviderCtx {
-            packages: &dummy_pkgs,
-            top_pkg: "x",
-            top_ver: &dummy_ver,
-            versions: &dummy_versions,
-            deps: &dummy_deps,
-        });
-        let _ = (params, session, target);
+pub fn parse_python_requires(lines: &[String]) -> Vec<DepSpec> {
+    let mut deps = Vec::new();
+    for line in lines {
+        if line.contains("extra ==") {
+            continue;
+        }
+        let req = line.split(';').next().unwrap_or(line).trim();
+        let (name, spec) = match req.split_once(' ') {
+            Some((n, s)) => (n.to_string(), s.to_string()),
+            None => (req.to_string(), String::new()),
+        };
+        let clean = name.split('[').next().unwrap_or(&name).to_string();
+        deps.push((clean, spec));
     }
-
-    warn!("pubgrub resolver stub — returning empty list");
-    let _ = all_solutions;
-    DashMap::new()
+    deps
 }

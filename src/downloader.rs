@@ -237,3 +237,60 @@ pub fn pack_full_mirror(
 pub fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
     crate::store::DownloadStore::hash_file(path)
 }
+
+// ── PyPI data fetching (used by resolver) ──
+
+use pep440_rs::Version;
+use std::str::FromStr;
+
+pub async fn get_all_versions(
+    client: &Client,
+    package: &str,
+    pypi_url: &str,
+) -> Result<Vec<Version>, reqwest::Error> {
+    let normalized = crate::filters::normalize_package_name(package);
+    let url = format!(
+        "{}/pypi/{}/json",
+        pypi_url.trim_end_matches('/'),
+        normalized
+    );
+    let resp: serde_json::Value = client.get(&url).send().await?.json().await?;
+    let mut versions: Vec<Version> = resp
+        .get("releases")
+        .and_then(|r| r.as_object())
+        .map(|obj| {
+            obj.keys()
+                .filter_map(|v| Version::from_str(v).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    versions.sort_by(|a, b| b.cmp(a));
+    Ok(versions)
+}
+
+/// Get requires_dist for a specific package version. Returns list of (dep_name, specifier, extras_marker_str).
+pub async fn get_requires_dist(
+    client: &Client,
+    package: &str,
+    version: &str,
+    pypi_url: &str,
+) -> Result<Option<Vec<String>>, reqwest::Error> {
+    let normalized = crate::filters::normalize_package_name(package);
+    let url = format!(
+        "{}/pypi/{}/{}/json",
+        pypi_url.trim_end_matches('/'),
+        normalized,
+        version
+    );
+    let resp: serde_json::Value = client.get(&url).send().await?.json().await?;
+    let rd = resp
+        .get("info")
+        .and_then(|i| i.get("requires_dist"))
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        });
+    Ok(rd)
+}
