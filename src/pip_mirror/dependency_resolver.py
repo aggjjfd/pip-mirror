@@ -412,7 +412,7 @@ def resolve_dependencies(
             f"  ! 跳过 {len(missing)} 个依赖(无法获取版本或过滤后为空): {preview}{more}",
         )
 
-    total_versions = sum(len(v) for v in result.values())
+    total_versions = sum(len(r.versions) for r in result.values())
     logger.info(f"  依赖解析完成: {len(result)} 个包, {total_versions} 个版本")
 
     return result
