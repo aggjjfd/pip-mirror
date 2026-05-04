@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any
@@ -113,18 +114,26 @@ def _parse_requires_dist(
             if not has_match:
                 continue
 
-        # 按 python_version marker 过滤: 只保留匹配当前目标版本的约束
-        if marker is not None and "python_version" in marker_str and python_version is not None:
-            try:
-                env = {
-                    "python_version": python_version,
-                    "python_full_version": python_version + ".0",
-                }
-                if not marker.evaluate(env):
-                    continue
-            except Exception:
-                # evaluate 失败时保守保留
-                pass
+        # 按环境 marker 过滤: 只保留匹配当前运行环境/目标 Python 版本的约束.
+        # mirror 在 Linux 上构建,sys_platform=="win32" 的约束会被跳过;
+        # 这是设计取舍:跨平台版本约束矛盾极少见,避免 AND 合并后无解.
+        if marker is not None:
+            env: dict[str, str] = {}
+            if python_version is not None and "python_version" in marker_str:
+                env["python_version"] = python_version
+                env["python_full_version"] = python_version + ".0"
+            if "sys_platform" in marker_str:
+                env["sys_platform"] = sys.platform
+            if "platform_machine" in marker_str:
+                import platform
+                env["platform_machine"] = platform.machine()
+            if env:
+                try:
+                    if not marker.evaluate(env):
+                        continue
+                except Exception:
+                    # evaluate 失败时保守保留
+                    pass
 
         specifier = str(req.specifier) if req.specifier else ""
         deps.append(DepConstraint(name=req.name, specifier=specifier))
