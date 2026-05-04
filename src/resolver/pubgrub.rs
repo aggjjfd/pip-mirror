@@ -139,7 +139,7 @@ pub fn build_provider(
     p
 }
 
-fn parse_specs(spec: &str) -> Option<Vec<pep440_rs::VersionSpecifier>> {
+pub fn parse_specs(spec: &str) -> Option<Vec<pep440_rs::VersionSpecifier>> {
     if spec.is_empty() {
         return None;
     }
@@ -157,7 +157,7 @@ fn parse_specs(spec: &str) -> Option<Vec<pep440_rs::VersionSpecifier>> {
     if specs.is_empty() { None } else { Some(specs) }
 }
 
-fn spec_to_range(versions: &[Version], spec: &str) -> Option<Ranges<u32>> {
+pub fn spec_to_range(versions: &[Version], spec: &str) -> Option<Ranges<u32>> {
     let specs = match parse_specs(spec) {
         Some(s) => s,
         None => return Some(Ranges::full()),
