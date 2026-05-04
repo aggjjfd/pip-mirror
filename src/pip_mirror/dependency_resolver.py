@@ -361,7 +361,7 @@ def _resolve_single_tree(
                     limit = 10 if "<" in merged_spec else 3
                     to_keep = filtered[:limit]
 
-                    if not to_keep or len(to_keep) < limit:
+                    if not to_keep:
                         logger.warning(
                             f"  ! [{top_package}] {dep_name}: "
                             f"spec='{merged_spec or '(empty)'}', "
