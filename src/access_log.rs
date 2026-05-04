@@ -111,29 +111,28 @@ impl AccessLogger {
             .collect()
     }
 
+    fn record_from_row(
+        row: &rusqlite::Row<'_>,
+    ) -> rusqlite::Result<AccessRecord> {
+        Ok(AccessRecord {
+            timestamp: row.get("timestamp")?,
+            client_ip: row.get("client_ip")?,
+            method: row.get("method")?,
+            path: row.get("path")?,
+            status_code: row.get("status_code")?,
+            user_agent: row.get("user_agent")?,
+            bytes_sent: row.get("bytes_sent")?,
+            referer: row.get("referer")?,
+        })
+    }
+
     pub fn get_recent(&self, limit: usize) -> Vec<AccessRecord> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT timestamp, client_ip, method, path, status_code, user_agent, bytes_sent, referer
-                 FROM access_log ORDER BY id DESC LIMIT ?1",
-            )
-            .unwrap();
-        stmt.query_map([limit as i64], |row| {
-            Ok(AccessRecord {
-                timestamp: row.get(0)?,
-                client_ip: row.get(1)?,
-                method: row.get(2)?,
-                path: row.get(3)?,
-                status_code: row.get(4)?,
-                user_agent: row.get(5)?,
-                bytes_sent: row.get(6)?,
-                referer: row.get(7)?,
-            })
-        })
-        .unwrap()
-        .flatten()
-        .collect()
+        let mut stmt = conn.prepare("SELECT timestamp, client_ip, method, path, status_code, user_agent, bytes_sent, referer FROM access_log ORDER BY id DESC LIMIT ?1").unwrap();
+        stmt.query_map([limit as i64], Self::record_from_row)
+            .unwrap()
+            .flatten()
+            .collect()
     }
 }
 

@@ -87,7 +87,9 @@ fn try_env() -> Option<Config> {
 }
 
 impl Config {
-    pub fn load(path: Option<&Path>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load(
+        path: Option<&Path>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let Some(p) = path else {
             return Ok(try_pyproject().or_else(try_env).unwrap_or_default());
         };

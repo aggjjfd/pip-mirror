@@ -7,7 +7,9 @@ use flate2::write::GzEncoder;
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 
-use crate::filters::{is_accepted_wheel, is_source_distribution, platform_to_target};
+use crate::filters::{
+    is_accepted_wheel, is_source_distribution, platform_to_target,
+};
 
 /// File metadata as returned by PyPI JSON API.
 #[derive(Debug, Clone)]
@@ -31,7 +33,9 @@ pub struct DownloadResult {
 
 // ── helpers for flattening deep nesting ──
 
-fn extract_file_fields(value: &serde_json::Value) -> (String, String, Option<String>, Option<u64>) {
+fn extract_file_fields(
+    value: &serde_json::Value,
+) -> (String, String, Option<String>, Option<u64>) {
     let filename = value["filename"].as_str().unwrap_or("").to_string();
     let file_url = value["url"].as_str().unwrap_or("").to_string();
     let sha256 = value
@@ -43,25 +47,14 @@ fn extract_file_fields(value: &serde_json::Value) -> (String, String, Option<Str
     (filename, file_url, sha256, size)
 }
 
-/// Fetch file list from PyPI JSON API.
-pub async fn fetch_json_api(
-    client: &Client,
-    package_name: &str,
-    pypi_url: &str,
-) -> Result<Vec<FileInfo>, reqwest::Error> {
-    let normalized = super::filters::normalize_package_name(package_name);
-    let url = format!(
-        "{}/pypi/{}/json",
-        pypi_url.trim_end_matches('/'),
-        normalized
-    );
-    let resp: serde_json::Value = client.get(&url).send().await?.json().await?;
-
+fn collect_release_files(
+    releases: &serde_json::Value,
+    pkg: &str,
+) -> Vec<FileInfo> {
     let mut files = Vec::new();
-    let Some(releases) = resp.get("releases") else {
-        return Ok(files);
-    };
-    for (version, file_list) in releases.as_object().unwrap_or(&serde_json::Map::new()) {
+    for (version, file_list) in
+        releases.as_object().unwrap_or(&serde_json::Map::new())
+    {
         for f in file_list.as_array().unwrap_or(&vec![]) {
             let (filename, file_url, sha256, size) = extract_file_fields(f);
             files.push(FileInfo {
@@ -69,16 +62,36 @@ pub async fn fetch_json_api(
                 url: file_url,
                 sha256,
                 size,
-                package_name: package_name.to_string(),
+                package_name: pkg.to_string(),
                 version: version.clone(),
             });
         }
     }
-    Ok(files)
+    files
+}
+
+pub async fn fetch_json_api(
+    client: &Client,
+    pkg: &str,
+    pypi_url: &str,
+) -> Result<Vec<FileInfo>, reqwest::Error> {
+    let url = format!(
+        "{}/pypi/{}/json",
+        pypi_url.trim_end_matches('/'),
+        super::filters::normalize_package_name(pkg)
+    );
+    let resp: serde_json::Value = client.get(&url).send().await?.json().await?;
+    Ok(resp
+        .get("releases")
+        .map(|r| collect_release_files(r, pkg))
+        .unwrap_or_default())
 }
 
 /// Select the latest `max_versions` versions from a file list.
-pub fn select_latest_versions(files: &[FileInfo], max_versions: usize) -> Vec<FileInfo> {
+pub fn select_latest_versions(
+    files: &[FileInfo],
+    max_versions: usize,
+) -> Vec<FileInfo> {
     if max_versions == 0 {
         return files.to_vec();
     }
@@ -98,7 +111,8 @@ pub fn select_latest_versions(files: &[FileInfo], max_versions: usize) -> Vec<Fi
             )
     });
 
-    let selected: HashSet<_> = versions.into_iter().take(max_versions).collect();
+    let selected: HashSet<_> =
+        versions.into_iter().take(max_versions).collect();
     files
         .iter()
         .filter(|f| selected.contains(&f.version))
@@ -160,46 +174,47 @@ pub fn backfill_one_target(
     None
 }
 
-/// Download a single file.
-#[allow(dead_code)]
-async fn download_file(client: &Client, file_info: &FileInfo, dest_path: &Path) -> (bool, String) {
+fn hash_ok(bytes: &[u8], expected: &str) -> bool {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize()).to_lowercase() == expected.to_lowercase()
+}
+
+async fn write_atomic(dest_path: &Path, bytes: &[u8]) -> (bool, String) {
     if let Some(parent) = dest_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
+    let tmp = dest_path.with_extension("tmp");
+    if let Err(e) = tokio::fs::write(&tmp, bytes).await {
+        return (false, format!("写入: {e}"));
+    }
+    if let Err(e) = tokio::fs::rename(&tmp, dest_path).await {
+        return (false, format!("重命名: {e}"));
+    }
+    (true, String::new())
+}
 
-    let url = file_info.url.split('#').next().unwrap_or(&file_info.url);
-    let resp = match client.get(url).send().await {
-        Ok(r) => r,
-        Err(e) => return (false, format!("网络错误: {e}")),
+/// Download a single file.
+#[allow(dead_code)]
+async fn download_file(
+    client: &Client,
+    fi: &FileInfo,
+    dest: &Path,
+) -> (bool, String) {
+    let url = fi.url.split('#').next().unwrap_or(&fi.url);
+    let Ok(resp) = client.get(url).send().await else {
+        return (false, "网络错误".into());
     };
-
     if !resp.status().is_success() {
         return (false, format!("HTTP {}", resp.status()));
     }
-
-    let bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => return (false, format!("读取失败: {e}")),
+    let Ok(bytes) = resp.bytes().await else {
+        return (false, "读取失败".into());
     };
-
-    if let Some(expected) = &file_info.sha256 {
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let actual = format!("{:x}", hasher.finalize());
-        if actual.to_lowercase() != expected.to_lowercase() {
-            return (false, "hash 校验失败".into());
-        }
+    if fi.sha256.as_ref().is_some_and(|e| !hash_ok(&bytes, e)) {
+        return (false, "hash 校验失败".into());
     }
-
-    let tmp = dest_path.with_extension("tmp");
-    let _ = tokio::fs::write(&tmp, &bytes)
-        .await
-        .map_err(|e| (false, format!("写入: {e}")));
-    let _ = tokio::fs::rename(&tmp, dest_path)
-        .await
-        .map_err(|e| (false, format!("重命名: {e}")));
-
-    (true, String::new())
+    write_atomic(dest, &bytes).await
 }
 
 /// Package the repository directory into a tar.gz archive.

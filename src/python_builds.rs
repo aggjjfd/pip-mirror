@@ -5,8 +5,7 @@ use reqwest::Client;
 use sha2::{Digest, Sha256};
 use tracing::info;
 
-const UV_METADATA_URL: &str =
-    "https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json";
+const UV_METADATA_URL: &str = "https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json";
 
 const TARGET_MINORS: &[u32] = &[8, 9, 10, 11, 12, 13, 14];
 
@@ -23,7 +22,8 @@ pub async fn fetch_python_builds(
     client: &Client,
 ) -> Result<Vec<PythonBuildEntry>, Box<dyn std::error::Error>> {
     info!("获取 uv metadata: {UV_METADATA_URL}");
-    let resp: serde_json::Value = client.get(UV_METADATA_URL).send().await?.json().await?;
+    let resp: serde_json::Value =
+        client.get(UV_METADATA_URL).send().await?.json().await?;
 
     let target_entries: Vec<_> = resp
         .as_object()
@@ -39,50 +39,42 @@ pub async fn fetch_python_builds(
     let latest = group_by_platform(&target_entries);
     info!("去重后最新 build: {}", latest.len());
 
-    let entries: Vec<PythonBuildEntry> = latest
-        .into_iter()
-        .map(|(key, entry)| {
-            let url = entry["url"].as_str().unwrap_or("").to_string();
-            let filename = if let Some(pos) = url.rfind('/') {
-                url[pos + 1..].to_string()
-            } else {
-                String::new()
-            };
-            PythonBuildEntry {
-                key,
-                url,
-                sha256: entry["sha256"].as_str().map(String::from),
-                filename,
-            }
-        })
-        .collect();
+    fn build_entry(key: String, entry: serde_json::Value) -> PythonBuildEntry {
+        let url = entry["url"].as_str().unwrap_or("").to_string();
+        let filename = url
+            .rfind('/')
+            .map(|p| url[p + 1..].to_string())
+            .unwrap_or_default();
+        let sha = entry["sha256"].as_str().map(String::from);
+        PythonBuildEntry {
+            key,
+            url,
+            sha256: sha,
+            filename,
+        }
+    }
 
+    let entries: Vec<PythonBuildEntry> =
+        latest.into_iter().map(|(k, e)| build_entry(k, e)).collect();
     Ok(entries)
 }
 
-fn is_target_entry(key: &str, entry: &serde_json::Value) -> bool {
-    if entry
+fn bail_entry(entry: &serde_json::Value) -> bool {
+    entry
         .get("prerelease")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
-    {
-        return false;
-    }
-    if entry.get("major").and_then(|v| v.as_u64()) != Some(3) {
-        return false;
-    }
-    let minor = entry.get("minor").and_then(|v| v.as_u64());
-    if !minor.is_some_and(|m| TARGET_MINORS.contains(&(m as u32))) {
-        return false;
-    }
-    if key.contains("+debug") {
-        return false;
-    }
-    let url = entry.get("url").and_then(|u| u.as_str()).unwrap_or("");
-    if !url.contains("install_only_stripped") {
-        return false;
-    }
+        || entry.get("major").and_then(|v| v.as_u64()) != Some(3)
+}
 
+fn target_minor_ok(entry: &serde_json::Value) -> bool {
+    entry
+        .get("minor")
+        .and_then(|v| v.as_u64())
+        .is_some_and(|m| TARGET_MINORS.contains(&(m as u32)))
+}
+
+fn platform_match(entry: &serde_json::Value) -> bool {
     let os = entry.get("os").and_then(|o| o.as_str()).unwrap_or("");
     let arch_family = entry
         .get("arch")
@@ -90,18 +82,29 @@ fn is_target_entry(key: &str, entry: &serde_json::Value) -> bool {
         .and_then(|f| f.as_str())
         .unwrap_or("");
     let libc = entry.get("libc").and_then(|l| l.as_str()).unwrap_or("");
-
     matches!(
         (os, arch_family, libc),
         ("windows", "x86_64" | "i686", "none") | ("linux", "x86_64", "gnu")
     )
 }
 
+fn is_target_entry(key: &str, entry: &serde_json::Value) -> bool {
+    if bail_entry(entry) || !target_minor_ok(entry) {
+        return false;
+    }
+    if key.contains("+debug") {
+        return false;
+    }
+    let url = entry.get("url").and_then(|u| u.as_str()).unwrap_or("");
+    url.contains("install_only_stripped") && platform_match(entry)
+}
+
 fn group_by_platform(
     entries: &[(String, serde_json::Value)],
 ) -> HashMap<String, serde_json::Value> {
     type PlatformKey = (u64, String, String, String, String);
-    let mut groups: HashMap<PlatformKey, Vec<&(String, serde_json::Value)>> = HashMap::new();
+    let mut groups: HashMap<PlatformKey, Vec<&(String, serde_json::Value)>> =
+        HashMap::new();
 
     for item in entries {
         let entry = &item.1;
@@ -134,8 +137,10 @@ fn group_by_platform(
     let mut result = HashMap::new();
     for (_group_key, mut items) in groups {
         items.sort_by(|a, b| {
-            let a_build = a.1.get("build").and_then(|v| v.as_str()).unwrap_or("");
-            let b_build = b.1.get("build").and_then(|v| v.as_str()).unwrap_or("");
+            let a_build =
+                a.1.get("build").and_then(|v| v.as_str()).unwrap_or("");
+            let b_build =
+                b.1.get("build").and_then(|v| v.as_str()).unwrap_or("");
             b_build.cmp(a_build)
         });
         let best = items[0];
@@ -144,42 +149,54 @@ fn group_by_platform(
     result
 }
 
-/// Download a single Python build, return status.
+fn should_skip_existing(dest: &Path, expected: &Option<String>) -> bool {
+    if !dest.exists() {
+        return false;
+    }
+    match expected {
+        Some(e) => crate::downloader::sha256_file(dest)
+            .is_ok_and(|a| a.to_lowercase() == e.to_lowercase()),
+        None => true,
+    }
+}
+
+fn verify_sha256(
+    bytes: &[u8],
+    expected: &str,
+    filename: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let actual = format!("{:x}", hasher.finalize());
+    if actual.to_lowercase() != expected.to_lowercase() {
+        return Err(format!("sha256 校验失败: {filename}").into());
+    }
+    Ok(())
+}
+
+async fn fetch_and_verify(
+    client: &Client,
+    entry: &PythonBuildEntry,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let bytes = client.get(&entry.url).send().await?.bytes().await?;
+    if let Some(e) = &entry.sha256 {
+        verify_sha256(&bytes, e, &entry.filename)?;
+    }
+    Ok(bytes.to_vec())
+}
+
 pub async fn download_python_build(
     client: &Client,
     entry: &PythonBuildEntry,
     dest_dir: &Path,
 ) -> Result<(PathBuf, bool), Box<dyn std::error::Error>> {
     let dest = dest_dir.join(&entry.filename);
-
-    // Skip if already exists and sha256 matches
-    if dest.exists() {
-        let skip = match &entry.sha256 {
-            Some(expected) => crate::downloader::sha256_file(&dest)
-                .is_ok_and(|a| a.to_lowercase() == expected.to_lowercase()),
-            None => true,
-        };
-        if skip {
-            return Ok((dest, false));
-        }
+    if should_skip_existing(&dest, &entry.sha256) {
+        return Ok((dest, false));
     }
-
-    let resp = client.get(&entry.url).send().await?;
-    let bytes = resp.bytes().await?;
-
-    // Verify sha256
-    if let Some(expected) = &entry.sha256 {
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let actual = format!("{:x}", hasher.finalize());
-        if actual.to_lowercase() != expected.to_lowercase() {
-            return Err(format!("sha256 校验失败: {}", entry.filename).into());
-        }
-    }
-
+    let bytes = fetch_and_verify(client, entry).await?;
     let tmp = dest_dir.join(format!("{}.tmp", entry.filename));
     tokio::fs::write(&tmp, &bytes).await?;
     tokio::fs::rename(&tmp, &dest).await?;
-
-    Ok((dest, true)) // downloaded
+    Ok((dest, true))
 }

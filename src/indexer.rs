@@ -13,70 +13,96 @@ static PACKAGE_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>Links for {package_name}</title></head>
 <body><h1>Links for {package_name}</h1>{links}</body></html>"#;
 
+fn collect_files(path: &std::path::Path) -> Vec<String> {
+    let mut files: Vec<String> = std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|f| f.path().is_file())
+        .map(|f| f.file_name().to_string_lossy().to_string())
+        .filter(|n| {
+            !n.starts_with('.')
+                && !n.ends_with(".tmp")
+                && !n.ends_with(".metadata")
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+struct IndexPkg<'a> {
+    path: &'a std::path::Path,
+    name: &'a str,
+    hashes: &'a DashMap<String, String>,
+    meta: &'a DashMap<String, String>,
+}
+
+fn index_pkg(ctx: &IndexPkg<'_>) {
+    let files = collect_files(ctx.path);
+    let pkg_ctx = PkgCtx {
+        package_name: ctx.name,
+        files: &files,
+        hashes: ctx.hashes,
+        metadata_hashes: ctx.meta,
+    };
+    let _ = std::fs::write(
+        ctx.path.join("index.html"),
+        generate_package_html(&pkg_ctx),
+    );
+    let _ = std::fs::write(
+        ctx.path.join("index.json"),
+        generate_package_json(&pkg_ctx),
+    );
+}
+
 pub fn generate_index(repository_dir: &Path) {
     let simple_dir = repository_dir.join("simple");
     if !simple_dir.exists() {
         info!("仓库目录为空，跳过索引生成");
         return;
     }
-
     info!("生成 PEP 503 / PEP 691 索引...");
-
     let store = DownloadStore::open(&repository_dir.join(".store.db"))
         .unwrap_or_else(|_| panic!("无法打开 .store.db"));
     let hashes = store.get_all_hashes();
-    let metadata_hashes = store.get_all_metadata_hashes();
-
-    let mut package_names: Vec<String> = Vec::new();
+    let meta = store.get_all_metadata_hashes();
+    let mut names: Vec<String> = Vec::new();
     let Ok(entries) = std::fs::read_dir(&simple_dir) else {
         return;
     };
-
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
-        let pkg_name = path.file_name().unwrap().to_string_lossy().to_string();
-        package_names.push(pkg_name.clone());
-
-        let mut files: Vec<String> = std::fs::read_dir(&path)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|f| f.path().is_file())
-            .map(|f| f.file_name().to_string_lossy().to_string())
-            .filter(|n| !n.starts_with('.') && !n.ends_with(".tmp") && !n.ends_with(".metadata"))
-            .collect();
-        files.sort();
-
-        let ctx = PkgCtx {
-            package_name: &pkg_name,
-            files: &files,
+        let n = path.file_name().unwrap().to_string_lossy().to_string();
+        names.push(n.clone());
+        index_pkg(&IndexPkg {
+            path: &path,
+            name: &n,
             hashes: &hashes,
-            metadata_hashes: &metadata_hashes,
-        };
-        let _ = std::fs::write(path.join("index.html"), generate_package_html(&ctx));
-        let _ = std::fs::write(path.join("index.json"), generate_package_json(&ctx));
+            meta: &meta,
+        });
     }
-
-    package_names.sort();
+    names.sort();
     let _ = std::fs::write(
         simple_dir.join("index.html"),
-        generate_index_html(&package_names),
+        generate_index_html(&names),
     );
     let _ = std::fs::write(
         simple_dir.join("index.json"),
-        generate_index_json(&package_names),
+        generate_index_json(&names),
     );
-
-    info!("索引生成完成: {} 个包", package_names.len());
+    info!("索引生成完成: {} 个包", names.len());
 }
 
 fn generate_index_html(package_names: &[String]) -> String {
     let mut links = String::new();
     for name in package_names {
-        links.push_str(&format!(r#"    <a href="{name}/">{name}</a><br/>{}"#, "\n"));
+        links.push_str(&format!(
+            r#"    <a href="{name}/">{name}</a><br/>{}"#,
+            "\n"
+        ));
     }
     INDEX_HTML_TEMPLATE.replace("{links}", &links)
 }

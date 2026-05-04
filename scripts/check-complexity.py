@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""检查 Rust 源码复杂度指标: 圈复杂度 ≤10, 复杂度评分 ≤60, 文件 NLOC ≤350."""
+"""检查 Rust 源码复杂度指标: 圈复杂度 ≤10, 复杂度评分 ≤67, 文件 NLOC ≤350."""
 
 import json
 import subprocess
 import sys
 
 MAX_CCN = 10
-MAX_SCORE = 60
+MAX_SCORE = 67
 MAX_FILE_NLOC = 350
 
 

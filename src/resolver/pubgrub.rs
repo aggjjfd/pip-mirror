@@ -16,6 +16,21 @@ struct EntryCtx<'a> {
     half: usize,
 }
 
+fn add_missing(ctx: &EntryCtx<'_>, pkg: &str, ver: &Version) {
+    ctx.result
+        .entry(pkg.to_string())
+        .or_default()
+        .push(ver.clone());
+}
+
+fn add_window_versions(versions: &[Version], set: &mut Vec<Version>) {
+    for v in versions {
+        if !set.contains(v) {
+            set.push(v.clone());
+        }
+    }
+}
+
 fn process_solution_entry(ctx: EntryCtx<'_>) {
     let pkg = ctx.entry.key();
     let sol_ver = ctx.entry.value();
@@ -23,20 +38,15 @@ fn process_solution_entry(ctx: EntryCtx<'_>) {
         return;
     };
     let Some(idx) = versions.iter().position(|v| v == sol_ver) else {
-        ctx.result
-            .entry(pkg.clone())
-            .or_default()
-            .push(sol_ver.clone());
+        add_missing(&ctx, pkg, sol_ver);
         return;
     };
     let start = idx.saturating_sub(ctx.half);
     let end = (idx + ctx.half + 1).min(versions.len());
-    let mut set = ctx.result.entry(pkg.clone()).or_default();
-    for v in &versions[start..end] {
-        if !set.contains(v) {
-            set.push(v.clone());
-        }
-    }
+    add_window_versions(
+        &versions[start..end],
+        &mut ctx.result.entry(pkg.clone()).or_default(),
+    );
 }
 
 /// Compute version windows around all target solutions.
@@ -112,10 +122,14 @@ pub struct ResolveParams<'a> {
 ///
 /// This is a **stub** that returns empty results. The full pubgrub-based
 /// resolver will be implemented once the pubgrub API integration is complete.
-pub fn resolve_dependencies(params: &ResolveParams<'_>) -> DashMap<String, Vec<Version>> {
+pub fn resolve_dependencies(
+    params: &ResolveParams<'_>,
+) -> DashMap<String, Vec<Version>> {
     let _ = params.top_versions;
     let _ = params.top_packages;
-    warn!("pubgrub resolver not yet implemented — returning empty dependency list");
+    warn!(
+        "pubgrub resolver not yet implemented — returning empty dependency list"
+    );
     DashMap::new()
 }
 

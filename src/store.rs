@@ -39,7 +39,10 @@ impl DownloadStore {
         })
     }
 
-    pub fn add_file(&self, rec: &FileRecord<'_>) -> Result<(), rusqlite::Error> {
+    pub fn add_file(
+        &self,
+        rec: &FileRecord<'_>,
+    ) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO downloaded_files (filename, package_name, version, sha256, size)
@@ -62,7 +65,10 @@ impl DownloadStore {
         Ok(())
     }
 
-    fn collect_hash_map(conn: &Connection, query: &str) -> DashMap<String, String> {
+    fn collect_hash_map(
+        conn: &Connection,
+        query: &str,
+    ) -> DashMap<String, String> {
         let map = DashMap::new();
         let Ok(mut stmt) = conn.prepare(query) else {
             return map;
@@ -80,7 +86,10 @@ impl DownloadStore {
 
     pub fn get_all_hashes(&self) -> DashMap<String, String> {
         let conn = self.conn.lock().unwrap();
-        Self::collect_hash_map(&conn, "SELECT filename, sha256 FROM downloaded_files")
+        Self::collect_hash_map(
+            &conn,
+            "SELECT filename, sha256 FROM downloaded_files",
+        )
     }
 
     pub fn get_all_metadata_hashes(&self) -> DashMap<String, String> {

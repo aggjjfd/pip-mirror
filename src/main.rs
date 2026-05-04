@@ -61,48 +61,85 @@ enum Command {
     },
 }
 
+async fn cmd_sync_d(
+    c: Option<PathBuf>,
+    p: Option<Vec<String>>,
+    nd: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    cmd_sync(c.as_deref(), p, nd).await
+}
+async fn cmd_sync_full_d(
+    c: Option<PathBuf>,
+    p: Option<Vec<String>>,
+    nd: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    cmd_sync_full(c.as_deref(), p, nd).await
+}
+async fn cmd_serve_d(
+    c: Option<PathBuf>,
+    h: Option<String>,
+    p: Option<u16>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    cmd_serve(c.as_deref(), h, p).await
+}
+
+async fn try_sync(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
+    if let Command::Sync {
+        config,
+        packages,
+        no_deps,
+    } = cmd
+    {
+        return cmd_sync_d(config, packages, no_deps).await;
+    }
+    try_sync_full(cmd).await
+}
+async fn try_sync_full(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
+    if let Command::SyncFull {
+        config,
+        packages,
+        no_deps,
+    } = cmd
+    {
+        return cmd_sync_full_d(config, packages, no_deps).await;
+    }
+    try_serve(cmd).await
+}
+async fn try_serve(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
+    if let Command::Serve { config, host, port } = cmd {
+        return cmd_serve_d(config, host, port).await;
+    }
+    try_import(cmd)
+}
+fn try_import(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
+    if let Command::ImportIncremental {
+        archive,
+        config,
+        no_reindex,
+        strict,
+    } = cmd
+    {
+        return cmd_import_incremental(ImportIncrementalArgs {
+            archive: &archive,
+            config_path: config.as_deref(),
+            no_reindex,
+            strict,
+        });
+    }
+    try_access(cmd)
+}
+fn try_access(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
+    if let Command::AccessLog { config, limit } = cmd {
+        return cmd_access_log(config.as_deref(), limit);
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     pip_mirror::logging::init(cli.verbose);
-
-    match cli.command {
-        Command::Sync {
-            config,
-            packages,
-            no_deps,
-        } => {
-            cmd_sync(config.as_deref(), packages, no_deps).await?;
-        }
-        Command::SyncFull {
-            config,
-            packages,
-            no_deps,
-        } => {
-            cmd_sync_full(config.as_deref(), packages, no_deps).await?;
-        }
-        Command::Serve { config, host, port } => {
-            cmd_serve(config.as_deref(), host, port).await?;
-        }
-        Command::ImportIncremental {
-            archive,
-            config,
-            no_reindex,
-            strict,
-        } => {
-            cmd_import_incremental(ImportIncrementalArgs {
-                archive: &archive,
-                config_path: config.as_deref(),
-                no_reindex,
-                strict,
-            })?;
-        }
-        Command::AccessLog { config, limit } => {
-            cmd_access_log(config.as_deref(), limit)?;
-        }
-    }
-
-    Ok(())
+    try_sync(cli.command).await
 }
 
 // ── command implementations ──
@@ -119,7 +156,9 @@ async fn cmd_sync(
     Ok(())
 }
 
-fn clean_repo(repo: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+fn clean_repo(
+    repo: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     for sub in &["simple", "python-builds"] {
         let dir = repo.join(sub);
         if dir.exists() {
@@ -134,21 +173,34 @@ fn clean_repo(repo: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
+async fn download_one_build(
+    client: &reqwest::Client,
+    entry: &pip_mirror::python_builds::PythonBuildEntry,
+    dir: &std::path::Path,
+) {
+    let result =
+        pip_mirror::python_builds::download_python_build(client, entry, dir)
+            .await;
+    match result {
+        Ok((_, true)) => info!("  [OK] {}", entry.filename),
+        Err(e) => tracing::warn!("  [FAIL] {}: {e}", entry.filename),
+        _ => {}
+    }
+}
+
 async fn download_python_builds_batch(
     client: &reqwest::Client,
     repo: &std::path::Path,
-) -> Result<Vec<pip_mirror::python_builds::PythonBuildEntry>, Box<dyn std::error::Error>> {
-    let entries = pip_mirror::python_builds::fetch_python_builds(client).await?;
-    let output_dir = repo.join("python-builds");
-    std::fs::create_dir_all(&output_dir)?;
+) -> Result<
+    Vec<pip_mirror::python_builds::PythonBuildEntry>,
+    Box<dyn std::error::Error>,
+> {
+    let entries =
+        pip_mirror::python_builds::fetch_python_builds(client).await?;
+    let dir = repo.join("python-builds");
+    std::fs::create_dir_all(&dir)?;
     for entry in &entries {
-        let result =
-            pip_mirror::python_builds::download_python_build(client, entry, &output_dir).await;
-        match result {
-            Ok((_, true)) => info!("  [OK] {}", entry.filename),
-            Err(e) => tracing::warn!("  [FAIL] {}: {e}", entry.filename),
-            _ => {}
-        }
+        download_one_build(client, entry, &dir).await;
     }
     Ok(entries)
 }
@@ -172,17 +224,26 @@ fn build_python_builds_index(
     Ok(())
 }
 
-fn pack_mirror_archive(repo: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    let level = match std::env::var("PIP_MIRROR_TAR_COMPRESSION").as_deref() {
+fn tar_compression() -> flate2::Compression {
+    match std::env::var("PIP_MIRROR_TAR_COMPRESSION").as_deref() {
         Ok("none") => flate2::Compression::none(),
         _ => flate2::Compression::best(),
-    };
+    }
+}
+
+fn pack_mirror_archive(
+    repo: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let archive = std::env::current_dir()?.join("mirror.tar.gz");
-    pip_mirror::downloader::pack_full_mirror(repo, &archive, level)?;
-    let sha_path = pip_mirror::packager::write_sha256(&archive)?;
-    let size_mb = std::fs::metadata(&archive)?.len() as f64 / 1024.0 / 1024.0;
-    info!("mirror.tar.gz : {} ({size_mb:.2} MB)", archive.display());
-    info!("mirror.sha256 : {}", sha_path.display());
+    pip_mirror::downloader::pack_full_mirror(
+        repo,
+        &archive,
+        tar_compression(),
+    )?;
+    let sha = pip_mirror::packager::write_sha256(&archive)?;
+    let mb = std::fs::metadata(&archive)?.len() as f64 / 1024.0 / 1024.0;
+    info!("mirror.tar.gz : {} ({mb:.2} MB)", archive.display());
+    info!("mirror.sha256 : {}", sha.display());
     Ok(())
 }
 
@@ -242,6 +303,24 @@ fn cmd_import_incremental(
     Ok(())
 }
 
+fn print_access_ips(logger: &pip_mirror::access_log::AccessLogger) {
+    for (ip, count) in logger.get_top_ips(10) {
+        info!("  {ip}: {count} 次");
+    }
+}
+
+fn print_access_recent(
+    logger: &pip_mirror::access_log::AccessLogger,
+    limit: usize,
+) {
+    for r in logger.get_recent(limit) {
+        info!(
+            "  [{}] {} {} {} {}",
+            r.timestamp, r.client_ip, r.method, r.path, r.status_code
+        );
+    }
+}
+
 fn cmd_access_log(
     config_path: Option<&std::path::Path>,
     limit: usize,
@@ -252,31 +331,13 @@ fn cmd_access_log(
         tracing::warn!("访问日志数据库不存在: {}", db_path.display());
         return Ok(());
     }
-
     let logger = pip_mirror::access_log::AccessLogger::open(&db_path)?;
-    let summary = logger.get_summary();
-    info!("总请求数: {}", summary.total_requests);
-    info!("成功请求: {}", summary.successful_requests);
-    info!("独立 IP 数: {}", summary.unique_ips);
-
-    let top_ips = logger.get_top_ips(10);
-    if !top_ips.is_empty() {
-        info!("下载量最多的 IP:");
-        for (ip, count) in top_ips {
-            info!("  {ip}: {count} 次");
-        }
-    }
-
-    let records = logger.get_recent(limit);
-    if !records.is_empty() {
-        info!("最近 {limit} 条访问记录:");
-        for r in records {
-            info!(
-                "  [{}] {} {} {} {}",
-                r.timestamp, r.client_ip, r.method, r.path, r.status_code
-            );
-        }
-    }
-
+    let s = logger.get_summary();
+    info!(
+        "总请求数: {}\n成功请求: {}\n独立 IP 数: {}",
+        s.total_requests, s.successful_requests, s.unique_ips
+    );
+    print_access_ips(&logger);
+    print_access_recent(&logger, limit);
     Ok(())
 }

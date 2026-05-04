@@ -1,26 +1,27 @@
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-static ACCEPTED_PLATFORMS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    HashSet::from([
-        "win32",
-        "win_amd64",
-        "manylinux1_x86_64",
-        "manylinux2010_x86_64",
-        "manylinux2014_x86_64",
-        "manylinux_2_5_x86_64",
-        "manylinux_2_12_x86_64",
-        "manylinux_2_17_x86_64",
-        "manylinux_2_24_x86_64",
-        "manylinux_2_28_x86_64",
-        "manylinux_2_31_x86_64",
-        "manylinux_2_34_x86_64",
-        "manylinux_2_35_x86_64",
-        "manylinux_2_39_x86_64",
-        "linux_x86_64",
-        "any",
-    ])
-});
+static ACCEPTED_PLATFORMS: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| {
+        HashSet::from([
+            "win32",
+            "win_amd64",
+            "manylinux1_x86_64",
+            "manylinux2010_x86_64",
+            "manylinux2014_x86_64",
+            "manylinux_2_5_x86_64",
+            "manylinux_2_12_x86_64",
+            "manylinux_2_17_x86_64",
+            "manylinux_2_24_x86_64",
+            "manylinux_2_28_x86_64",
+            "manylinux_2_31_x86_64",
+            "manylinux_2_34_x86_64",
+            "manylinux_2_35_x86_64",
+            "manylinux_2_39_x86_64",
+            "linux_x86_64",
+            "any",
+        ])
+    });
 
 static REJECTED_SUBSTRINGS: &[&str] = &[
     "aarch64",
@@ -40,24 +41,28 @@ static REJECTED_SUBSTRINGS: &[&str] = &[
 ];
 
 /// Map a wheel platform tag → set of target platform names.
+fn map_sub_tag(sub: &str, covered: &mut HashSet<&'static str>) {
+    match sub {
+        "win32" => {
+            covered.insert("win32");
+        }
+        "win_amd64" => {
+            covered.insert("win_amd64");
+        }
+        s if s.contains("x86_64") || s.contains("_x86_64") => {
+            covered.insert("linux_x86_64");
+        }
+        _ => {}
+    }
+}
+
 pub fn platform_to_target(tag: &str) -> HashSet<&'static str> {
     if tag == "any" {
         return ["win32", "win_amd64", "linux_x86_64"].into();
     }
     let mut covered = HashSet::new();
     for sub in tag.split('.') {
-        match sub {
-            "win32" => {
-                covered.insert("win32");
-            }
-            "win_amd64" => {
-                covered.insert("win_amd64");
-            }
-            s if s.contains("x86_64") || s.contains("_x86_64") => {
-                covered.insert("linux_x86_64");
-            }
-            _ => {}
-        }
+        map_sub_tag(sub, &mut covered);
     }
     covered
 }
@@ -73,7 +78,8 @@ fn sub_tag_rejected(sub: &str) -> bool {
 }
 
 fn sub_tag_accepted(sub: &str) -> bool {
-    ACCEPTED_PLATFORMS.contains(sub) || (sub.contains("manylinux") && sub.contains("x86_64"))
+    ACCEPTED_PLATFORMS.contains(sub)
+        || (sub.contains("manylinux") && sub.contains("x86_64"))
 }
 
 pub fn is_accepted_wheel(filename: &str) -> bool {

@@ -20,46 +20,44 @@ struct AppState {
     access_logger: Arc<AccessLogger>,
 }
 
+fn build_router(state: AppState) -> Router {
+    Router::new()
+        .route("/simple/{*tail}", get(serve_simple))
+        .route("/python-builds/index.json", get(serve_python_builds_index))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([Method::GET])
+                .allow_headers([header::CONTENT_TYPE, header::ACCEPT]),
+        )
+        .with_state(state)
+}
+
+fn make_state(repo_dir: PathBuf) -> AppState {
+    let access_logger = Arc::new(
+        AccessLogger::open(&repo_dir.join(".access_log.db"))
+            .unwrap_or_else(|e| panic!("无法打开 access_log.db: {e}")),
+    );
+    AppState {
+        repo_dir: Arc::new(repo_dir),
+        access_logger,
+    }
+}
+
 pub async fn start_server(
     host: &str,
     port: u16,
     repository_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !repository_dir.exists() {
-        return Err(format!("仓库目录不存在: {}", repository_dir.display()).into());
+        return Err(
+            format!("仓库目录不存在: {}", repository_dir.display()).into()
+        );
     }
-
-    let access_logger = Arc::new(
-        AccessLogger::open(&repository_dir.join(".access_log.db"))
-            .unwrap_or_else(|e| panic!("无法打开 access_log.db: {e}")),
-    );
-
-    let state = AppState {
-        repo_dir: Arc::new(repository_dir),
-        access_logger,
-    };
-
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET])
-        .allow_headers([header::CONTENT_TYPE, header::ACCEPT]);
-
-    let app = Router::new()
-        .route("/simple/{*tail}", get(serve_simple))
-        .route("/python-builds/index.json", get(serve_python_builds_index))
-        .layer(cors)
-        .with_state(state);
-
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
-    tracing::info!("PIP 镜像服务器启动");
-    tracing::info!("  地址: http://{host}:{port}");
-    tracing::info!("  pip 使用: pip install --index-url http://{host}:{port}/simple <package>");
-    tracing::info!(
-        "  Python 解释器: UV_PYTHON_DOWNLOADS_JSON_URL=http://{host}:{port}/python-builds/index.json"
-    );
-
+    tracing::info!("PIP 镜像服务器启动\n  地址: http://{host}:{port}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, build_router(make_state(repository_dir))).await?;
     Ok(())
 }
 
@@ -94,47 +92,52 @@ fn try_serve_json(body: Vec<u8>) -> Response {
         .unwrap()
 }
 
+fn content_type_for(path: &Path) -> &'static str {
+    if path.extension().is_some_and(|e| e == "json") {
+        "application/vnd.pypi.simple.v1+json"
+    } else {
+        "application/vnd.pypi.simple.v1+html"
+    }
+}
+
+fn serve_file_response(body: Vec<u8>, path: &Path) -> Response {
+    Response::builder()
+        .status(200)
+        .header("Content-Type", content_type_for(path))
+        .header("Access-Control-Allow-Origin", "*")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
+fn wants_json(req: &axum::extract::Request) -> bool {
+    req.headers()
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .contains("application/vnd.pypi.simple.v1+json")
+}
+
 async fn serve_simple(
     State(state): State<AppState>,
     axum::extract::Path(tail): axum::extract::Path<String>,
     req: axum::extract::Request,
 ) -> Response {
-    let simple_base = state.repo_dir.join("simple");
-    let (json_path, serve_path) = resolve_serve_path(&simple_base, &tail);
-
-    let accept = req
-        .headers()
-        .get(header::ACCEPT)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    // PEP 691 JSON content negotiation
-    if accept.contains("application/vnd.pypi.simple.v1+json")
+    let (json_path, serve_path) =
+        resolve_serve_path(&state.repo_dir.join("simple"), &tail);
+    if wants_json(&req)
         && json_path.exists()
         && let Ok(body) = tokio::fs::read(&json_path).await
     {
         return try_serve_json(body);
     }
-
     if !serve_path.exists() {
         return (StatusCode::NOT_FOUND, "Not Found").into_response();
     }
-
     match tokio::fs::read(&serve_path).await {
-        Ok(body) => {
-            let content_type = if serve_path.extension().is_some_and(|e| e == "json") {
-                "application/vnd.pypi.simple.v1+json"
-            } else {
-                "application/vnd.pypi.simple.v1+html"
-            };
-            Response::builder()
-                .status(200)
-                .header("Content-Type", content_type)
-                .header("Access-Control-Allow-Origin", "*")
-                .body(axum::body::Body::from(body))
-                .unwrap()
+        Ok(body) => serve_file_response(body, &serve_path),
+        Err(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "Read error").into_response()
         }
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Read error").into_response(),
     }
 }
 
@@ -164,22 +167,21 @@ async fn serve_python_builds_index(
     let path = state.repo_dir.join("python-builds").join("index.json");
     let body = match tokio::fs::read_to_string(&path).await {
         Ok(s) => s,
-        Err(_) => return (StatusCode::NOT_FOUND, "python-builds index not found").into_response(),
+        Err(_) => return (StatusCode::NOT_FOUND, "not found").into_response(),
     };
-
-    let mut data: serde_json::Value = match serde_json::from_str(&body) {
+    let mut data = match serde_json::from_str::<serde_json::Value>(&body) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed: {e}")).into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed: {e}"))
+                .into_response();
         }
     };
-
     rewrite_relative_urls(&mut data, &format!("http://{host}"));
-
-    let body = serde_json::to_string_pretty(&data).unwrap();
     Response::builder()
         .status(200)
         .header("Content-Type", "application/json")
-        .body(axum::body::Body::from(body))
+        .body(axum::body::Body::from(
+            serde_json::to_string_pretty(&data).unwrap(),
+        ))
         .unwrap()
 }
