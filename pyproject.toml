@@ -51,7 +51,6 @@ packages = [
     "uv",
     "duckdb",
     "gooey",
-    "pyside5",
     "pyside6",
     "pyinstaller",
     "pytest",
