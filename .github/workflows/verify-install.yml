@@ -37,7 +37,7 @@ jobs:
       - name: Full sync (uses pyproject.toml [tool.pip-mirror].packages)
         run: |
           mkdir -p packages
-          uv run pip-mirror sync --no-pack 2>&1 | tail -100
+          uv run pip-mirror sync --no-pack
           # 短报告
           if [ -f packages/.store.db ]; then
             echo "===== mirror summary ====="
