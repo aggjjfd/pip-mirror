@@ -79,10 +79,12 @@ pub async fn fetch_json_api(
     http: &HttpCtx<'_>,
     pkg: &str,
 ) -> Result<Vec<FileInfo>, reqwest::Error> {
+    // strip extras brackets: "markitdown[pptx]" → "markitdown"
+    let bare = pkg.split_once('[').map_or(pkg, |(n, _)| n);
     let url = format!(
         "{}/pypi/{}/json",
         http.pypi_url.trim_end_matches('/'),
-        super::filters::normalize_package_name(pkg)
+        super::filters::normalize_package_name(bare)
     );
     let resp: serde_json::Value =
         http.client.get(&url).send().await?.json().await?;
@@ -251,7 +253,8 @@ pub async fn get_all_versions(
     http: &HttpCtx<'_>,
     package: &str,
 ) -> Result<Vec<Version>, reqwest::Error> {
-    let normalized = crate::filters::normalize_package_name(package);
+    let bare = package.split_once('[').map_or(package, |(n, _)| n);
+    let normalized = crate::filters::normalize_package_name(bare);
     let url = format!(
         "{}/pypi/{}/json",
         http.pypi_url.trim_end_matches('/'),
@@ -278,7 +281,8 @@ pub async fn get_requires_dist(
     package: &str,
     version: &str,
 ) -> Result<Option<Vec<String>>, reqwest::Error> {
-    let normalized = crate::filters::normalize_package_name(package);
+    let bare = package.split_once('[').map_or(package, |(n, _)| n);
+    let normalized = crate::filters::normalize_package_name(bare);
     let url = format!(
         "{}/pypi/{}/{}/json",
         http.pypi_url.trim_end_matches('/'),

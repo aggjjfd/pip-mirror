@@ -1,80 +1,73 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-
-use dashmap::DashMap;
-use pep440_rs::Version;
-use pubgrub::OfflineDependencyProvider;
-use pubgrub::Ranges;
-use tracing::{info, warn};
-
 use super::pubgrub::{
-    Solution, bare_name, compute_version_windows, dep_to_range,
-    parse_python_requires,
+    Solution, bare_name, compute_version_windows, parse_python_requires,
+    spec_to_range,
 };
 use crate::downloader::HttpCtx;
-
+use dashmap::DashMap;
+use pep440_rs::Version;
+use pubgrub::{OfflineDependencyProvider, Range};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use tracing::{debug, info, warn};
 pub struct ResolveParams<'a> {
     pub top_packages: &'a [String],
     pub top_versions: &'a DashMap<String, Vec<Version>>,
     pub pypi_url: &'a str,
     pub max_depth: usize,
     pub max_versions: usize,
+    pub allow_prerelease: bool,
 }
-
 type CacheType = Arc<DashMap<(String, String), Vec<(String, String)>>>;
-
 async fn fetch_versions(http: &HttpCtx<'_>, pkg: &str) -> Option<Vec<Version>> {
     crate::downloader::get_all_versions(http, pkg)
         .await
         .ok()
         .filter(|v| !v.is_empty())
 }
-
-struct ExploreCtx<'a, 'b> {
-    pkg: &'a str,
-    all_vers: &'a [Version],
-    params: &'a ResolveParams<'b>,
-    http: &'a HttpCtx<'a>,
-    pkg_set: &'a mut HashSet<String>,
-    queue: &'a mut Vec<(String, usize)>,
+#[allow(clippy::too_many_arguments)]
+async fn explore_pkg_deps(
+    http: &HttpCtx<'_>,
+    pkg: &str,
+    all_vers: &[Version],
+    top_versions: &DashMap<String, Vec<Version>>,
+    pkg_set: &mut HashSet<String>,
+    queue: &mut Vec<(String, usize)>,
     depth: usize,
-    req_cache: &'a CacheType,
-}
-
-impl ExploreCtx<'_, '_> {
-    fn register_deps(&mut self, deps: &[(String, String)]) {
-        let new_deps: Vec<String> = deps
-            .iter()
-            .map(|(dn, _)| crate::filters::normalize_package_name(dn))
-            .filter(|dn| !self.pkg_set.contains(dn))
-            .collect();
-        for dn in new_deps {
-            self.pkg_set.insert(dn.clone());
-            self.queue.push((dn.clone(), self.depth + 1));
-        }
-    }
-}
-
-async fn explore_pkg_deps(mut ctx: ExploreCtx<'_, '_>) {
-    let explore: Vec<Version> = ctx
-        .params
-        .top_versions
-        .get(ctx.pkg)
+    cache: &CacheType,
+    allow_prerelease: bool,
+) {
+    let explore: Vec<Version> = top_versions
+        .get(pkg)
         .map(|tv| tv.iter().cloned().collect())
-        .unwrap_or_else(|| ctx.all_vers.iter().take(1).cloned().collect());
+        .unwrap_or_else(|| {
+            // Non-top packages: explore latest (stable if !allow_prerelease)
+            let mut v = all_vers.to_vec();
+            if !allow_prerelease {
+                v.retain(|ver| !ver.any_prerelease());
+            }
+            v.truncate(1);
+            v
+        });
     for ver in &explore {
         let vs = ver.to_string();
         let Ok(Some(rd)) =
-            crate::downloader::get_requires_dist(ctx.http, ctx.pkg, &vs).await
+            crate::downloader::get_requires_dist(http, pkg, &vs).await
         else {
             continue;
         };
         let deps = parse_python_requires(&rd);
-        ctx.register_deps(&deps);
-        ctx.req_cache.insert((ctx.pkg.to_string(), vs), deps);
+        let new_deps: Vec<String> = deps
+            .iter()
+            .map(|(dn, _)| crate::filters::normalize_package_name(dn))
+            .filter(|dn| !pkg_set.contains(dn))
+            .collect();
+        for dn in &new_deps {
+            pkg_set.insert(dn.clone());
+            queue.push((dn.clone(), depth + 1));
+        }
+        cache.insert((pkg.to_string(), vs), deps);
     }
 }
-
 async fn bfs_collect(
     params: &ResolveParams<'_>,
     http: &HttpCtx<'_>,
@@ -84,42 +77,41 @@ async fn bfs_collect(
     let mut pkg_set: HashSet<String> = top_names.iter().cloned().collect();
     let mut queue: Vec<_> = top_names.iter().map(|n| (n.clone(), 0)).collect();
     let mut pkg_versions: HashMap<String, Vec<Version>> = HashMap::new();
-    let req_cache: CacheType = Arc::new(DashMap::new());
-
+    let cache: CacheType = Arc::new(DashMap::new());
     while let Some((pkg, depth)) = queue.pop() {
         let Some(all_vers) = fetch_versions(http, &pkg).await else {
             continue;
         };
         pkg_versions.entry(pkg.clone()).or_insert(all_vers.clone());
         if depth < params.max_depth {
-            explore_pkg_deps(ExploreCtx {
-                pkg: &pkg,
-                all_vers: &all_vers,
-                params,
+            explore_pkg_deps(
                 http,
-                pkg_set: &mut pkg_set,
-                queue: &mut queue,
+                &pkg,
+                &all_vers,
+                params.top_versions,
+                &mut pkg_set,
+                &mut queue,
                 depth,
-                req_cache: &req_cache,
-            })
+                &cache,
+                params.allow_prerelease,
+            )
             .await;
         }
     }
-    (pkg_set, pkg_versions, req_cache)
+    (pkg_set, pkg_versions, cache)
 }
-
 struct FetchCtx<'a> {
     http: &'a HttpCtx<'a>,
     cache: &'a CacheType,
+    max_versions: usize,
 }
-
 async fn fetch_pkg_deps(
     pkg: String,
     vers: Vec<Version>,
     ctx: &FetchCtx<'_>,
-) -> Vec<((String, usize), Vec<(String, String)>)> {
+) -> Vec<((String, String), Vec<(String, String)>)> {
     let mut results = Vec::new();
-    for (idx, ver) in vers.iter().enumerate() {
+    for ver in &vers {
         let vs = ver.to_string();
         let key = (pkg.clone(), vs.clone());
         let deps = if let Some(c) = ctx.cache.get(&key) {
@@ -132,25 +124,26 @@ async fn fetch_pkg_deps(
                     Ok(Some(rd)) => parse_python_requires(&rd),
                     _ => vec![],
                 };
-            ctx.cache.insert(key, d.clone());
+            ctx.cache.insert(key.clone(), d.clone());
             d
         };
-        results.push(((pkg.clone(), idx), deps));
+        results.push((key, deps));
     }
     results
 }
-
 async fn build_deps_map(
     pkg_set: &HashSet<String>,
     pkg_versions: &HashMap<String, Vec<Version>>,
     ctx: &FetchCtx<'_>,
-) -> HashMap<(String, usize), Vec<(String, String)>> {
+) -> HashMap<(String, String), Vec<(String, String)>> {
+    let window = (ctx.max_versions * 2).max(10);
     let mut handles = Vec::new();
     for pkg in pkg_set {
         let Some(vers) = pkg_versions.get(pkg) else {
             continue;
         };
-        handles.push(fetch_pkg_deps(pkg.clone(), vers.clone(), ctx));
+        let top: Vec<Version> = vers.iter().take(window).cloned().collect();
+        handles.push(fetch_pkg_deps(pkg.clone(), top, ctx));
     }
     let mut deps_map = HashMap::new();
     for results in futures::future::join_all(handles).await {
@@ -161,103 +154,102 @@ async fn build_deps_map(
     deps_map
 }
 
+#[allow(clippy::too_many_arguments, clippy::excessive_nesting)]
+fn build_root_range(
+    top_pkg: &str,
+    tvers: &[Version],
+    top_versions: &DashMap<String, Vec<Version>>,
+    allow_prerelease: bool,
+) -> Range<Version> {
+    match top_versions.get(top_pkg) {
+        Some(tv) => {
+            let mut range = Range::empty();
+            for v in tv.iter() {
+                if !allow_prerelease && v.any_prerelease() {
+                    continue;
+                }
+                // Only include versions that actually exist in tvers
+                if tvers.contains(v) {
+                    range = range.union(&Range::singleton(v.clone()));
+                }
+            }
+            range
+        }
+        None => Range::full(),
+    }
+}
 fn collect_solution(
-    solution: impl IntoIterator<Item = (String, u32)>,
-    pkg_versions: &HashMap<String, Vec<Version>>,
+    solution: impl IntoIterator<Item = (String, Version)>,
 ) -> Solution {
     let sol: Solution = DashMap::new();
-    for (pkg, vi) in solution {
+    for (pkg, ver) in solution {
         if pkg == "__root__" {
             continue;
         }
-        if let Some(vers) = pkg_versions.get(&pkg)
-            && let Some(v) = vers.get(usize::try_from(vi).unwrap_or(0))
-        {
-            sol.insert(pkg, v.clone());
-        }
+        sol.insert(pkg, ver);
     }
     sol
 }
-
-struct ResolveOneCtx<'a> {
-    top_pkg: &'a str,
-    pkg_set: &'a HashSet<String>,
-    pkg_versions: &'a HashMap<String, Vec<Version>>,
-    deps_map: &'a HashMap<(String, usize), Vec<(String, String)>>,
-    top_versions: &'a DashMap<String, Vec<Version>>,
-}
-
-fn dep_list_to_ranges(
-    ds: &[(String, String)],
-    pkg_versions: &HashMap<String, Vec<Version>>,
-) -> Vec<(String, Ranges<u32>)> {
-    ds.iter()
-        .filter_map(|(n, s)| dep_to_range(n, s, pkg_versions))
-        .collect()
-}
-
+#[allow(clippy::too_many_arguments, clippy::excessive_nesting)]
 fn populate_provider(
-    rp: &mut OfflineDependencyProvider<String, Ranges<u32>>,
-    ctx: &ResolveOneCtx<'_>,
+    rp: &mut OfflineDependencyProvider<String, Range<Version>>,
+    pkg_set: &HashSet<String>,
+    pkg_versions: &HashMap<String, Vec<Version>>,
+    deps_map: &HashMap<(String, String), Vec<(String, String)>>,
+    allow_prerelease: bool,
 ) {
-    for pkg in ctx.pkg_set {
-        let Some(vers) = ctx.pkg_versions.get(pkg) else {
+    for pkg in pkg_set {
+        let Some(vers) = pkg_versions.get(pkg) else {
             continue;
         };
-        for (idx, _v) in vers.iter().enumerate() {
-            let deps: Vec<_> = ctx
-                .deps_map
-                .get(&(pkg.clone(), idx))
-                .map(|ds| dep_list_to_ranges(ds, ctx.pkg_versions))
+        for ver in vers {
+            if !allow_prerelease && ver.any_prerelease() {
+                continue;
+            }
+            let cache_key = (pkg.clone(), ver.to_string());
+            let deps: Vec<(String, Range<Version>)> = deps_map
+                .get(&cache_key)
+                .map(|ds| {
+                    ds.iter()
+                        .filter(|(n, _)| pkg_set.contains(n))
+                        .map(|(n, s)| (n.clone(), spec_to_range(s)))
+                        .collect()
+                })
                 .unwrap_or_default();
-            rp.add_dependencies(
-                pkg.clone(),
-                idx.try_into().unwrap_or(0u32),
-                deps,
-            );
+            rp.add_dependencies(pkg.clone(), ver.clone(), deps);
         }
     }
 }
-
-fn resolve_one(ctx: &ResolveOneCtx<'_>) -> Option<Solution> {
-    let tvers = ctx.pkg_versions.get(ctx.top_pkg).or_else(|| {
-        warn!("  {} not in pkg_versions", ctx.top_pkg);
-        None
-    })?;
-    let top_ver = ctx
-        .top_versions
-        .get(ctx.top_pkg)
-        .and_then(|tv| tv.first().cloned())
-        .or_else(|| {
-            warn!("  {} not in top_versions, using latest", ctx.top_pkg);
-            None
-        })
-        .unwrap_or_else(|| tvers[0].clone());
-    let Some(top_idx) = tvers.iter().position(|v| *v == top_ver) else {
-        warn!(
-            "  {} top_ver {} not found in versions ({} vers)",
-            ctx.top_pkg,
-            top_ver,
-            tvers.len(),
-        );
-        return None;
-    };
-
+#[allow(clippy::too_many_arguments)]
+fn resolve_one(
+    top_pkg: &str,
+    pkg_set: &HashSet<String>,
+    pkg_versions: &HashMap<String, Vec<Version>>,
+    deps_map: &HashMap<(String, String), Vec<(String, String)>>,
+    top_versions: &DashMap<String, Vec<Version>>,
+    allow_prerelease: bool,
+) -> Option<Solution> {
+    let tvers = pkg_versions.get(top_pkg)?;
+    let root_range =
+        build_root_range(top_pkg, tvers, top_versions, allow_prerelease);
+    debug!("  {} root range: {:?}", top_pkg, root_range);
     let mut rp = OfflineDependencyProvider::new();
     rp.add_dependencies(
         "__root__".to_string(),
-        0u32,
-        vec![(
-            ctx.top_pkg.to_string(),
-            Ranges::singleton(top_idx.try_into().unwrap_or(0u32)),
-        )],
+        Version::new([0, 0, 0]),
+        vec![(top_pkg.to_string(), root_range)],
     );
-    populate_provider(&mut rp, ctx);
-    pubgrub::resolve(&rp, "__root__".to_string(), 0u32)
+    populate_provider(
+        &mut rp,
+        pkg_set,
+        pkg_versions,
+        deps_map,
+        allow_prerelease,
+    );
+    pubgrub::resolve(&rp, "__root__".to_string(), Version::new([0, 0, 0]))
         .ok()
-        .map(|s| collect_solution(s, ctx.pkg_versions))
+        .map(collect_solution)
 }
-
 pub async fn resolve_dependencies(
     params: &ResolveParams<'_>,
     client: &reqwest::Client,
@@ -269,55 +261,37 @@ pub async fn resolve_dependencies(
     };
     let (pkg_set, pkg_versions, req_cache) = bfs_collect(params, &http).await;
     info!("  收集完成: {} 个包", pkg_set.len());
-    info!(
-        "  top packages in pkg_versions: {:?}",
-        params
-            .top_packages
-            .iter()
-            .filter_map(|n| {
-                let b = bare_name(n);
-                pkg_versions
-                    .get(&b)
-                    .map(|v| format!("{b}({} vers)", v.len()))
-            })
-            .collect::<Vec<_>>()
-    );
     let deps_map = build_deps_map(
         &pkg_set,
         &pkg_versions,
         &FetchCtx {
             http: &http,
             cache: &req_cache,
+            max_versions: params.max_versions,
         },
     )
     .await;
     let top_names: Vec<_> =
         params.top_packages.iter().map(|r| bare_name(r)).collect();
-    let base_ctx = ResolveOneCtx {
-        top_pkg: "",
-        pkg_set: &pkg_set,
-        pkg_versions: &pkg_versions,
-        deps_map: &deps_map,
-        top_versions: params.top_versions,
-    };
     let mut all_solutions: Vec<Solution> = Vec::new();
     for top_pkg in &top_names {
-        let ctx = ResolveOneCtx {
+        match resolve_one(
             top_pkg,
-            ..base_ctx
-        };
-        match resolve_one(&ctx) {
+            &pkg_set,
+            &pkg_versions,
+            &deps_map,
+            params.top_versions,
+            params.allow_prerelease,
+        ) {
             Some(sol) => all_solutions.push(sol),
             None => warn!("  {top_pkg} pubgrub UNSAT"),
         }
     }
-
     info!("  解析完成: {} 个解", all_solutions.len());
     if all_solutions.is_empty() {
         warn!("所有包均无有效解");
         return DashMap::new();
     }
-
     let av: DashMap<String, Vec<Version>> = pkg_versions.into_iter().collect();
     let result =
         compute_version_windows(&all_solutions, &av, params.max_versions);

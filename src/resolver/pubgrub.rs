@@ -1,9 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::str::FromStr;
 
 use dashmap::DashMap;
 use pep440_rs::Version;
-use pubgrub::Ranges;
+use pubgrub::Range;
 
 /// Result of a per-target dependency resolution.
 pub type Solution = DashMap<String, Version>;
@@ -58,62 +58,16 @@ pub fn compute_version_windows(
         }
     }
     for mut entry in result.iter_mut() {
-        let v: &mut Vec<Version> = entry.value_mut();
+        let v = entry.value_mut();
         v.sort_by(|a, b| b.cmp(a));
         v.dedup();
     }
     result
 }
 
-// ── pubgrub solver ──
+// ── dep spec helpers ──
 
 pub type DepSpec = (String, String);
-
-pub fn dep_to_range(
-    dep_name: &str,
-    spec: &str,
-    versions: &HashMap<String, Vec<Version>>,
-) -> Option<(String, Ranges<u32>)> {
-    let vers = versions.get(dep_name).map(|v| v.as_slice()).unwrap_or(&[]);
-    spec_to_range(vers, spec).map(|r| (dep_name.to_string(), r))
-}
-
-pub fn parse_specs(spec: &str) -> Option<Vec<pep440_rs::VersionSpecifier>> {
-    if spec.is_empty() {
-        return None;
-    }
-    let specs: Vec<_> = spec
-        .split(',')
-        .filter_map(|s| {
-            let t = s.trim();
-            if t.is_empty() {
-                None
-            } else {
-                pep440_rs::VersionSpecifier::from_str(t).ok()
-            }
-        })
-        .collect();
-    if specs.is_empty() { None } else { Some(specs) }
-}
-
-pub fn spec_to_range(versions: &[Version], spec: &str) -> Option<Ranges<u32>> {
-    let specs = match parse_specs(spec) {
-        Some(s) => s,
-        None => return Some(Ranges::full()),
-    };
-    let mut range: Option<Ranges<u32>> = None;
-    for (idx, ver) in versions.iter().enumerate() {
-        if !specs.iter().all(|s| s.contains(ver)) {
-            continue;
-        }
-        let s = Ranges::singleton(u32::try_from(idx).ok()?);
-        range = Some(match range {
-            None => s,
-            Some(r) => r.union(&s),
-        });
-    }
-    range
-}
 
 pub fn extract_extras(package_ref: &str) -> (String, HashSet<String>) {
     match package_ref.split_once('[') {
@@ -137,19 +91,127 @@ pub fn bare_name(package_ref: &str) -> String {
         .map_or(package_ref.to_string(), |(n, _)| n.to_string())
 }
 
+/// Split a PEP 508 requirement (marker already stripped) into (package_name, version_spec).
+fn split_name_spec(req: &str) -> (&str, &str) {
+    let rest = req.trim();
+    let name_end = rest
+        .find(|c: char| !c.is_alphanumeric() && !matches!(c, '-' | '_' | '.'))
+        .unwrap_or(rest.len());
+    let after_name = if rest.as_bytes().get(name_end) == Some(&b'[') {
+        rest[name_end + 1..]
+            .find(']')
+            .map(|i| name_end + i + 2)
+            .unwrap_or(rest.len())
+    } else {
+        name_end
+    };
+    (&rest[..after_name], rest[after_name..].trim())
+}
+
+fn split_operator(s: &str) -> Option<(&str, &str)> {
+    for (prefix, canonical) in &[
+        (">=", ">="),
+        ("<=", "<="),
+        ("!=", "!="),
+        ("~=", "~="),
+        ("==", "=="),
+        (">", ">"),
+        ("<", "<"),
+        ("=", "=="),
+    ] {
+        if let Some(rest) = s.trim().strip_prefix(prefix) {
+            return Some((canonical, rest.trim()));
+        }
+    }
+    None
+}
+
+fn bump_release(release: &[u64], idx: usize) -> Version {
+    let mut parts = release.to_vec();
+    if idx < parts.len() {
+        parts[idx] += 1;
+        parts.truncate(idx + 1);
+    } else {
+        while parts.len() <= idx {
+            parts.push(0);
+        }
+        parts[idx] += 1;
+        parts.truncate(idx + 1);
+    }
+    Version::from_str(
+        &parts
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join("."),
+    )
+    .unwrap_or_else(|_| Version::new([0, 0, 0]))
+}
+
+pub fn compatible_range(ver: Version) -> Range<Version> {
+    let release = ver.release();
+    if release.len() >= 3 {
+        let upper = bump_release(release, release.len() - 2);
+        Range::higher_than(ver).intersection(&Range::strictly_lower_than(upper))
+    } else if release.len() == 2 {
+        let upper = bump_release(release, 0);
+        Range::higher_than(ver).intersection(&Range::strictly_lower_than(upper))
+    } else {
+        Range::higher_than(ver)
+    }
+}
+
+fn op_to_range(op: &str, ver: Version) -> Range<Version> {
+    match op {
+        ">=" => Range::higher_than(ver),
+        ">" => Range::strictly_higher_than(ver),
+        "<=" => Range::lower_than(ver),
+        "<" => Range::strictly_lower_than(ver),
+        "==" => Range::singleton(ver),
+        "~=" => compatible_range(ver),
+        _ => Range::full(),
+    }
+}
+
+pub fn spec_to_range(spec: &str) -> Range<Version> {
+    if spec.is_empty() {
+        return Range::full();
+    }
+    let mut range = Range::full();
+    for part in spec.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let Some((op, ver_str)) = split_operator(part) else {
+            continue;
+        };
+        let Ok(ver) = Version::from_str(ver_str) else {
+            continue;
+        };
+        if op == "!=" {
+            continue;
+        }
+        range = range.intersection(&op_to_range(op, ver));
+    }
+    range
+}
+
 pub fn parse_python_requires(lines: &[String]) -> Vec<DepSpec> {
     let mut deps = Vec::new();
     for line in lines {
-        if line.contains("extra ==") {
+        if line.contains("extra ==")
+            || line.contains("sys_platform ==")
+            || line.contains("os_name ==")
+        {
             continue;
         }
         let req = line.split(';').next().unwrap_or(line).trim();
-        let (name, spec) = match req.split_once(' ') {
-            Some((n, s)) => (n.to_string(), s.to_string()),
-            None => (req.to_string(), String::new()),
-        };
-        let clean = name.split('[').next().unwrap_or(&name).to_string();
-        deps.push((clean, spec));
+        let (name, spec) = split_name_spec(req);
+        let clean = crate::filters::normalize_package_name(
+            name.split('[').next().unwrap_or(name),
+        );
+        deps.push((clean.to_string(), spec.to_string()));
     }
     deps
 }

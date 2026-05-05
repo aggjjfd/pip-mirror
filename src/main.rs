@@ -292,6 +292,7 @@ async fn cmd_sync_full(
             pypi_url: &config.pypi_url,
             max_depth: config.max_depth,
             max_versions: config.max_versions,
+            allow_prerelease: config.allow_prerelease,
         };
         let deps = pip_mirror::resolver::resolve::resolve_dependencies(
             &params, &client,
