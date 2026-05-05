@@ -23,7 +23,14 @@ fn test_extract_extras_single() {
 fn test_extract_extras_multi() {
     let (name, extras) = pubgrub::extract_extras("markitdown[pptx,docx,xls]");
     assert_eq!(name, "markitdown");
-    assert_eq!(extras, HashSet::from(["pptx".to_string(), "docx".to_string(), "xls".to_string()]));
+    assert_eq!(
+        extras,
+        HashSet::from([
+            "pptx".to_string(),
+            "docx".to_string(),
+            "xls".to_string()
+        ])
+    );
 }
 
 #[test]
@@ -86,7 +93,10 @@ fn test_version_window_basic() {
 
     let av: DashMap<String, Vec<Version>> = {
         let m = DashMap::new();
-        m.insert("dep".to_string(), vec![v200.clone(), v150.clone(), v100.clone(), v050.clone()]);
+        m.insert(
+            "dep".to_string(),
+            vec![v200.clone(), v150.clone(), v100.clone(), v050.clone()],
+        );
         m
     };
 
@@ -121,4 +131,103 @@ fn test_spec_to_range_gte() {
     let range = result.unwrap();
     assert!(range.contains(&0u32)); // v2 at index 0
     assert!(!range.contains(&1u32)); // v1 at index 1
+}
+
+#[test]
+fn test_spec_to_range_conflicting() {
+    let v200: Version = "2.0.0".parse().unwrap();
+    let v126: Version = "1.26.0".parse().unwrap();
+    let v090: Version = "0.9.0".parse().unwrap();
+    // no version satisfies both >=2.0 AND <1.0
+    let result = pubgrub::spec_to_range(&[v200, v126, v090], ">=2.0,<1.0");
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_spec_to_range_compatible_release() {
+    let v200: Version = "2.0.0".parse().unwrap();
+    let v110: Version = "1.1.0".parse().unwrap();
+    let v100: Version = "1.0.0".parse().unwrap();
+    let v090: Version = "0.9.0".parse().unwrap();
+    // ==1.* should match 1.x versions
+    let result = pubgrub::spec_to_range(
+        &[v200, v110.clone(), v100.clone(), v090],
+        "==1.*",
+    );
+    let range = result.unwrap();
+    assert!(range.contains(&1u32)); // v110
+    assert!(range.contains(&2u32)); // v100
+    assert!(!range.contains(&0u32)); // v200
+    assert!(!range.contains(&3u32)); // v090
+}
+
+#[test]
+fn test_extract_extras_strips_whitespace() {
+    let (name, extras) = pubgrub::extract_extras("pkg[a, b , c]");
+    assert_eq!(name, "pkg");
+    assert_eq!(
+        extras,
+        HashSet::from(["a".to_string(), "b".to_string(), "c".to_string()])
+    );
+}
+
+#[test]
+fn test_version_window_overlap() {
+    let v200: Version = "2.0.0".parse().unwrap();
+    let v150: Version = "1.5.0".parse().unwrap();
+    let v100: Version = "1.0.0".parse().unwrap();
+    let v050: Version = "0.5.0".parse().unwrap();
+
+    let v200c = v200.clone();
+    let v150c = v150.clone();
+    let v100c = v100.clone();
+    let av: DashMap<String, Vec<Version>> = {
+        let m = DashMap::new();
+        m.insert("dep".to_string(), vec![v200c, v150c, v100c, v050]);
+        m
+    };
+
+    let sol1: pubgrub::Solution = {
+        let m = DashMap::new();
+        m.insert("dep".to_string(), v150.clone());
+        m
+    };
+    let sol2: pubgrub::Solution = {
+        let m = DashMap::new();
+        m.insert("dep".to_string(), v150.clone());
+        m
+    };
+
+    let result = pubgrub::compute_version_windows(&[sol1, sol2], &av, 3);
+    let versions = result.get("dep").unwrap();
+    // both solutions at v150, window = [v200, v150, v100], no duplicates
+    assert_eq!(versions.len(), 3);
+    assert!(versions.contains(&v200));
+    assert!(versions.contains(&v150));
+    assert!(versions.contains(&v100));
+}
+
+#[test]
+fn test_version_window_not_in_all() {
+    let v999: Version = "9.9.9".parse().unwrap();
+    let v200: Version = "2.0.0".parse().unwrap();
+    let v100: Version = "1.0.0".parse().unwrap();
+
+    let av: DashMap<String, Vec<Version>> = {
+        let m = DashMap::new();
+        m.insert("dep".to_string(), vec![v200, v100]);
+        m
+    };
+
+    let sol: pubgrub::Solution = {
+        let m = DashMap::new();
+        m.insert("dep".to_string(), v999.clone());
+        m
+    };
+
+    let result = pubgrub::compute_version_windows(&[sol], &av, 3);
+    let versions = result.get("dep").unwrap();
+    // version not in all_versions → kept as-is
+    assert_eq!(versions.len(), 1);
+    assert!(versions.contains(&v999));
 }

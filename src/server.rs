@@ -62,7 +62,7 @@ pub async fn start_server(
 }
 
 /// Determine the file path to serve: either index.html (for dirs) or the file itself.
-fn resolve_serve_path(base: &Path, tail: &str) -> (PathBuf, PathBuf) {
+pub fn resolve_serve_path(base: &Path, tail: &str) -> (PathBuf, PathBuf) {
     let path = if tail.is_empty() {
         base.to_path_buf()
     } else {
@@ -92,7 +92,7 @@ fn try_serve_json(body: Vec<u8>) -> Response {
         .unwrap()
 }
 
-fn content_type_for(path: &Path) -> &'static str {
+pub fn content_type_for(path: &Path) -> &'static str {
     if path.extension().is_some_and(|e| e == "json") {
         "application/vnd.pypi.simple.v1+json"
     } else {
@@ -141,7 +141,7 @@ async fn serve_simple(
     }
 }
 
-fn rewrite_relative_urls(data: &mut serde_json::Value, base: &str) {
+pub fn rewrite_relative_urls(data: &mut serde_json::Value, base: &str) {
     let Some(obj) = data.as_object_mut() else {
         return;
     };

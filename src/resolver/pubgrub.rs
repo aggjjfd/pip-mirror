@@ -3,7 +3,6 @@ use std::str::FromStr;
 
 use dashmap::DashMap;
 use pep440_rs::Version;
-use pubgrub::OfflineDependencyProvider;
 use pubgrub::Ranges;
 
 /// Result of a per-target dependency resolution.
@@ -70,14 +69,6 @@ pub fn compute_version_windows(
 
 pub type DepSpec = (String, String);
 
-pub struct ProviderCtx<'a> {
-    pub packages: &'a HashSet<String>,
-    pub top_pkg: &'a str,
-    pub top_ver: &'a Version,
-    pub versions: &'a HashMap<String, Vec<Version>>,
-    pub deps: &'a HashMap<(String, usize), Vec<DepSpec>>,
-}
-
 pub fn dep_to_range(
     dep_name: &str,
     spec: &str,
@@ -85,58 +76,6 @@ pub fn dep_to_range(
 ) -> Option<(String, Ranges<u32>)> {
     let vers = versions.get(dep_name).map(|v| v.as_slice()).unwrap_or(&[]);
     spec_to_range(vers, spec).map(|r| (dep_name.to_string(), r))
-}
-
-fn resolve_dep_list(
-    ds: &[DepSpec],
-    versions: &HashMap<String, Vec<Version>>,
-) -> Vec<(String, Ranges<u32>)> {
-    ds.iter()
-        .filter_map(|(n, s)| dep_to_range(n, s, versions))
-        .collect()
-}
-
-fn pkg_deps(
-    ctx: &ProviderCtx<'_>,
-    pkg: &str,
-    idx: usize,
-) -> Vec<(String, Ranges<u32>)> {
-    ctx.deps
-        .get(&(pkg.to_string(), idx))
-        .map(|ds| resolve_dep_list(ds, ctx.versions))
-        .unwrap_or_default()
-}
-
-pub fn build_provider(
-    ctx: &ProviderCtx<'_>,
-) -> OfflineDependencyProvider<String, Ranges<u32>> {
-    let mut p = OfflineDependencyProvider::new();
-    for pkg in ctx.packages {
-        let vers = ctx.versions.get(pkg).map(|v| v.as_slice()).unwrap_or(&[]);
-        for (idx, _ver) in vers.iter().enumerate() {
-            p.add_dependencies(
-                pkg.clone(),
-                idx.try_into().unwrap_or(0u32),
-                pkg_deps(ctx, pkg, idx),
-            );
-        }
-    }
-    let tvers = ctx
-        .versions
-        .get(ctx.top_pkg)
-        .map(|v| v.as_slice())
-        .unwrap_or(&[]);
-    if let Some(ti) = tvers.iter().position(|v| v == ctx.top_ver) {
-        p.add_dependencies(
-            "__root__".to_string(),
-            0u32,
-            vec![(
-                ctx.top_pkg.to_string(),
-                Ranges::singleton(ti.try_into().unwrap_or(0u32)),
-            )],
-        );
-    }
-    p
 }
 
 pub fn parse_specs(spec: &str) -> Option<Vec<pep440_rs::VersionSpecifier>> {

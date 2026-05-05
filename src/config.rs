@@ -19,6 +19,8 @@ pub struct Config {
     pub include_source: bool,
     #[serde(default = "default_workers")]
     pub workers: usize,
+    #[serde(default = "default_max_depth")]
+    pub max_depth: usize,
     #[serde(default = "default_max_versions")]
     pub max_versions: usize,
     #[serde(default)]
@@ -48,6 +50,9 @@ fn default_include_source() -> bool {
 }
 fn default_workers() -> usize {
     4
+}
+fn default_max_depth() -> usize {
+    3
 }
 fn default_max_versions() -> usize {
     5
@@ -110,6 +115,7 @@ impl Default for Config {
             index_url: default_index_url(),
             include_source: default_include_source(),
             workers: default_workers(),
+            max_depth: default_max_depth(),
             max_versions: default_max_versions(),
             allow_prerelease: false,
             backfill_scan_limit: default_backfill_scan_limit(),

@@ -150,8 +150,10 @@ async fn cmd_sync(
     _no_deps: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = pip_mirror::config::Config::load(config_path)?;
-    let pkgs = packages.unwrap_or(config.packages);
-    info!("增量同步: {} 个包", pkgs.len());
+    info!(
+        "增量同步: {} 个包",
+        packages.unwrap_or(config.packages).len()
+    );
     info!("TODO: sync wheels + python builds → incremental package");
     Ok(())
 }
@@ -173,84 +175,96 @@ fn clean_repo(
     Ok(())
 }
 
-async fn download_one_build(
+async fn download_pkg_files(
     client: &reqwest::Client,
-    entry: &pip_mirror::python_builds::PythonBuildEntry,
-    dir: &std::path::Path,
+    repo: &std::path::Path,
+    files: &[pip_mirror::downloader::FileInfo],
 ) {
-    let result =
-        pip_mirror::python_builds::download_python_build(client, entry, dir)
-            .await;
-    match result {
-        Ok((_, true)) => info!("  [OK] {}", entry.filename),
-        Err(e) => tracing::warn!("  [FAIL] {}: {e}", entry.filename),
-        _ => {}
+    for fi in files {
+        let dest = repo
+            .join("simple")
+            .join(&fi.package_name)
+            .join(&fi.filename);
+        let _ = pip_mirror::downloader::download_file(client, fi, &dest).await;
     }
 }
 
-async fn download_python_builds_batch(
+struct SyncCtx<'a> {
+    http: &'a pip_mirror::downloader::HttpCtx<'a>,
+    repo: &'a std::path::Path,
+}
+
+async fn download_dep_versions(
+    http: &pip_mirror::downloader::HttpCtx<'_>,
+    repo: &std::path::Path,
+    deps: &dashmap::DashMap<String, Vec<pep440_rs::Version>>,
+) {
+    for entry in deps.iter() {
+        let pkg = entry.key();
+        let vers = entry.value();
+        let vers_set: std::collections::HashSet<String> =
+            vers.iter().map(|v| v.to_string()).collect();
+        let Ok(files) = pip_mirror::downloader::fetch_json_api(http, pkg).await
+        else {
+            tracing::warn!("  [FAIL] 依赖包 {pkg}: 获取元数据失败");
+            continue;
+        };
+        let selected: Vec<_> = files
+            .into_iter()
+            .filter(|f| vers_set.contains(&f.version))
+            .collect();
+        download_pkg_files(http.client, repo, &selected).await;
+    }
+}
+
+async fn sync_top_packages(
+    ctx: &SyncCtx<'_>,
+    pkgs: &[String],
+    max_versions: usize,
+) -> dashmap::DashMap<String, Vec<pep440_rs::Version>> {
+    let top_versions = dashmap::DashMap::new();
+    for pkg in pkgs {
+        let Ok(files) =
+            pip_mirror::downloader::fetch_json_api(ctx.http, pkg).await
+        else {
+            tracing::warn!("  [FAIL] {pkg}: 获取数据失败");
+            continue;
+        };
+        let selected = pip_mirror::downloader::select_latest_versions(
+            &files,
+            max_versions,
+        );
+        let mut vers: Vec<pep440_rs::Version> = selected
+            .iter()
+            .filter_map(|f| f.version.parse().ok())
+            .collect();
+        vers.sort_by(|a, b| b.cmp(a));
+        vers.dedup();
+        top_versions
+            .insert(pip_mirror::resolver::pubgrub::bare_name(pkg), vers);
+        info!("  [OK] {pkg}: {} files", selected.len());
+        download_pkg_files(ctx.http.client, ctx.repo, &selected).await;
+    }
+    top_versions
+}
+
+async fn finalize_mirror(
     client: &reqwest::Client,
     repo: &std::path::Path,
-) -> Result<
-    Vec<pip_mirror::python_builds::PythonBuildEntry>,
-    Box<dyn std::error::Error>,
-> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let entries =
-        pip_mirror::python_builds::fetch_python_builds(client).await?;
-    let dir = repo.join("python-builds");
-    std::fs::create_dir_all(&dir)?;
-    for entry in &entries {
-        download_one_build(client, entry, &dir).await;
-    }
-    Ok(entries)
-}
-
-fn build_python_builds_index(
-    entries: &[pip_mirror::python_builds::PythonBuildEntry],
-    repo: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut meta = serde_json::Map::new();
-    for entry in entries {
-        let mut e = serde_json::json!({ "url": format!("/python-builds/{}", entry.filename) });
-        if let Some(sha) = &entry.sha256 {
-            e["sha256"] = serde_json::Value::String(sha.clone());
-        }
-        meta.insert(entry.key.clone(), e);
-    }
-    std::fs::write(
-        repo.join("python-builds/index.json"),
-        serde_json::to_string_pretty(&meta)?,
-    )?;
-    Ok(())
-}
-
-fn tar_compression() -> flate2::Compression {
-    match std::env::var("PIP_MIRROR_TAR_COMPRESSION").as_deref() {
-        Ok("none") => flate2::Compression::none(),
-        _ => flate2::Compression::best(),
-    }
-}
-
-fn pack_mirror_archive(
-    repo: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let archive = std::env::current_dir()?.join("mirror.tar.gz");
-    pip_mirror::downloader::pack_full_mirror(
-        repo,
-        &archive,
-        tar_compression(),
-    )?;
-    let sha = pip_mirror::packager::write_sha256(&archive)?;
-    let mb = std::fs::metadata(&archive)?.len() as f64 / 1024.0 / 1024.0;
-    info!("mirror.tar.gz : {} ({mb:.2} MB)", archive.display());
-    info!("mirror.sha256 : {}", sha.display());
+        pip_mirror::python_builds::download_python_builds_batch(client, repo)
+            .await?;
+    pip_mirror::python_builds::build_python_builds_index(&entries, repo)?;
+    pip_mirror::indexer::generate_index(repo);
+    pip_mirror::packager::pack_mirror_archive(repo)?;
     Ok(())
 }
 
 async fn cmd_sync_full(
     config_path: Option<&std::path::Path>,
     packages: Option<Vec<String>>,
-    _no_deps: bool,
+    no_deps: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = pip_mirror::config::Config::load(config_path)?;
     let pkgs = packages.unwrap_or(config.packages);
@@ -260,27 +274,35 @@ async fn cmd_sync_full(
     clean_repo(repo)?;
 
     let client = reqwest::Client::new();
-    // Download top packages
-    for pkg in &pkgs {
-        match pip_mirror::downloader::fetch_json_api(&client, pkg, &config.pypi_url).await {
-            Ok(files) => {
-                let selected = pip_mirror::downloader::select_latest_versions(&files, config.max_versions);
-                info!("  [OK] {pkg}: {} files", selected.len());
-                for fi in &selected {
-                    let dest = repo.join("simple").join(&fi.package_name).join(&fi.filename);
-                    let _ = pip_mirror::downloader::download_file(&client, fi, &dest).await;
-                }
-            }
-            Err(e) => tracing::warn!("  [FAIL] {pkg}: {e}"),
+    let http = pip_mirror::downloader::HttpCtx {
+        client: &client,
+        pypi_url: &config.pypi_url,
+    };
+    let top_versions = sync_top_packages(
+        &SyncCtx { http: &http, repo },
+        &pkgs,
+        config.max_versions,
+    )
+    .await;
+
+    if !no_deps && !top_versions.is_empty() {
+        let params = pip_mirror::resolver::resolve::ResolveParams {
+            top_packages: &pkgs,
+            top_versions: &top_versions,
+            pypi_url: &config.pypi_url,
+            max_depth: config.max_depth,
+            max_versions: config.max_versions,
+        };
+        let deps = pip_mirror::resolver::resolve::resolve_dependencies(
+            &params, &client,
+        )
+        .await;
+        if !deps.is_empty() {
+            download_dep_versions(&http, repo, &deps).await;
         }
     }
-    // TODO: resolve + download deps (when --no-deps is false)
 
-    let entries = download_python_builds_batch(&client, repo).await?;
-    build_python_builds_index(&entries, repo)?;
-    pip_mirror::indexer::generate_index(repo);
-    pack_mirror_archive(repo)?;
-    Ok(())
+    finalize_mirror(&client, repo).await
 }
 
 async fn cmd_serve(

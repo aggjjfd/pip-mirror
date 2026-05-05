@@ -11,6 +11,11 @@ use crate::filters::{
     is_accepted_wheel, is_source_distribution, platform_to_target,
 };
 
+pub struct HttpCtx<'a> {
+    pub client: &'a Client,
+    pub pypi_url: &'a str,
+}
+
 /// File metadata as returned by PyPI JSON API.
 #[derive(Debug, Clone)]
 pub struct FileInfo {
@@ -71,16 +76,16 @@ fn collect_release_files(
 }
 
 pub async fn fetch_json_api(
-    client: &Client,
+    http: &HttpCtx<'_>,
     pkg: &str,
-    pypi_url: &str,
 ) -> Result<Vec<FileInfo>, reqwest::Error> {
     let url = format!(
         "{}/pypi/{}/json",
-        pypi_url.trim_end_matches('/'),
+        http.pypi_url.trim_end_matches('/'),
         super::filters::normalize_package_name(pkg)
     );
-    let resp: serde_json::Value = client.get(&url).send().await?.json().await?;
+    let resp: serde_json::Value =
+        http.client.get(&url).send().await?.json().await?;
     Ok(resp
         .get("releases")
         .map(|r| collect_release_files(r, pkg))
@@ -121,7 +126,7 @@ pub fn select_latest_versions(
 }
 
 /// Collect all accepted wheels and sdists for a version.
-fn collect_version_files(files: &[FileInfo]) -> Vec<FileInfo> {
+pub fn collect_version_files(files: &[FileInfo]) -> Vec<FileInfo> {
     let mut result = Vec::new();
     for fi in files {
         let is_whl = fi.filename.ends_with(".whl");
@@ -135,7 +140,7 @@ fn collect_version_files(files: &[FileInfo]) -> Vec<FileInfo> {
 }
 
 /// Check if a version has a wheel covering the given target platform.
-fn version_has_target(files: &[FileInfo], target: &str) -> bool {
+pub fn version_has_target(files: &[FileInfo], target: &str) -> bool {
     for fi in files {
         if !fi.filename.ends_with(".whl") || !is_accepted_wheel(&fi.filename) {
             continue;
@@ -243,17 +248,17 @@ use pep440_rs::Version;
 use std::str::FromStr;
 
 pub async fn get_all_versions(
-    client: &Client,
+    http: &HttpCtx<'_>,
     package: &str,
-    pypi_url: &str,
 ) -> Result<Vec<Version>, reqwest::Error> {
     let normalized = crate::filters::normalize_package_name(package);
     let url = format!(
         "{}/pypi/{}/json",
-        pypi_url.trim_end_matches('/'),
+        http.pypi_url.trim_end_matches('/'),
         normalized
     );
-    let resp: serde_json::Value = client.get(&url).send().await?.json().await?;
+    let resp: serde_json::Value =
+        http.client.get(&url).send().await?.json().await?;
     let mut versions: Vec<Version> = resp
         .get("releases")
         .and_then(|r| r.as_object())
@@ -269,19 +274,19 @@ pub async fn get_all_versions(
 
 /// Get requires_dist for a specific package version. Returns list of (dep_name, specifier, extras_marker_str).
 pub async fn get_requires_dist(
-    client: &Client,
+    http: &HttpCtx<'_>,
     package: &str,
     version: &str,
-    pypi_url: &str,
 ) -> Result<Option<Vec<String>>, reqwest::Error> {
     let normalized = crate::filters::normalize_package_name(package);
     let url = format!(
         "{}/pypi/{}/{}/json",
-        pypi_url.trim_end_matches('/'),
+        http.pypi_url.trim_end_matches('/'),
         normalized,
         version
     );
-    let resp: serde_json::Value = client.get(&url).send().await?.json().await?;
+    let resp: serde_json::Value =
+        http.client.get(&url).send().await?.json().await?;
     let rd = resp
         .get("info")
         .and_then(|i| i.get("requires_dist"))

@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 use tracing::info;
 
+use flate2::Compression;
+
 use crate::downloader::FileInfo;
 
 pub struct IncrementalPackage<'a> {
@@ -58,7 +60,7 @@ fn add_python_builds(
     }
 }
 
-fn no_changes(spec: &IncrementalPackage<'_>) -> bool {
+pub fn no_changes(spec: &IncrementalPackage<'_>) -> bool {
     spec.simple_files.is_empty()
         && spec.python_builds_files.is_empty()
         && spec.python_builds_index.is_none()
@@ -101,4 +103,23 @@ pub fn write_sha256(archive: &Path) -> std::io::Result<PathBuf> {
     let name = archive.file_name().unwrap().to_string_lossy();
     std::fs::write(&sha_path, format!("{digest}  {name}\n"))?;
     Ok(sha_path)
+}
+
+pub fn tar_compression() -> Compression {
+    match std::env::var("PIP_MIRROR_TAR_COMPRESSION").as_deref() {
+        Ok("none") => Compression::none(),
+        _ => Compression::best(),
+    }
+}
+
+pub fn pack_mirror_archive(
+    repo: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let archive = std::env::current_dir()?.join("mirror.tar.gz");
+    crate::downloader::pack_full_mirror(repo, &archive, tar_compression())?;
+    let sha = write_sha256(&archive)?;
+    let mb = std::fs::metadata(&archive)?.len() as f64 / 1024.0 / 1024.0;
+    tracing::info!("mirror.tar.gz : {} ({mb:.2} MB)", archive.display());
+    tracing::info!("mirror.sha256 : {}", sha.display());
+    Ok(())
 }

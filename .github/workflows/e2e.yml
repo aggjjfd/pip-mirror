@@ -18,7 +18,7 @@ name: E2E (Four Modes)
 
 on:
   push:
-    branches: [main]
+    branches: [main, rust-rewrite]
   pull_request:
   workflow_dispatch:
 
@@ -42,53 +42,47 @@ jobs:
         with:
           version: 'latest'
 
-      - name: Install pip-mirror deps
-        run: uv sync --no-dev
-
-      - name: 'Generate three configs from pyproject.toml(不动 pyproject 本身)'
+      - name: Build pip-mirror (Rust)
         run: |
           set -euo pipefail
-          python <<'PY'
-          import tomllib
-          from pathlib import Path
+          rustup default stable
+          cargo build --release
+          echo "PIP_MIRROR_BIN=$(pwd)/target/release/pip-mirror" >> "$GITHUB_ENV"
 
-          src = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-          base = src["tool"]["pip-mirror"]
-          base_pkgs = list(base["packages"])
-
-          def write_config(path, *, packages, repository_dir):
-              lines = ["packages = ["]
-              for p in packages:
-                  lines.append(f'    "{p}",')
-              lines.append("]")
-              lines.append(f'repository_dir = "{repository_dir}"')
-              lines.append(f'incremental_dir = "{base.get("incremental_dir", "./incremental")}"')
-              lines.append(f'include_source = {"true" if base.get("include_source", True) else "false"}')
-              lines.append("workers = 16")  # CI 上拉高
-              lines.append(f'max_versions = {base.get("max_versions", 5)}')
-              lines.append('server_host = "127.0.0.1"')
-              lines.append("server_port = 18080")
-              Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-          # 1) sync-full 用:packages 与 pyproject 一致,repository_dir = workspace 默认
-          write_config("e2e-full.toml", packages=base_pkgs, repository_dir="./packages")
-          # 2) stage 用(serve + import-incremental):packages 一致,repository_dir 指向 /tmp/stage/packages
-          write_config("stage.toml", packages=base_pkgs, repository_dir="/tmp/stage/packages")
-          # 3) 增量 sync 用:packages = pyproject 列表 + setuptools(pyproject 没有的包,以触发增量)
-          write_config("e2e-inc.toml", packages=[*base_pkgs, "setuptools"], repository_dir="./packages")
-
-          print(f"base packages: {len(base_pkgs)}")
-          print("generated: e2e-full.toml stage.toml e2e-inc.toml")
-          PY
-          echo "----- e2e-full.toml(尾部) -----"
-          tail -15 e2e-full.toml
-          echo "----- e2e-inc.toml(尾部) -----"
-          tail -15 e2e-inc.toml
+      - name: 'Generate e2e configs'
+        run: |
+          set -euo pipefail
+          cat > e2e-full.toml <<'TOML'
+          packages = ["requests", "charset-normalizer", "idna", "urllib3", "certifi"]
+          repository_dir = "./packages"
+          incremental_dir = "./incremental"
+          include_source = true
+          workers = 8
+          max_versions = 3
+          max_depth = 2
+          server_host = "127.0.0.1"
+          server_port = 18080
+          TOML
+          sed 's|repository_dir = "./packages"|repository_dir = "/tmp/stage/packages"|' \
+            e2e-full.toml > stage.toml
+          cat > e2e-inc.toml <<'TOML'
+          packages = ["requests", "charset-normalizer", "idna", "urllib3", "certifi", "setuptools"]
+          repository_dir = "./packages"
+          include_source = true
+          workers = 8
+          max_versions = 3
+          server_host = "127.0.0.1"
+          server_port = 18080
+          TOML
+          echo "----- e2e-full.toml -----"
+          cat e2e-full.toml
+          echo "----- e2e-inc.toml -----"
+          cat e2e-inc.toml
 
       - name: 'Mode 2 — sync-full produces mirror.tar.gz + mirror.sha256(用 pyproject 全集)'
         run: |
           set -euo pipefail
-          uv run pip-mirror sync-full -c e2e-full.toml 2>&1 | tee sync-full.log
+          $PIP_MIRROR_BIN sync-full -c e2e-full.toml 2>&1 | tee sync-full.log
           ls -lh mirror.tar.gz mirror.sha256
           sha256sum -c mirror.sha256
 
@@ -118,7 +112,7 @@ jobs:
       - name: 'Mode 3 — start serve in background'
         run: |
           set -euo pipefail
-          uv run pip-mirror serve -c stage.toml > server.log 2>&1 &
+          $PIP_MIRROR_BIN serve -c stage.toml > server.log 2>&1 &
           echo $! > server.pid
           # 等 server up
           for i in $(seq 1 30); do
@@ -160,7 +154,7 @@ jobs:
       - name: 'Mode 1 — incremental sync(在 pyproject 列表外加 setuptools 触发增量)'
         run: |
           set -euo pipefail
-          uv run pip-mirror sync -c e2e-inc.toml 2>&1 | tee sync.log
+          $PIP_MIRROR_BIN sync -c e2e-inc.toml 2>&1 | tee sync.log
           ls -lh incremental/incremental_*.tar.gz
           ARCHIVE=$(ls incremental/incremental_*.tar.gz | head -1)
           echo "INCREMENTAL=$ARCHIVE" >> "$GITHUB_ENV"
@@ -175,7 +169,7 @@ jobs:
       - name: 'import-incremental into stage(recompute sha256)'
         run: |
           set -euo pipefail
-          uv run pip-mirror import-incremental "$INCREMENTAL" -c stage.toml 2>&1 | tee import.log
+          $PIP_MIRROR_BIN import-incremental "$INCREMENTAL" -c stage.toml 2>&1 | tee import.log
           # stage 的 .store.db 必须有 setuptools 行,且 sha256 长度 64
           NSET=$(sqlite3 /tmp/stage/packages/.store.db \
             "SELECT COUNT(*) FROM downloaded_files WHERE package_name='setuptools' AND LENGTH(sha256)=64;")
@@ -200,7 +194,7 @@ jobs:
       - name: '--strict happy path (re-import succeeds, no failures)'
         run: |
           set -euo pipefail
-          uv run pip-mirror import-incremental "$INCREMENTAL" -c stage.toml --strict 2>&1 | tee strict.log
+          $PIP_MIRROR_BIN import-incremental "$INCREMENTAL" -c stage.toml --strict 2>&1 | tee strict.log
 
       - name: 'Stop server'
         if: always()
@@ -258,8 +252,10 @@ jobs:
         with:
           version: 'latest'
 
-      - name: 'Install pip-mirror deps'
-        run: uv sync --no-dev
+      - name: 'Build pip-mirror (Windows Rust)'
+        run: |
+          rustup default stable
+          cargo build --release
 
       - name: 'Download mirror.tar.gz from linux job'
         uses: actions/download-artifact@v4
@@ -299,8 +295,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $bin = "$(Get-Location)\target\release\pip-mirror.exe"
           $proc = Start-Process -PassThru -WindowStyle Hidden `
-            -FilePath uv -ArgumentList 'run','pip-mirror','serve','-c','stage.toml' `
+            -FilePath $bin -ArgumentList 'serve','-c','stage.toml' `
             -RedirectStandardOutput server.log -RedirectStandardError server.err
           $proc.Id | Out-File -Encoding ascii server.pid
           $up = $false

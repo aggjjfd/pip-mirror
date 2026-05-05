@@ -200,3 +200,50 @@ pub async fn download_python_build(
     tokio::fs::rename(&tmp, &dest).await?;
     Ok((dest, true))
 }
+
+async fn download_one_build(
+    client: &Client,
+    entry: &PythonBuildEntry,
+    dir: &Path,
+) {
+    let result = download_python_build(client, entry, dir).await;
+    match result {
+        Ok((_, true)) => info!("  [OK] {}", entry.filename),
+        Err(e) => tracing::warn!("  [FAIL] {}: {e}", entry.filename),
+        _ => {}
+    }
+}
+
+pub async fn download_python_builds_batch(
+    client: &Client,
+    repo: &Path,
+) -> Result<Vec<PythonBuildEntry>, Box<dyn std::error::Error>> {
+    let entries = fetch_python_builds(client).await?;
+    let dir = repo.join("python-builds");
+    std::fs::create_dir_all(&dir)?;
+    for entry in &entries {
+        download_one_build(client, entry, &dir).await;
+    }
+    Ok(entries)
+}
+
+pub fn build_python_builds_index(
+    entries: &[PythonBuildEntry],
+    repo: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut meta = serde_json::Map::new();
+    for entry in entries {
+        let mut e = serde_json::json!({
+            "url": format!("/python-builds/{}", entry.filename)
+        });
+        if let Some(sha) = &entry.sha256 {
+            e["sha256"] = serde_json::Value::String(sha.clone());
+        }
+        meta.insert(entry.key.clone(), e);
+    }
+    std::fs::write(
+        repo.join("python-builds/index.json"),
+        serde_json::to_string_pretty(&meta)?,
+    )?;
+    Ok(())
+}
