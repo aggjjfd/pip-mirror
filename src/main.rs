@@ -399,17 +399,23 @@ struct ImportIncrementalArgs<'a> {
     strict: bool,
 }
 
+#[allow(unused_variables)]
 fn cmd_import_incremental(
     args: ImportIncrementalArgs<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let _ = (args.no_reindex, args.strict);
     let config = pip_mirror::config::Config::load(args.config_path)?;
     info!(
         "解包 {} → {}",
         args.archive.display(),
         config.repository_dir.display()
     );
-    info!("TODO: import-incremental full logic");
+    let f = std::fs::File::open(args.archive)?;
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(f));
+    tar.unpack(&config.repository_dir)?;
+    if !args.no_reindex {
+        pip_mirror::indexer::generate_index(&config.repository_dir);
+    }
+    info!("导入完成");
     Ok(())
 }
 
