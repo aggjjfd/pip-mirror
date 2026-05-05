@@ -1,19 +1,28 @@
 name: E2E (Four Modes)
 
 # 端到端测试,串完 pip-mirror 对外四种模式 + 真实客户端验证。
-# 包列表与 pyproject.toml 的 [tool.pip-mirror].packages 保持一致(35 包,
-# 含 markitdown[pptx,docx,xls,xlsx,pdf]),不偷工。CI 上 CPU 弱网络强,所以:
-#   - workers 在 CI 配置里拉到 16(只写在 e2e 生成的 toml 里,不改 pyproject)
+# 包列表精选 8 个有代表性的深依赖包,故意把 3 个"依赖最深"的包
+# (gradio + streamlit + markitdown[pptx,docx,xls,xlsx,pdf])从 sync-full 抠出去,
+# 留给 incremental 流程加回来,这样 incremental 链路压上了:
+#   - 真正的依赖深度(gradio 一长串 transitive、markitdown 五条 extras 分支)
+#   - extras 解析在 incremental 路径上的正确性
+# CI 上 CPU 弱网络强,所以:
+#   - workers 在 CI 配置里拉到 16
 #   - PIP_MIRROR_TAR_COMPRESSION=none → mirror.tar.gz 内部 gzip level=0,基本不压缩
 # 流程(对照 README "四种使用模式"):
-#   1) 模式二 sync-full    → 在 workspace 产 mirror.tar.gz + mirror.sha256
+#   1) 模式二 sync-full    → 5 包(rapidocr-onnxruntime + pyside6 + playwright +
+#                            openai + requests)产 mirror.tar.gz + mirror.sha256
 #   2) 模拟内网            → 解到 /tmp/stage,验证 simple/ 与 python-builds/ 都在
 #   3) 模式三 serve(后台)→ 用 stage 仓库做服务
 #   4) 客户端 uv pip install requests              走镜像装 wheel
 #   5) 客户端 uv python install 3.13               走镜像装 cpython,验证 python-builds 链路
-#   6) 模式一 sync          → 加一个 pyproject.toml 没有的包(setuptools)触发 incremental_*.tar.gz
-#   7) import-incremental   → 现算 sha256 写入 stage 的 store.db,客户端立即可装 setuptools
-#   8) --strict happy path  → 同一个 archive 再 import 一次,strict 不报错
+#   6) 模式一 sync          → 把抠出去的 3 个深依赖加回来触发 incremental_*.tar.gz
+#   7) import-incremental   → 现算 sha256 写入 stage 的 store.db
+#   8) 客户端 venv_full      → 装 3 个 sync-full 端深依赖
+#                              (openai + playwright + rapidocr-onnxruntime)
+#   9) 客户端 venv_inc       → 新建 venv,装 3 个 incremental 端深依赖
+#                              (gradio + streamlit + markitdown[pptx,docx,xls,xlsx,pdf])
+#  10) --strict happy path  → 同一个 archive 再 import 一次,strict 不报错
 # 模式四(docker build)不在 e2e 内,因为它的产出物是镜像而非数据,与运行时验证无关。
 
 on:
@@ -49,17 +58,16 @@ jobs:
           cargo build --release
           echo "PIP_MIRROR_BIN=$(pwd)/target/release/pip-mirror" >> "$GITHUB_ENV"
 
-      - name: 'Generate e2e configs'
+      - name: 'Generate e2e configs(sync-full 子集 + incremental 加回 3 深依赖)'
         run: |
           set -euo pipefail
           cat > e2e-full.toml <<'TOML'
           packages = [
-              "gradio",
-              "markitdown[pptx,docx,xls,xlsx,pdf]",
               "rapidocr-onnxruntime",
               "pyside6",
               "playwright",
               "openai",
+              "requests",
           ]
           repository_dir = "./packages"
           incremental_dir = "./incremental"
@@ -74,13 +82,14 @@ jobs:
             e2e-full.toml > stage.toml
           cat > e2e-inc.toml <<'TOML'
           packages = [
-              "gradio",
-              "markitdown[pptx,docx,xls,xlsx,pdf]",
               "rapidocr-onnxruntime",
               "pyside6",
               "playwright",
               "openai",
-              "setuptools",
+              "requests",
+              "gradio",
+              "streamlit",
+              "markitdown[pptx,docx,xls,xlsx,pdf]",
           ]
           repository_dir = "./packages"
           include_source = true
@@ -94,7 +103,7 @@ jobs:
           echo "----- e2e-inc.toml -----"
           cat e2e-inc.toml
 
-      - name: 'Mode 2 — sync-full produces mirror.tar.gz + mirror.sha256(用 pyproject 全集)'
+      - name: 'Mode 2 — sync-full produces mirror.tar.gz + mirror.sha256(用 sync-full 子集,5 包)'
         run: |
           set -euo pipefail
           $PIP_MIRROR_BIN sync-full -c e2e-full.toml 2>&1 | tee sync-full.log
@@ -166,16 +175,22 @@ jobs:
           echo "python-builds hits in mirror access_log: $PYHITS"
           test "$PYHITS" -ge 1
 
-      - name: 'Mode 1 — incremental sync(在 pyproject 列表外加 setuptools 触发增量)'
+      - name: 'Mode 1 — incremental sync(把 3 个深依赖加回来触发增量)'
         run: |
           set -euo pipefail
           $PIP_MIRROR_BIN sync -c e2e-inc.toml 2>&1 | tee sync.log
           ls -lh incremental/incremental_*.tar.gz
           ARCHIVE=$(ls incremental/incremental_*.tar.gz | head -1)
           echo "INCREMENTAL=$ARCHIVE" >> "$GITHUB_ENV"
-          # 增量包必须含 setuptools;不该再含已同步的 requests
+          # 增量包必须含 gradio + streamlit + markitdown 三个新包;
+          # 不该再含已同步的 requests
           tar -tzf "$ARCHIVE" | tee /tmp/inc-list.txt
-          grep -E '^simple/setuptools/' /tmp/inc-list.txt
+          for pkg in gradio streamlit markitdown; do
+            if ! grep -qE "^simple/${pkg}/" /tmp/inc-list.txt; then
+              echo "BUG: incremental tar 缺少 simple/${pkg}/"
+              exit 1
+            fi
+          done
           if grep -E '^simple/requests/' /tmp/inc-list.txt; then
             echo "BUG: incremental should NOT re-include already-synced requests files"
             exit 1
@@ -185,26 +200,54 @@ jobs:
         run: |
           set -euo pipefail
           $PIP_MIRROR_BIN import-incremental "$INCREMENTAL" -c stage.toml 2>&1 | tee import.log
-          # stage 的 .store.db 必须有 setuptools 行,且 sha256 长度 64
-          NSET=$(sqlite3 /tmp/stage/packages/.store.db \
-            "SELECT COUNT(*) FROM downloaded_files WHERE package_name='setuptools' AND LENGTH(sha256)=64;")
-          echo "setuptools rows in stage store: $NSET"
-          test "$NSET" -ge 1
+          # stage 的 .store.db 必须有 gradio / streamlit / markitdown 行,
+          # 且 sha256 长度 64
+          for pkg in gradio streamlit markitdown; do
+            N=$(sqlite3 /tmp/stage/packages/.store.db \
+              "SELECT COUNT(*) FROM downloaded_files WHERE package_name='${pkg}' AND LENGTH(sha256)=64;")
+            echo "${pkg} rows in stage store: $N"
+            test "$N" -ge 1
+          done
           # 索引也要被重建
-          test -f /tmp/stage/packages/simple/setuptools/index.html
-          test -f /tmp/stage/packages/simple/setuptools/index.json
+          for pkg in gradio streamlit markitdown; do
+            test -f "/tmp/stage/packages/simple/${pkg}/index.html"
+            test -f "/tmp/stage/packages/simple/${pkg}/index.json"
+          done
           # manifest.json 不应被留在仓库根
           if [ -f /tmp/stage/packages/manifest.json ]; then
             echo "BUG: manifest.json should be cleaned up after import"
             exit 1
           fi
 
-      - name: 'Client — uv pip install setuptools (now served by live mirror)'
+      - name: 'Client venv_full — uv pip install 3 个 sync-full 端深依赖'
         run: |
           set -euo pipefail
-          export VIRTUAL_ENV=/tmp/client
-          uv pip install --index-url "http://${MIRROR_HOST}:${MIRROR_PORT}/simple" setuptools
-          /tmp/client/bin/python -c "import setuptools; print('client setuptools', setuptools.__version__)"
+          uv venv /tmp/client_full
+          export VIRTUAL_ENV=/tmp/client_full
+          uv pip install --index-url "http://${MIRROR_HOST}:${MIRROR_PORT}/simple" \
+            openai playwright rapidocr-onnxruntime
+          /tmp/client_full/bin/python - <<'PY'
+          import openai, playwright, rapidocr_onnxruntime
+          print("client_full OK",
+                "openai", openai.__version__,
+                "playwright", getattr(playwright, "__version__", "?"),
+                "rapidocr_onnxruntime", getattr(rapidocr_onnxruntime, "__version__", "?"))
+          PY
+
+      - name: 'Client venv_inc — uv pip install 3 个 incremental 端深依赖'
+        run: |
+          set -euo pipefail
+          uv venv /tmp/client_inc
+          export VIRTUAL_ENV=/tmp/client_inc
+          uv pip install --index-url "http://${MIRROR_HOST}:${MIRROR_PORT}/simple" \
+            gradio streamlit "markitdown[pptx,docx,xls,xlsx,pdf]"
+          /tmp/client_inc/bin/python - <<'PY'
+          import gradio, streamlit, markitdown
+          print("client_inc OK",
+                "gradio", gradio.__version__,
+                "streamlit", streamlit.__version__,
+                "markitdown", getattr(markitdown, "__version__", "?"))
+          PY
 
       - name: '--strict happy path (re-import succeeds, no failures)'
         run: |
