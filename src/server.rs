@@ -159,10 +159,13 @@ pub fn rewrite_relative_urls(data: &mut serde_json::Value, base: &str) {
 async fn serve_python_builds_file(
     State(state): State<AppState>,
     axum::extract::Path(tail): axum::extract::Path<String>,
+    req: axum::extract::Request,
 ) -> Response {
     let path = state.repo_dir.join("python-builds").join(&tail);
-    match tokio::fs::read(&path).await {
+    let status;
+    let resp = match tokio::fs::read(&path).await {
         Ok(body) => {
+            status = 200;
             let mime = if tail.ends_with(".json") {
                 "application/json"
             } else {
@@ -174,8 +177,38 @@ async fn serve_python_builds_file(
                 .body(axum::body::Body::from(body))
                 .unwrap()
         }
-        Err(_) => (StatusCode::NOT_FOUND, "Not Found").into_response(),
-    }
+        Err(_) => {
+            status = 404;
+            (StatusCode::NOT_FOUND, "Not Found").into_response()
+        }
+    };
+    state
+        .access_logger
+        .log(&crate::access_log::AccessRecord {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            client_ip: req
+                .headers()
+                .get("X-Forwarded-For")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("unknown")
+                .to_string(),
+            method: "GET".to_string(),
+            path: format!("/python-builds/{}", tail),
+            status_code: status,
+            user_agent: req
+                .headers()
+                .get(header::USER_AGENT)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string()),
+            bytes_sent: None,
+            referer: req
+                .headers()
+                .get(header::REFERER)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string()),
+        })
+        .ok();
+    resp
 }
 
 async fn serve_python_builds_index(
