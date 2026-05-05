@@ -62,11 +62,14 @@ pub async fn fetch_python_builds(
 }
 
 fn bail_entry(entry: &serde_json::Value) -> bool {
-    entry
+    let prerelease = entry
         .get("prerelease")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-        || entry.get("major").and_then(|v| v.as_u64()) != Some(3)
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !prerelease.is_empty() {
+        return true;
+    }
+    entry.get("major").and_then(|v| v.as_u64()) != Some(3)
 }
 
 fn target_minor_ok(entry: &serde_json::Value) -> bool {
@@ -101,20 +104,30 @@ fn is_target_entry(key: &str, entry: &serde_json::Value) -> bool {
     url.contains("install_only_stripped") && platform_match(entry)
 }
 
+#[allow(clippy::type_complexity)]
 fn group_by_platform(
     entries: &[(String, serde_json::Value)],
 ) -> HashMap<String, serde_json::Value> {
-    type PlatformKey = (u64, String, String, String, String);
-    let mut groups: HashMap<PlatformKey, Vec<&(String, serde_json::Value)>> =
-        HashMap::new();
+    // Separate groups by (minor, os, arch_family, arch_variant, libc, build_variant)
+    // where build_variant = top-level "variant" field (null/default/freethreaded/debug).
+    // This prevents freethreaded builds from replacing standard ones.
+    let mut groups: HashMap<
+        (u64, String, String, String, String, String),
+        Vec<&(String, serde_json::Value)>,
+    > = HashMap::new();
 
     for item in entries {
         let entry = &item.1;
         let arch = entry.get("arch").unwrap();
-        let variant = arch
+        let arch_variant = arch
             .get("variant")
             .and_then(|v| v.as_str())
             .unwrap_or("base");
+        let build_variant = entry
+            .get("variant")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let group_key = (
             entry.get("minor").and_then(|v| v.as_u64()).unwrap_or(0),
             entry
@@ -126,12 +139,13 @@ fn group_by_platform(
                 .and_then(|f| f.as_str())
                 .unwrap_or("")
                 .to_string(),
-            variant.to_string(),
+            arch_variant.to_string(),
             entry
                 .get("libc")
                 .and_then(|l| l.as_str())
                 .unwrap_or("")
                 .to_string(),
+            build_variant,
         );
         groups.entry(group_key).or_default().push(item);
     }
