@@ -32,6 +32,7 @@ flate2 = "1"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 dashmap = "6"
+futures = "0.3.32"
 
 [dev-dependencies]
 tempfile = "3"

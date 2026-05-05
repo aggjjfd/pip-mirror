@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use pep440_rs::Version;
@@ -21,7 +22,7 @@ pub struct ResolveParams<'a> {
     pub max_versions: usize,
 }
 
-type CacheType = HashMap<(String, String), Vec<(String, String)>>;
+type CacheType = Arc<DashMap<(String, String), Vec<(String, String)>>>;
 
 async fn fetch_versions(http: &HttpCtx<'_>, pkg: &str) -> Option<Vec<Version>> {
     crate::downloader::get_all_versions(http, pkg)
@@ -38,7 +39,7 @@ struct ExploreCtx<'a, 'b> {
     pkg_set: &'a mut HashSet<String>,
     queue: &'a mut Vec<(String, usize)>,
     depth: usize,
-    req_cache: &'a mut CacheType,
+    req_cache: &'a CacheType,
 }
 
 impl ExploreCtx<'_, '_> {
@@ -84,7 +85,7 @@ async fn bfs_collect(
     let mut pkg_set: HashSet<String> = top_names.iter().cloned().collect();
     let mut queue: Vec<_> = top_names.iter().map(|n| (n.clone(), 0)).collect();
     let mut pkg_versions: HashMap<String, Vec<Version>> = HashMap::new();
-    let mut req_cache = HashMap::new();
+    let req_cache: CacheType = Arc::new(DashMap::new());
 
     while let Some((pkg, depth)) = queue.pop() {
         let Some(all_vers) = fetch_versions(http, &pkg).await else {
@@ -100,7 +101,7 @@ async fn bfs_collect(
                 pkg_set: &mut pkg_set,
                 queue: &mut queue,
                 depth,
-                req_cache: &mut req_cache,
+                req_cache: &req_cache,
             })
             .await;
         }
@@ -108,42 +109,54 @@ async fn bfs_collect(
     (pkg_set, pkg_versions, req_cache)
 }
 
-struct DepsCtx<'a> {
-    req_cache: &'a mut CacheType,
+struct FetchCtx<'a> {
     http: &'a HttpCtx<'a>,
+    cache: &'a CacheType,
 }
 
-async fn get_deps(
-    pkg: &str,
-    ver: &str,
-    ctx: &mut DepsCtx<'_>,
-) -> Vec<(String, String)> {
-    let key = (pkg.to_string(), ver.to_string());
-    if let Some(cached) = ctx.req_cache.get(&key) {
-        return cached.clone();
-    }
-    let deps =
-        match crate::downloader::get_requires_dist(ctx.http, pkg, ver).await {
-            Ok(Some(rd)) => parse_python_requires(&rd),
-            _ => vec![],
+async fn fetch_pkg_deps(
+    pkg: String,
+    vers: Vec<Version>,
+    ctx: &FetchCtx<'_>,
+) -> Vec<((String, usize), Vec<(String, String)>)> {
+    let mut results = Vec::new();
+    for (idx, ver) in vers.iter().enumerate() {
+        let vs = ver.to_string();
+        let key = (pkg.clone(), vs.clone());
+        let deps = if let Some(c) = ctx.cache.get(&key) {
+            c.clone()
+        } else {
+            let d =
+                match crate::downloader::get_requires_dist(ctx.http, &pkg, &vs)
+                    .await
+                {
+                    Ok(Some(rd)) => parse_python_requires(&rd),
+                    _ => vec![],
+                };
+            ctx.cache.insert(key, d.clone());
+            d
         };
-    ctx.req_cache.insert(key, deps.clone());
-    deps
+        results.push(((pkg.clone(), idx), deps));
+    }
+    results
 }
 
 async fn build_deps_map(
     pkg_set: &HashSet<String>,
     pkg_versions: &HashMap<String, Vec<Version>>,
-    ctx: &mut DepsCtx<'_>,
+    ctx: &FetchCtx<'_>,
 ) -> HashMap<(String, usize), Vec<(String, String)>> {
-    let mut deps_map = HashMap::new();
+    let mut handles = Vec::new();
     for pkg in pkg_set {
         let Some(vers) = pkg_versions.get(pkg) else {
             continue;
         };
-        for (idx, ver) in vers.iter().enumerate() {
-            let vs = ver.to_string();
-            deps_map.insert((pkg.clone(), idx), get_deps(pkg, &vs, ctx).await);
+        handles.push(fetch_pkg_deps(pkg.clone(), vers.clone(), ctx));
+    }
+    let mut deps_map = HashMap::new();
+    for results in futures::future::join_all(handles).await {
+        for (key, deps) in results {
+            deps_map.insert(key, deps);
         }
     }
     deps_map
@@ -260,15 +273,14 @@ pub async fn resolve_dependencies(
         client,
         pypi_url: params.pypi_url,
     };
-    let (pkg_set, pkg_versions, mut req_cache) =
-        bfs_collect(params, &http).await;
+    let (pkg_set, pkg_versions, req_cache) = bfs_collect(params, &http).await;
     info!("  收集完成: {} 个包", pkg_set.len());
     let deps_map = build_deps_map(
         &pkg_set,
         &pkg_versions,
-        &mut DepsCtx {
-            req_cache: &mut req_cache,
+        &FetchCtx {
             http: &http,
+            cache: &req_cache,
         },
     )
     .await;
