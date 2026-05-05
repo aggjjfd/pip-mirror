@@ -170,3 +170,36 @@ fn test_version_window_not_in_all() {
     assert_eq!(versions.len(), 1);
     assert!(versions.contains(&v999));
 }
+
+#[test]
+fn test_version_window_filters_prereleases() {
+    let v100: Version = "1.0.0".parse().unwrap();
+    let v090: Version = "0.9.0".parse().unwrap();
+    let v090rc1: Version = "0.9.0rc1".parse().unwrap();
+    let v080: Version = "0.8.0".parse().unwrap();
+
+    let av: DashMap<String, Vec<Version>> = {
+        let m = DashMap::new();
+        m.insert(
+            "dep".to_string(),
+            vec![v100.clone(), v090.clone(), v090rc1.clone(), v080.clone()],
+        );
+        m
+    };
+
+    let sol: pubgrub::Solution = {
+        let m = DashMap::new();
+        m.insert("dep".to_string(), v090.clone());
+        m
+    };
+
+    let result = pubgrub::compute_version_windows(&[sol], &av, 3);
+    let versions = result.get("dep").unwrap();
+    // v090rc1 should NOT appear (prerelease within window)
+    assert!(
+        !versions.contains(&v090rc1),
+        "prerelease should not appear in version windows"
+    );
+    assert!(versions.contains(&v100));
+    assert!(versions.contains(&v090));
+}

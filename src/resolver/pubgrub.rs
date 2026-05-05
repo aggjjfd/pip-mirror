@@ -61,6 +61,7 @@ pub fn compute_version_windows(
         let v = entry.value_mut();
         v.sort_by(|a, b| b.cmp(a));
         v.dedup();
+        v.retain(|ver| !ver.any_prerelease());
     }
     result
 }

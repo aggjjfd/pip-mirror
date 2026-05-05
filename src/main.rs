@@ -225,8 +225,11 @@ async fn download_dep_versions(
             .into_iter()
             .filter(|f| vers_set.contains(&f.version))
             .collect();
+        for fi in &selected {
+            info!("  → {} {} [{}]", fi.package_name, fi.version, fi.filename);
+        }
         download_pkg_files(http.client, repo, &selected).await;
-        info!("  [OK] 依赖 {pkg}: {} 个文件", selected.len());
+        info!("  [OK] {pkg}: {} 个文件", selected.len());
     }
 }
 
