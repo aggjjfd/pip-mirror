@@ -99,7 +99,10 @@ pub fn write_sha256(archive: &Path) -> std::io::Result<PathBuf> {
     let mut hasher = Sha256::new();
     std::io::copy(&mut file, &mut hasher)?;
     let digest = format!("{:x}", hasher.finalize());
-    let sha_path = archive.with_extension("sha256");
+    // mirror.tar.gz → mirror.sha256 (not mirror.tar.sha256)
+    let stem = archive.file_stem().unwrap().to_str().unwrap();
+    let base = stem.rsplit_once('.').map_or(stem, |x| x.0);
+    let sha_path = archive.with_file_name(format!("{base}.sha256"));
     let name = archive.file_name().unwrap().to_string_lossy();
     std::fs::write(&sha_path, format!("{digest}  {name}\n"))?;
     Ok(sha_path)
