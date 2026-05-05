@@ -234,7 +234,8 @@ pub fn build_python_builds_index(
     let mut meta = serde_json::Map::new();
     for entry in entries {
         let mut e = serde_json::json!({
-            "url": format!("/python-builds/{}", entry.filename)
+            "url": format!("/python-builds/{}", entry.filename),
+            "name": entry.key,
         });
         if let Some(sha) = &entry.sha256 {
             e["sha256"] = serde_json::Value::String(sha.clone());
