@@ -44,7 +44,7 @@ pub async fn fetch_python_builds(
         let url = entry["url"].as_str().unwrap_or("").to_string();
         let filename = url
             .rfind('/')
-            .map(|p| url[p + 1..].to_string())
+            .map(|p| url[p + 1..].replace("%2B", "+").to_string())
             .unwrap_or_default();
         let sha = entry["sha256"].as_str().map(String::from);
         PythonBuildEntry {
