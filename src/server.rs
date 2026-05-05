@@ -24,6 +24,7 @@ fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/simple/{*tail}", get(serve_simple))
         .route("/python-builds/index.json", get(serve_python_builds_index))
+        .route("/python-builds/{*tail}", get(serve_python_builds_file))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -152,6 +153,28 @@ pub fn rewrite_relative_urls(data: &mut serde_json::Value, base: &str) {
         if url.starts_with('/') {
             entry["url"] = serde_json::Value::String(format!("{base}{url}"));
         }
+    }
+}
+
+async fn serve_python_builds_file(
+    State(state): State<AppState>,
+    axum::extract::Path(tail): axum::extract::Path<String>,
+) -> Response {
+    let path = state.repo_dir.join("python-builds").join(&tail);
+    match tokio::fs::read(&path).await {
+        Ok(body) => {
+            let mime = if tail.ends_with(".json") {
+                "application/json"
+            } else {
+                "application/octet-stream"
+            };
+            Response::builder()
+                .status(200)
+                .header("Content-Type", mime)
+                .body(axum::body::Body::from(body))
+                .unwrap()
+        }
+        Err(_) => (StatusCode::NOT_FOUND, "Not Found").into_response(),
     }
 }
 
