@@ -150,6 +150,33 @@ fn archive_mb(p: &std::path::Path) -> f64 {
         .unwrap_or(0.0)
 }
 
+fn collect_simple_files(
+    repo: &std::path::Path,
+    pkgs: &[String],
+) -> Vec<pip_mirror::downloader::FileInfo> {
+    pkgs.iter()
+        .filter_map(|p| {
+            let dir = repo.join("simple").join(p);
+            let entries = std::fs::read_dir(dir).ok()?;
+            Some(entries.filter_map(|e| e.ok()).filter_map(move |e| {
+                let f = e.file_name().to_string_lossy().to_string();
+                if f.ends_with(".json") || f.ends_with(".html") {
+                    return None;
+                }
+                Some(pip_mirror::downloader::FileInfo {
+                    package_name: p.clone(),
+                    filename: f.clone(),
+                    version: String::new(),
+                    url: String::new(),
+                    sha256: None,
+                    size: None,
+                })
+            }))
+        })
+        .flatten()
+        .collect()
+}
+
 async fn do_sync(
     config: &pip_mirror::config::Config,
     pkgs: &[String],
@@ -201,20 +228,23 @@ async fn cmd_sync(
     std::fs::create_dir_all(&config.repository_dir)?;
     let _client = do_sync(&config, &pkgs, no_deps).await?;
     std::fs::create_dir_all(&config.incremental_dir)?;
-    let archive = config.incremental_dir.join(format!(
-        "incremental_{}.tar.gz",
-        chrono::Utc::now().format("%Y%m%d_%H%M%S")
-    ));
-    pip_mirror::downloader::pack_full_mirror(
-        &config.repository_dir,
-        &archive,
-        pip_mirror::packager::tar_compression(),
-    )?;
-    info!(
-        "增量包: {} ({:.2} MB)",
-        archive.display(),
-        archive_mb(&archive)
-    );
+    let simple_files = collect_simple_files(&config.repository_dir, &pkgs);
+    let inc = pip_mirror::packager::IncrementalPackage {
+        simple_files: &simple_files,
+        python_builds_files: &[],
+        python_builds_index: None,
+        repository_dir: &config.repository_dir,
+        output_dir: &config.incremental_dir,
+    };
+    if let Some(archive) =
+        pip_mirror::packager::create_incremental_package(&inc)
+    {
+        info!(
+            "增量包: {} ({:.2} MB)",
+            archive.display(),
+            archive_mb(&archive)
+        );
+    }
     Ok(())
 }
 
