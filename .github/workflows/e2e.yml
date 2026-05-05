@@ -53,24 +53,39 @@ jobs:
         run: |
           set -euo pipefail
           cat > e2e-full.toml <<'TOML'
-          packages = ["requests", "charset-normalizer", "idna", "urllib3", "certifi"]
+          packages = [
+              "gradio",
+              "markitdown[pptx,docx,xls,xlsx,pdf]",
+              "rapidocr-onnxruntime",
+              "pyside6",
+              "playwright",
+              "openai",
+          ]
           repository_dir = "./packages"
           incremental_dir = "./incremental"
           include_source = true
-          workers = 8
-          max_versions = 3
-          max_depth = 2
+          workers = 16
+          max_versions = 5
+          max_depth = 3
           server_host = "127.0.0.1"
           server_port = 18080
           TOML
           sed 's|repository_dir = "./packages"|repository_dir = "/tmp/stage/packages"|' \
             e2e-full.toml > stage.toml
           cat > e2e-inc.toml <<'TOML'
-          packages = ["requests", "charset-normalizer", "idna", "urllib3", "certifi", "setuptools"]
+          packages = [
+              "gradio",
+              "markitdown[pptx,docx,xls,xlsx,pdf]",
+              "rapidocr-onnxruntime",
+              "pyside6",
+              "playwright",
+              "openai",
+              "setuptools",
+          ]
           repository_dir = "./packages"
           include_source = true
-          workers = 8
-          max_versions = 3
+          workers = 16
+          max_versions = 5
           server_host = "127.0.0.1"
           server_port = 18080
           TOML
