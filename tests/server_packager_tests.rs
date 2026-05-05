@@ -1,7 +1,13 @@
 use std::path::Path;
 
+use pip_mirror::logging;
 use pip_mirror::packager::IncrementalPackage;
 use pip_mirror::server;
+
+#[test]
+fn test_logging_init_no_panic() {
+    logging::init(false);
+}
 
 #[test]
 fn test_resolve_serve_path_file() {

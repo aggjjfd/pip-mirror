@@ -9,5 +9,6 @@ pub fn init(verbose: bool) {
         .with_env_filter(filter)
         .with_target(false)
         .with_ansi(true)
-        .init();
+        .try_init()
+        .ok();
 }

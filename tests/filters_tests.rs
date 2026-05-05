@@ -1,32 +1,99 @@
 use pip_mirror::filters;
 
+const ACCEPTED_WHEELS: &[&str] = &[
+    // 复合 manylinux tag（PEP 600 OR 语义）
+    "tornado-6.5.5-cp39-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl",
+    // 单一 manylinux 标准
+    "foo-1.0-py3-none-manylinux1_x86_64.whl",
+    "foo-1.0-py3-none-manylinux2010_x86_64.whl",
+    "foo-1.0-py3-none-manylinux2014_x86_64.whl",
+    "foo-1.0-py3-none-manylinux_2_5_x86_64.whl",
+    "foo-1.0-py3-none-manylinux_2_12_x86_64.whl",
+    "foo-1.0-py3-none-manylinux_2_17_x86_64.whl",
+    "foo-1.0-py3-none-manylinux_2_24_x86_64.whl",
+    "foo-1.0-py3-none-manylinux_2_28_x86_64.whl",
+    "foo-1.0-py3-none-manylinux_2_39_x86_64.whl",
+    "foo-1.0-py3-none-linux_x86_64.whl",
+    // Windows
+    "foo-1.0-py3-none-win_amd64.whl",
+    "foo-1.0-py3-none-win32.whl",
+    // 复合接受 tag（两个都是接受的 manylinux 标准）
+    "foo-1.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    // PEP 600 无限版本号 fallback
+    "foo-1.0-py3-none-manylinux_2_27_x86_64.whl",
+    "foo-1.0-py3-none-manylinux_2_31_x86_64.whl",
+    // 复合 tag 中一个不在白名单、一个 fallback 也能过
+    "foo-1.0-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+    // pure
+    "foo-1.0-py3-none-any.whl",
+];
+
+const REJECTED_WHEELS: &[&str] = &[
+    // musl
+    "foo-1.0-py3-none-musllinux_1_2_x86_64.whl",
+    // macOS
+    "foo-1.0-py3-none-macosx_10_9_x86_64.whl",
+    "foo-1.0-py3-none-macosx_10_9_universal2.whl",
+    // ARM
+    "foo-1.0-py3-none-manylinux_2_28_aarch64.whl",
+    "foo-1.0-py3-none-macosx_11_0_arm64.whl",
+    "foo-1.0-py3-none-linux_armv7l.whl",
+    "foo-1.0-py3-none-win_arm64.whl",
+    // 其他架构
+    "foo-1.0-py3-none-manylinux_2_28_s390x.whl",
+    "foo-1.0-py3-none-manylinux_2_28_ppc64le.whl",
+    "foo-1.0-py3-none-manylinux_2_28_riscv64.whl",
+    "foo-1.0-py3-none-wasm32.whl",
+    // 复合 tag 含拒绝子串
+    "foo-1.0-py3-none-musllinux_1_2_x86_64.manylinux_2_28_x86_64.whl",
+    // i686 不在接受列表
+    "foo-1.0-py3-none-manylinux1_i686.whl",
+    "foo-1.0-py3-none-manylinux2014_i686.whl",
+];
+
+const INVALID_FILENAMES: &[&str] = &[
+    "foo-1.0.tar.gz",
+    "foo-1.0.zip",
+    "not-a-wheel.txt",
+    "short.whl",
+    "a-b-c.whl",
+];
+
+const NORMALIZE_CASES: &[(&str, &str)] = &[
+    ("SomePackage", "somepackage"),
+    ("some.package", "some-package"),
+    ("some_package", "some-package"),
+    ("Some.Package_Name", "some-package-name"),
+];
+
 #[test]
-fn test_is_accepted_wheel_manylinux_x86_64() {
-    assert!(filters::is_accepted_wheel(
-        "foo-1.0-py3-none-manylinux1_x86_64.whl"
-    ));
-    assert!(filters::is_accepted_wheel(
-        "foo-1.0-py3-none-manylinux_2_28_x86_64.whl"
-    ));
-    assert!(filters::is_accepted_wheel(
-        "foo-1.0-py3-none-linux_x86_64.whl"
-    ));
+fn test_accepted_wheels() {
+    for filename in ACCEPTED_WHEELS {
+        assert!(
+            filters::is_accepted_wheel(filename),
+            "expected accepted: {filename}"
+        );
+    }
 }
 
 #[test]
-fn test_is_accepted_wheel_win() {
-    assert!(filters::is_accepted_wheel("foo-1.0-py3-none-win_amd64.whl"));
-    assert!(filters::is_accepted_wheel("foo-1.0-py3-none-win32.whl"));
+fn test_rejected_wheels() {
+    for filename in REJECTED_WHEELS {
+        assert!(
+            !filters::is_accepted_wheel(filename),
+            "expected rejected: {filename}"
+        );
+    }
 }
 
 #[test]
-fn test_rejected_musl_and_macos() {
-    assert!(!filters::is_accepted_wheel(
-        "foo-1.0-py3-none-musllinux_1_2_x86_64.whl"
-    ));
-    assert!(!filters::is_accepted_wheel(
-        "foo-1.0-py3-none-macosx_10_9_x86_64.whl"
-    ));
+fn test_invalid_filenames() {
+    for filename in INVALID_FILENAMES {
+        assert!(
+            !filters::is_accepted_wheel(filename),
+            "expected rejected (invalid): {filename}"
+        );
+    }
 }
 
 #[test]
@@ -41,31 +108,18 @@ fn test_pure_python() {
 fn test_source_distribution() {
     assert!(filters::is_source_distribution("foo-1.0.tar.gz"));
     assert!(filters::is_source_distribution("foo-1.0.zip"));
+    assert!(filters::is_source_distribution("foo-1.0.tar.bz2"));
+    assert!(filters::is_source_distribution("foo-1.0.tar.xz"));
     assert!(!filters::is_source_distribution("foo-1.0-py3-none-any.whl"));
 }
 
 #[test]
 fn test_normalize_name() {
-    assert_eq!(
-        filters::normalize_package_name("SomePackage"),
-        "somepackage"
-    );
-    assert_eq!(
-        filters::normalize_package_name("some.package"),
-        "some-package"
-    );
-    assert_eq!(
-        filters::normalize_package_name("some_package"),
-        "some-package"
-    );
-}
-
-#[test]
-fn test_composite_tag() {
-    let t =
-        "tornado-6.5.5-cp39-abi3-manylinux1_x86_64.manylinux_2_28_x86_64.whl";
-    assert!(filters::is_accepted_wheel(t));
-
-    let bad = "foo-1.0-py3-none-musllinux_1_2_x86_64.manylinux_2_28_x86_64.whl";
-    assert!(!filters::is_accepted_wheel(bad));
+    for (raw, expected) in NORMALIZE_CASES {
+        assert_eq!(
+            filters::normalize_package_name(raw),
+            *expected,
+            "normalize({raw})"
+        );
+    }
 }
