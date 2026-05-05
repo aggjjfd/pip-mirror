@@ -220,13 +220,28 @@ fn populate_provider(
 }
 
 fn resolve_one(ctx: &ResolveOneCtx<'_>) -> Option<Solution> {
-    let tvers = ctx.pkg_versions.get(ctx.top_pkg)?;
+    let tvers = ctx.pkg_versions.get(ctx.top_pkg).or_else(|| {
+        warn!("  {} not in pkg_versions", ctx.top_pkg);
+        None
+    })?;
     let top_ver = ctx
         .top_versions
         .get(ctx.top_pkg)
         .and_then(|tv| tv.first().cloned())
+        .or_else(|| {
+            warn!("  {} not in top_versions, using latest", ctx.top_pkg);
+            None
+        })
         .unwrap_or_else(|| tvers[0].clone());
-    let top_idx = tvers.iter().position(|v| *v == top_ver)?;
+    let Some(top_idx) = tvers.iter().position(|v| *v == top_ver) else {
+        warn!(
+            "  {} top_ver {} not found in versions ({} vers)",
+            ctx.top_pkg,
+            top_ver,
+            tvers.len(),
+        );
+        return None;
+    };
 
     let mut rp = OfflineDependencyProvider::new();
     rp.add_dependencies(
@@ -254,6 +269,19 @@ pub async fn resolve_dependencies(
     };
     let (pkg_set, pkg_versions, req_cache) = bfs_collect(params, &http).await;
     info!("  收集完成: {} 个包", pkg_set.len());
+    info!(
+        "  top packages in pkg_versions: {:?}",
+        params
+            .top_packages
+            .iter()
+            .filter_map(|n| {
+                let b = bare_name(n);
+                pkg_versions
+                    .get(&b)
+                    .map(|v| format!("{b}({} vers)", v.len()))
+            })
+            .collect::<Vec<_>>()
+    );
     let deps_map = build_deps_map(
         &pkg_set,
         &pkg_versions,
