@@ -144,17 +144,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // ── command implementations ──
 
+fn archive_mb(p: &std::path::Path) -> f64 {
+    std::fs::metadata(p)
+        .map(|m| m.len() as f64 / 1048576.0)
+        .unwrap_or(0.0)
+}
+
+async fn do_sync(
+    config: &pip_mirror::config::Config,
+    pkgs: &[String],
+    no_deps: bool,
+) -> Result<reqwest::Client, Box<dyn std::error::Error>> {
+    let repo = &config.repository_dir;
+    let client = reqwest::Client::new();
+    let http = pip_mirror::downloader::HttpCtx {
+        client: &client,
+        pypi_url: &config.pypi_url,
+    };
+    let top_versions = sync_top_packages(
+        &SyncCtx { http: &http, repo },
+        pkgs,
+        config.max_versions,
+    )
+    .await;
+    if !no_deps && !top_versions.is_empty() {
+        let params = pip_mirror::resolver::resolve::ResolveParams {
+            top_packages: pkgs,
+            top_versions: &top_versions,
+            pypi_url: &config.pypi_url,
+            max_depth: config.max_depth,
+            max_versions: config.max_versions,
+            allow_prerelease: config.allow_prerelease,
+        };
+        let deps = pip_mirror::resolver::resolve::resolve_dependencies(
+            &params, &client,
+        )
+        .await;
+        if !deps.is_empty() {
+            download_dep_versions(&http, repo, &deps).await;
+        }
+    }
+    pip_mirror::python_builds::download_python_builds_batch(&client, repo)
+        .await?;
+    pip_mirror::indexer::generate_index(repo);
+    Ok(client)
+}
+
 async fn cmd_sync(
     config_path: Option<&std::path::Path>,
     packages: Option<Vec<String>>,
-    _no_deps: bool,
+    no_deps: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = pip_mirror::config::Config::load(config_path)?;
+    let pkgs = packages.unwrap_or_else(|| config.packages.clone());
+    info!("增量同步: {} 个包", pkgs.len());
+    std::fs::create_dir_all(&config.repository_dir)?;
+    let _client = do_sync(&config, &pkgs, no_deps).await?;
+    std::fs::create_dir_all(&config.incremental_dir)?;
+    let archive = config.incremental_dir.join(format!(
+        "incremental_{}.tar.gz",
+        chrono::Utc::now().format("%Y%m%d_%H%M%S")
+    ));
+    pip_mirror::downloader::pack_full_mirror(
+        &config.repository_dir,
+        &archive,
+        pip_mirror::packager::tar_compression(),
+    )?;
     info!(
-        "增量同步: {} 个包",
-        packages.unwrap_or(config.packages).len()
+        "增量包: {} ({:.2} MB)",
+        archive.display(),
+        archive_mb(&archive)
     );
-    info!("TODO: sync wheels + python builds → incremental package");
     Ok(())
 }
 
@@ -283,43 +343,11 @@ async fn cmd_sync_full(
     no_deps: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = pip_mirror::config::Config::load(config_path)?;
-    let pkgs = packages.unwrap_or(config.packages);
+    let pkgs = packages.unwrap_or_else(|| config.packages.clone());
     info!("全量同步: {} 个包", pkgs.len());
-    let repo = &config.repository_dir;
-
-    clean_repo(repo)?;
-
-    let client = reqwest::Client::new();
-    let http = pip_mirror::downloader::HttpCtx {
-        client: &client,
-        pypi_url: &config.pypi_url,
-    };
-    let top_versions = sync_top_packages(
-        &SyncCtx { http: &http, repo },
-        &pkgs,
-        config.max_versions,
-    )
-    .await;
-
-    if !no_deps && !top_versions.is_empty() {
-        let params = pip_mirror::resolver::resolve::ResolveParams {
-            top_packages: &pkgs,
-            top_versions: &top_versions,
-            pypi_url: &config.pypi_url,
-            max_depth: config.max_depth,
-            max_versions: config.max_versions,
-            allow_prerelease: config.allow_prerelease,
-        };
-        let deps = pip_mirror::resolver::resolve::resolve_dependencies(
-            &params, &client,
-        )
-        .await;
-        if !deps.is_empty() {
-            download_dep_versions(&http, repo, &deps).await;
-        }
-    }
-
-    finalize_mirror(&client, repo).await
+    clean_repo(&config.repository_dir)?;
+    let client = do_sync(&config, &pkgs, no_deps).await?;
+    finalize_mirror(&client, &config.repository_dir).await
 }
 
 async fn cmd_serve(
