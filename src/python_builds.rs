@@ -240,6 +240,10 @@ pub fn build_python_builds_index(
             "/python-builds/{}",
             entry.filename
         ));
+        // uv treats Some("") prerelease as a prerelease → skip stable builds.
+        if e.get("prerelease").and_then(|v| v.as_str()) == Some("") {
+            e["prerelease"] = serde_json::Value::Null;
+        }
         meta.insert(entry.key.clone(), e);
     }
     std::fs::write(
