@@ -199,8 +199,18 @@ async fn download_dep_versions(
     repo: &std::path::Path,
     deps: &dashmap::DashMap<String, Vec<pep440_rs::Version>>,
 ) {
-    let dep_list: Vec<_> = deps.iter().map(|e| e.key().clone()).collect();
-    info!("依赖包清单 ({} 个): {:?}", dep_list.len(), dep_list);
+    let dep_list: Vec<String> = deps
+        .iter()
+        .map(|e| {
+            let vers: Vec<_> =
+                e.value().iter().map(|v| v.to_string()).collect();
+            format!("  {}: [{}]", e.key(), vers.join(", "))
+        })
+        .collect();
+    info!("依赖包清单 ({} 个):", dep_list.len());
+    for line in &dep_list {
+        info!("{line}");
+    }
     for entry in deps.iter() {
         let pkg = entry.key();
         let vers = entry.value();
