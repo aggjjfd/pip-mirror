@@ -15,6 +15,7 @@ pub struct PythonBuildEntry {
     pub url: String,
     pub sha256: Option<String>,
     pub filename: String,
+    pub raw: serde_json::Value,
 }
 
 /// Fetch uv's Python build metadata, filter to target platforms, keep latest build per group.
@@ -51,6 +52,7 @@ pub async fn fetch_python_builds(
             url,
             sha256: sha,
             filename,
+            raw: entry,
         }
     }
 
@@ -233,13 +235,11 @@ pub fn build_python_builds_index(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut meta = serde_json::Map::new();
     for entry in entries {
-        let mut e = serde_json::json!({
-            "url": format!("/python-builds/{}", entry.filename),
-            "name": entry.key,
-        });
-        if let Some(sha) = &entry.sha256 {
-            e["sha256"] = serde_json::Value::String(sha.clone());
-        }
+        let mut e = entry.raw.clone();
+        e["url"] = serde_json::Value::String(format!(
+            "/python-builds/{}",
+            entry.filename
+        ));
         meta.insert(entry.key.clone(), e);
     }
     std::fs::write(
