@@ -11,7 +11,6 @@ use super::pubgrub::{
     Solution, bare_name, compute_version_windows, dep_to_range,
     parse_python_requires,
 };
-use super::types::all_targets;
 use crate::downloader::HttpCtx;
 
 pub struct ResolveParams<'a> {
@@ -244,26 +243,6 @@ fn resolve_one(ctx: &ResolveOneCtx<'_>) -> Option<Solution> {
         .map(|s| collect_solution(s, ctx.pkg_versions))
 }
 
-fn solutions_for_target(
-    target: &str,
-    top_names: &[String],
-    ctx: &ResolveOneCtx<'_>,
-) -> Vec<Solution> {
-    top_names
-        .iter()
-        .filter_map(|top_pkg| {
-            let ctx = ResolveOneCtx { top_pkg, ..*ctx };
-            match resolve_one(&ctx) {
-                Some(sol) => Some(sol),
-                None => {
-                    warn!("  {target} / {top_pkg} pubgrub UNSAT");
-                    None
-                }
-            }
-        })
-        .collect()
-}
-
 pub async fn resolve_dependencies(
     params: &ResolveParams<'_>,
     client: &reqwest::Client,
@@ -286,27 +265,28 @@ pub async fn resolve_dependencies(
     .await;
     let top_names: Vec<_> =
         params.top_packages.iter().map(|r| bare_name(r)).collect();
-    let targets = all_targets();
-    let mut all_solutions: Vec<Solution> = Vec::new();
-
-    let resolve_ctx = ResolveOneCtx {
+    let base_ctx = ResolveOneCtx {
         top_pkg: "",
         pkg_set: &pkg_set,
         pkg_versions: &pkg_versions,
         deps_map: &deps_map,
         top_versions: params.top_versions,
     };
-    for target in &targets {
-        all_solutions.extend(solutions_for_target(
-            &target.to_string(),
-            &top_names,
-            &resolve_ctx,
-        ));
+    let mut all_solutions: Vec<Solution> = Vec::new();
+    for top_pkg in &top_names {
+        let ctx = ResolveOneCtx {
+            top_pkg,
+            ..base_ctx
+        };
+        match resolve_one(&ctx) {
+            Some(sol) => all_solutions.push(sol),
+            None => warn!("  {top_pkg} pubgrub UNSAT"),
+        }
     }
 
     info!("  解析完成: {} 个解", all_solutions.len());
     if all_solutions.is_empty() {
-        warn!("所有 target 均无有效解");
+        warn!("所有包均无有效解");
         return DashMap::new();
     }
 
