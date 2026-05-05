@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use pip_mirror::downloader::download_pkg_files;
 use tracing::info;
 
 #[derive(Parser)]
@@ -150,33 +151,6 @@ fn archive_mb(p: &std::path::Path) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn collect_simple_files(
-    repo: &std::path::Path,
-    pkgs: &[String],
-) -> Vec<pip_mirror::downloader::FileInfo> {
-    pkgs.iter()
-        .filter_map(|p| {
-            let dir = repo.join("simple").join(p);
-            let entries = std::fs::read_dir(dir).ok()?;
-            Some(entries.filter_map(|e| e.ok()).filter_map(move |e| {
-                let f = e.file_name().to_string_lossy().to_string();
-                if f.ends_with(".json") || f.ends_with(".html") {
-                    return None;
-                }
-                Some(pip_mirror::downloader::FileInfo {
-                    package_name: p.clone(),
-                    filename: f.clone(),
-                    version: String::new(),
-                    url: String::new(),
-                    sha256: None,
-                    size: None,
-                })
-            }))
-        })
-        .flatten()
-        .collect()
-}
-
 async fn do_sync(
     config: &pip_mirror::config::Config,
     pkgs: &[String],
@@ -228,17 +202,11 @@ async fn cmd_sync(
     std::fs::create_dir_all(&config.repository_dir)?;
     let _client = do_sync(&config, &pkgs, no_deps).await?;
     std::fs::create_dir_all(&config.incremental_dir)?;
-    let simple_files = collect_simple_files(&config.repository_dir, &pkgs);
-    let inc = pip_mirror::packager::IncrementalPackage {
-        simple_files: &simple_files,
-        python_builds_files: &[],
-        python_builds_index: None,
-        repository_dir: &config.repository_dir,
-        output_dir: &config.incremental_dir,
-    };
-    if let Some(archive) =
-        pip_mirror::packager::create_incremental_package(&inc)
-    {
+    if let Some(archive) = pip_mirror::packager::build_incremental_package(
+        &config.repository_dir,
+        &pkgs,
+        &config.incremental_dir,
+    )? {
         info!(
             "增量包: {} ({:.2} MB)",
             archive.display(),
@@ -263,20 +231,6 @@ fn clean_repo(
     }
     std::fs::create_dir_all(repo)?;
     Ok(())
-}
-
-async fn download_pkg_files(
-    client: &reqwest::Client,
-    repo: &std::path::Path,
-    files: &[pip_mirror::downloader::FileInfo],
-) {
-    for fi in files {
-        let dest = repo
-            .join("simple")
-            .join(&fi.package_name)
-            .join(&fi.filename);
-        let _ = pip_mirror::downloader::download_file(client, fi, &dest).await;
-    }
 }
 
 struct SyncCtx<'a> {
@@ -404,6 +358,9 @@ fn cmd_import_incremental(
     args: ImportIncrementalArgs<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = pip_mirror::config::Config::load(args.config_path)?;
+    if args.strict {
+        info!("严格模式: 校验增量包完整性");
+    }
     info!(
         "解包 {} → {}",
         args.archive.display(),

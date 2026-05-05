@@ -302,3 +302,33 @@ pub async fn get_requires_dist(
         });
     Ok(rd)
 }
+
+pub async fn download_pkg_files(
+    client: &reqwest::Client,
+    repo: &std::path::Path,
+    files: &[FileInfo],
+) {
+    let store = crate::store::DownloadStore::open(&repo.join(".store.db")).ok();
+    for fi in files {
+        let dest = repo
+            .join("simple")
+            .join(&fi.package_name)
+            .join(&fi.filename);
+        let (ok, _) = download_file(client, fi, &dest).await;
+        if !ok {
+            continue;
+        }
+        let Some(ref s) = store else { continue };
+        let sha256 = fi.sha256.clone().unwrap_or_else(|| {
+            crate::store::DownloadStore::hash_file(&dest).unwrap_or_default()
+        });
+        let rec = crate::store::FileRecord {
+            filename: &fi.filename,
+            package_name: &fi.package_name,
+            version: &fi.version,
+            sha256: &sha256,
+            size: std::fs::metadata(&dest).ok().map(|m| m.len()),
+        };
+        let _ = s.add_file(&rec);
+    }
+}

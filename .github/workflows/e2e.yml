@@ -120,7 +120,7 @@ jobs:
           ls /tmp/stage/packages/simple/ | head -10
           echo "----- staged python-builds/ (head 5) -----"
           ls /tmp/stage/packages/python-builds/ | head -5
-          echo "python-builds index entries: $(python -c 'import json; print(len(json.load(open(\"/tmp/stage/packages/python-builds/index.json\"))))')"
+          echo "python-builds index entries: $(python -c 'import json; print(len(json.load(open("/tmp/stage/packages/python-builds/index.json"))))')"
           echo "----- 仓库尺寸 -----"
           du -sh /tmp/stage/packages
 

@@ -126,3 +126,55 @@ pub fn pack_mirror_archive(
     tracing::info!("mirror.sha256 : {}", sha.display());
     Ok(())
 }
+
+fn file_info_from_entry(
+    e: std::fs::DirEntry,
+    pkg: &str,
+) -> Option<crate::downloader::FileInfo> {
+    let f = e.file_name().to_string_lossy().to_string();
+    if f.ends_with(".json") || f.ends_with(".html") {
+        return None;
+    }
+    Some(crate::downloader::FileInfo {
+        package_name: pkg.to_string(),
+        filename: f,
+        version: String::new(),
+        url: String::new(),
+        sha256: None,
+        size: None,
+    })
+}
+
+fn collect_simple_files(
+    repo: &Path,
+    pkgs: &[String],
+) -> Vec<crate::downloader::FileInfo> {
+    pkgs.iter()
+        .filter_map(|p| {
+            let dir = repo.join("simple").join(p);
+            let entries = std::fs::read_dir(dir).ok()?;
+            Some(
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(move |e| file_info_from_entry(e, p)),
+            )
+        })
+        .flatten()
+        .collect()
+}
+
+pub fn build_incremental_package(
+    repo: &Path,
+    pkgs: &[String],
+    output_dir: &Path,
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    let simple_files = collect_simple_files(repo, pkgs);
+    let inc = IncrementalPackage {
+        simple_files: &simple_files,
+        python_builds_files: &[],
+        python_builds_index: None,
+        repository_dir: repo,
+        output_dir,
+    };
+    Ok(create_incremental_package(&inc))
+}
