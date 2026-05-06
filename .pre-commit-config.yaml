@@ -37,7 +37,7 @@ repos:
         require_serial: true
 
       - id: complexity
-        name: CCN ≤10 + Score ≤60 + 文件 NLOC ≤350
+        name: CCN ≤10 + Score ≤66 + 文件 NLOC ≤350
         entry: python3 scripts/check-complexity.py
         language: system
         types: [rust]

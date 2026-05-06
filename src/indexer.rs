@@ -133,10 +133,8 @@ fn generate_package_html(ctx: &PkgCtx<'_>) -> String {
         if let Some(sha) = ctx.hashes.get(f) {
             attrs.push_str(&format!(r#" data-sha256="{}""#, sha.value()));
         }
-        if let Some(meta) = f
-            .ends_with(".whl")
-            .then(|| ctx.metadata_hashes.get(f))
-            .flatten()
+        if f.ends_with(".whl")
+            && let Some(meta) = ctx.metadata_hashes.get(f)
         {
             attrs.push_str(&format!(
                 r#" data-core-metadata="sha256={}" data-dist-info-metadata="sha256={}""#,
@@ -156,13 +154,17 @@ fn generate_package_json(ctx: &PkgCtx<'_>) -> String {
         .files
         .iter()
         .map(|f| {
-            let mut entry = serde_json::json!({"filename": f, "url": f, "hashes": {}});
+            let mut entry =
+                serde_json::json!({"filename": f, "url": f, "hashes": {}});
             if let Some(sha) = ctx.hashes.get(f) {
-                entry["hashes"]["sha256"] = serde_json::Value::String(sha.value().clone());
+                entry["hashes"]["sha256"] =
+                    serde_json::Value::String(sha.value().clone());
             }
-            if f.ends_with(".whl") && ctx.metadata_hashes.get(f).is_some() {
+            if f.ends_with(".whl")
+                && let Some(meta) = ctx.metadata_hashes.get(f)
+            {
                 entry["dist-info-metadata"] =
-                    serde_json::json!({"sha256": ctx.metadata_hashes.get(f).unwrap().value()});
+                    serde_json::json!({"sha256": meta.value()});
             }
             entry
         })

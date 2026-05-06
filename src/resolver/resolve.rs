@@ -18,8 +18,12 @@ pub struct ResolveParams<'a> {
     pub allow_prerelease: bool,
 }
 type CacheType = Arc<DashMap<(String, String), Vec<(String, String)>>>;
-async fn fetch_versions(http: &HttpCtx<'_>, pkg: &str) -> Option<Vec<Version>> {
-    crate::downloader::get_all_versions(http, pkg)
+async fn fetch_versions(
+    http: &HttpCtx<'_>,
+    pkg: &str,
+    allow_prerelease: bool,
+) -> Option<Vec<Version>> {
+    crate::downloader::get_all_versions(http, pkg, allow_prerelease)
         .await
         .ok()
         .filter(|v| !v.is_empty())
@@ -79,7 +83,9 @@ async fn bfs_collect(
     let mut pkg_versions: HashMap<String, Vec<Version>> = HashMap::new();
     let cache: CacheType = Arc::new(DashMap::new());
     while let Some((pkg, depth)) = queue.pop() {
-        let Some(all_vers) = fetch_versions(http, &pkg).await else {
+        let Some(all_vers) =
+            fetch_versions(http, &pkg, params.allow_prerelease).await
+        else {
             continue;
         };
         pkg_versions.entry(pkg.clone()).or_insert(all_vers.clone());
@@ -111,9 +117,10 @@ async fn fetch_pkg_deps(
     ctx: &FetchCtx<'_>,
 ) -> Vec<((String, String), Vec<(String, String)>)> {
     let mut results = Vec::new();
+    let pkg_key = pkg.clone();
     for ver in &vers {
         let vs = ver.to_string();
-        let key = (pkg.clone(), vs.clone());
+        let key = (pkg_key.clone(), vs.clone());
         let deps = if let Some(c) = ctx.cache.get(&key) {
             c.clone()
         } else {
@@ -136,7 +143,11 @@ async fn build_deps_map(
     pkg_versions: &HashMap<String, Vec<Version>>,
     ctx: &FetchCtx<'_>,
 ) -> HashMap<(String, String), Vec<(String, String)>> {
-    let window = (ctx.max_versions * 2).max(10);
+    let window = if ctx.max_versions == 0 {
+        usize::MAX
+    } else {
+        ctx.max_versions
+    };
     let mut handles = Vec::new();
     for pkg in pkg_set {
         let Some(vers) = pkg_versions.get(pkg) else {
@@ -154,29 +165,23 @@ async fn build_deps_map(
     deps_map
 }
 
-#[allow(clippy::too_many_arguments, clippy::excessive_nesting)]
 fn build_root_range(
     top_pkg: &str,
     tvers: &[Version],
     top_versions: &DashMap<String, Vec<Version>>,
     allow_prerelease: bool,
 ) -> Range<Version> {
-    match top_versions.get(top_pkg) {
-        Some(tv) => {
-            let mut range = Range::empty();
-            for v in tv.iter() {
-                if !allow_prerelease && v.any_prerelease() {
-                    continue;
-                }
-                // Only include versions that actually exist in tvers
-                if tvers.contains(v) {
-                    range = range.union(&Range::singleton(v.clone()));
-                }
-            }
-            range
-        }
-        None => Range::full(),
-    }
+    top_versions
+        .get(top_pkg)
+        .map(|tv| {
+            tv.iter()
+                .filter(|v| allow_prerelease || !v.any_prerelease())
+                .filter(|v| tvers.contains(v))
+                .fold(Range::empty(), |r, v| {
+                    r.union(&Range::singleton(v.clone()))
+                })
+        })
+        .unwrap_or_else(Range::full)
 }
 fn collect_solution(
     solution: impl IntoIterator<Item = (String, Version)>,

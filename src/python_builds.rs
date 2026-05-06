@@ -104,21 +104,27 @@ fn is_target_entry(key: &str, entry: &serde_json::Value) -> bool {
     url.contains("install_only_stripped") && platform_match(entry)
 }
 
-#[allow(clippy::type_complexity)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+struct PlatformKey {
+    minor: u64,
+    os: String,
+    arch_family: String,
+    arch_variant: String,
+    libc: String,
+    build_variant: String,
+}
+
 fn group_by_platform(
     entries: &[(String, serde_json::Value)],
 ) -> HashMap<String, serde_json::Value> {
-    // Separate groups by (minor, os, arch_family, arch_variant, libc, build_variant)
-    // where build_variant = top-level "variant" field (null/default/freethreaded/debug).
-    // This prevents freethreaded builds from replacing standard ones.
-    let mut groups: HashMap<
-        (u64, String, String, String, String, String),
-        Vec<&(String, serde_json::Value)>,
-    > = HashMap::new();
+    let mut groups: HashMap<PlatformKey, Vec<&(String, serde_json::Value)>> =
+        HashMap::new();
 
     for item in entries {
         let entry = &item.1;
-        let arch = entry.get("arch").unwrap();
+        let Some(arch) = entry.get("arch") else {
+            continue;
+        };
         let arch_variant = arch
             .get("variant")
             .and_then(|v| v.as_str())
@@ -128,26 +134,27 @@ fn group_by_platform(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let group_key = (
-            entry.get("minor").and_then(|v| v.as_u64()).unwrap_or(0),
-            entry
+        let key = PlatformKey {
+            minor: entry.get("minor").and_then(|v| v.as_u64()).unwrap_or(0),
+            os: entry
                 .get("os")
                 .and_then(|o| o.as_str())
                 .unwrap_or("")
                 .to_string(),
-            arch.get("family")
+            arch_family: arch
+                .get("family")
                 .and_then(|f| f.as_str())
                 .unwrap_or("")
                 .to_string(),
-            arch_variant.to_string(),
-            entry
+            arch_variant: arch_variant.to_string(),
+            libc: entry
                 .get("libc")
                 .and_then(|l| l.as_str())
                 .unwrap_or("")
                 .to_string(),
             build_variant,
-        );
-        groups.entry(group_key).or_default().push(item);
+        };
+        groups.entry(key).or_default().push(item);
     }
 
     let mut result = HashMap::new();
@@ -170,7 +177,7 @@ fn should_skip_existing(dest: &Path, expected: &Option<String>) -> bool {
         return false;
     }
     match expected {
-        Some(e) => crate::downloader::sha256_file(dest)
+        Some(e) => crate::store::DownloadStore::hash_file(dest)
             .is_ok_and(|a| a.to_lowercase() == e.to_lowercase()),
         None => true,
     }

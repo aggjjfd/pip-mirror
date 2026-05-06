@@ -44,6 +44,7 @@ pub async fn do_sync(
     config: &crate::config::Config,
     pkgs: &[String],
     no_deps: bool,
+    download_python_builds: bool,
 ) -> Result<(reqwest::Client, Vec<FileInfo>), Box<dyn std::error::Error>> {
     let repo = &config.repository_dir;
     let client = reqwest::Client::new();
@@ -72,11 +73,19 @@ pub async fn do_sync(
         };
         let deps = resolve_dependencies(&params, &client).await;
         if !deps.is_empty() {
-            let d = download_dep_versions(&http, repo, &deps).await;
+            let d = download_dep_versions(
+                &http,
+                repo,
+                &deps,
+                config.include_source,
+            )
+            .await;
             downloaded.extend(d);
         }
     }
-    download_python_builds_batch(&client, repo).await?;
+    if download_python_builds {
+        download_python_builds_batch(&client, repo).await?;
+    }
     generate_index(repo);
     Ok((client, downloaded))
 }
@@ -85,6 +94,7 @@ async fn download_dep_versions(
     http: &HttpCtx<'_>,
     repo: &Path,
     deps: &DashMap<String, Vec<Version>>,
+    include_source: bool,
 ) -> Vec<FileInfo> {
     let dep_list: Vec<String> = deps
         .iter()
@@ -115,7 +125,9 @@ async fn download_dep_versions(
         for fi in &selected {
             info!("  → {} {} [{}]", fi.package_name, fi.version, fi.filename);
         }
-        let d = download_pkg_files(http.client, repo, &selected).await;
+        let d =
+            download_pkg_files(http.client, repo, &selected, include_source)
+                .await;
         downloaded.extend(d);
         info!("  [OK] {pkg}: {} 个文件", selected.len());
     }
@@ -147,7 +159,8 @@ async fn sync_top_packages(
         vers.dedup();
         top_versions.insert(bare_name(pkg), vers);
         info!("  [OK] {pkg}: {} files", selected.len());
-        let d = download_pkg_files(ctx.http.client, ctx.repo, &selected).await;
+        let d = download_pkg_files(ctx.http.client, ctx.repo, &selected, true)
+            .await;
         downloaded.extend(d);
     }
     (top_versions, downloaded)

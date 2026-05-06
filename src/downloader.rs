@@ -1,9 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use dashmap::DashMap;
-use flate2::Compression;
-use flate2::write::GzEncoder;
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 
@@ -95,6 +93,47 @@ pub async fn fetch_json_api(
         .unwrap_or_default())
 }
 
+fn filter_stable_versions(files: &[FileInfo]) -> Vec<FileInfo> {
+    let stable: Vec<_> = files
+        .iter()
+        .filter(|f| {
+            f.version
+                .parse::<pep440_rs::Version>()
+                .map(|v| !v.any_prerelease())
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect();
+    if stable.is_empty() {
+        let pkg = files
+            .first()
+            .map(|f| f.package_name.as_str())
+            .unwrap_or("?");
+        let n = files
+            .iter()
+            .map(|f| &f.version)
+            .collect::<HashSet<_>>()
+            .len();
+        tracing::warn!("  ! {pkg} 仅有预发行版 ({n} 个版本), 回退保留全部");
+        files.to_vec()
+    } else {
+        stable
+    }
+}
+
+fn group_by_version(
+    files: Vec<FileInfo>,
+) -> BTreeMap<pep440_rs::Version, Vec<FileInfo>> {
+    let mut by_ver: BTreeMap<pep440_rs::Version, Vec<FileInfo>> =
+        BTreeMap::new();
+    for fi in files {
+        if let Ok(v) = fi.version.parse::<pep440_rs::Version>() {
+            by_ver.entry(v).or_default().push(fi);
+        }
+    }
+    by_ver
+}
+
 /// Select the latest `max_versions` versions from a file list.
 /// When `allow_prerelease` is false, prerelease versions are dropped.
 /// If that leaves nothing, fall back to the original list with a warning.
@@ -107,56 +146,18 @@ pub fn select_latest_versions(
         return files.to_vec();
     }
 
-    let mut candidates = files.to_vec();
-    if !allow_prerelease {
-        let stable: Vec<_> = candidates
-            .iter()
-            .filter(|f| {
-                f.version
-                    .parse::<pep440_rs::Version>()
-                    .map(|v| !v.any_prerelease())
-                    .unwrap_or(true)
-            })
-            .cloned()
-            .collect();
-        if stable.is_empty() {
-            let pkg = files
-                .first()
-                .map(|f| f.package_name.as_str())
-                .unwrap_or("?");
-            let n = candidates
-                .iter()
-                .map(|f| &f.version)
-                .collect::<HashSet<_>>()
-                .len();
-            tracing::warn!("  ! {pkg} 仅有预发行版 ({n} 个版本), 回退保留全部");
-        } else {
-            candidates = stable;
-        }
-    }
+    let candidates = if allow_prerelease {
+        files.to_vec()
+    } else {
+        filter_stable_versions(files)
+    };
 
-    let mut versions: Vec<String> = candidates
-        .iter()
-        .map(|f| f.version.clone())
-        .collect::<HashSet<_>>()
+    let by_ver = group_by_version(candidates);
+    by_ver
         .into_iter()
-        .collect();
-
-    versions.sort_by(|a, b| {
-        b.parse::<pep440_rs::Version>()
-            .unwrap_or_else(|_| unreachable!())
-            .cmp(
-                &a.parse::<pep440_rs::Version>()
-                    .unwrap_or_else(|_| unreachable!()),
-            )
-    });
-
-    let selected: HashSet<_> =
-        versions.into_iter().take(max_versions).collect();
-    candidates
-        .iter()
-        .filter(|f| selected.contains(&f.version))
-        .cloned()
+        .rev()
+        .take(max_versions)
+        .flat_map(|(_, f)| f)
         .collect()
 }
 
@@ -176,19 +177,16 @@ pub fn collect_version_files(files: &[FileInfo]) -> Vec<FileInfo> {
 
 /// Check if a version has a wheel covering the given target platform.
 pub fn version_has_target(files: &[FileInfo], target: &str) -> bool {
-    for fi in files {
-        if !fi.filename.ends_with(".whl") || !is_accepted_wheel(&fi.filename) {
-            continue;
-        }
-        let plat = fi.filename[..fi.filename.len() - 4]
-            .rsplit('-')
-            .next()
-            .unwrap_or("");
-        if platform_to_target(plat).contains(target) {
-            return true;
-        }
-    }
-    false
+    files.iter().any(|fi| {
+        fi.filename.ends_with(".whl")
+            && is_accepted_wheel(&fi.filename)
+            && crate::filters::parse_wheel_platform(&fi.filename).is_some_and(
+                |tags| {
+                    tags.iter()
+                        .any(|sub| platform_to_target(sub).contains(target))
+                },
+            )
+    })
 }
 
 /// For each missing target platform, scan older versions to find a wheel that covers it.
@@ -256,27 +254,6 @@ pub async fn download_file(
     write_atomic(dest, &bytes).await
 }
 
-/// Package the repository directory into a tar.gz archive.
-pub fn pack_full_mirror(
-    repo: &Path,
-    output: &Path,
-    compression: Compression,
-) -> std::io::Result<()> {
-    let archive = std::fs::File::create(output)?;
-    let encoder = GzEncoder::new(archive, compression);
-    let mut tar = tar::Builder::new(encoder);
-    tar.follow_symlinks(false);
-    tar.append_dir_all(repo.file_name().unwrap_or(repo.as_os_str()), repo)?;
-    let encoder = tar.into_inner()?;
-    encoder.finish()?;
-    Ok(())
-}
-
-/// Stream-sha256 a file.
-pub fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
-    crate::store::DownloadStore::hash_file(path)
-}
-
 // ── PyPI data fetching (used by resolver) ──
 
 use pep440_rs::Version;
@@ -285,6 +262,7 @@ use std::str::FromStr;
 pub async fn get_all_versions(
     http: &HttpCtx<'_>,
     package: &str,
+    allow_prerelease: bool,
 ) -> Result<Vec<Version>, reqwest::Error> {
     let bare = package.split_once('[').map_or(package, |(n, _)| n);
     let normalized = crate::filters::normalize_package_name(bare);
@@ -301,6 +279,7 @@ pub async fn get_all_versions(
         .map(|obj| {
             obj.keys()
                 .filter_map(|v| Version::from_str(v).ok())
+                .filter(|v| allow_prerelease || !v.any_prerelease())
                 .collect()
         })
         .unwrap_or_default();
@@ -336,14 +315,37 @@ pub async fn get_requires_dist(
     Ok(rd)
 }
 
+fn record_download(
+    store: &Option<crate::store::DownloadStore>,
+    fi: &FileInfo,
+    dest: &std::path::Path,
+) {
+    let Some(s) = store else { return };
+    let sha256 = fi.sha256.clone().unwrap_or_else(|| {
+        crate::store::DownloadStore::hash_file(dest).unwrap_or_default()
+    });
+    let rec = crate::store::FileRecord {
+        filename: &fi.filename,
+        package_name: &fi.package_name,
+        version: &fi.version,
+        sha256: &sha256,
+        size: std::fs::metadata(dest).ok().map(|m| m.len()),
+    };
+    let _ = s.add_file(&rec);
+}
+
 pub async fn download_pkg_files(
     client: &reqwest::Client,
     repo: &std::path::Path,
     files: &[FileInfo],
+    include_source: bool,
 ) -> Vec<FileInfo> {
     let mut downloaded = Vec::new();
     let store = crate::store::DownloadStore::open(&repo.join(".store.db")).ok();
     for fi in files {
+        if !include_source && is_source_distribution(&fi.filename) {
+            continue;
+        }
         let dest = repo
             .join("simple")
             .join(&fi.package_name)
@@ -356,18 +358,7 @@ pub async fn download_pkg_files(
             continue;
         }
         downloaded.push(fi.clone());
-        let Some(ref s) = store else { continue };
-        let sha256 = fi.sha256.clone().unwrap_or_else(|| {
-            crate::store::DownloadStore::hash_file(&dest).unwrap_or_default()
-        });
-        let rec = crate::store::FileRecord {
-            filename: &fi.filename,
-            package_name: &fi.package_name,
-            version: &fi.version,
-            sha256: &sha256,
-            size: std::fs::metadata(&dest).ok().map(|m| m.len()),
-        };
-        let _ = s.add_file(&rec);
+        record_download(&store, fi, &dest);
     }
     downloaded
 }

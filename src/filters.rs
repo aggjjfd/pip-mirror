@@ -67,7 +67,7 @@ pub fn platform_to_target(tag: &str) -> HashSet<&'static str> {
     covered
 }
 
-fn parse_wheel_platform(filename: &str) -> Option<Vec<&str>> {
+pub fn parse_wheel_platform(filename: &str) -> Option<Vec<&str>> {
     let stem = &filename[..filename.len() - 4];
     let parts: Vec<&str> = stem.split('-').collect();
     (parts.len() >= 5).then(|| parts[parts.len() - 1].split('.').collect())

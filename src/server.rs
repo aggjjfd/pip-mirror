@@ -94,10 +94,11 @@ fn try_serve_json(body: Vec<u8>) -> Response {
 }
 
 pub fn content_type_for(path: &Path) -> &'static str {
-    if path.extension().is_some_and(|e| e == "json") {
-        "application/vnd.pypi.simple.v1+json"
-    } else {
-        "application/vnd.pypi.simple.v1+html"
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    match ext {
+        "json" => "application/vnd.pypi.simple.v1+json",
+        "whl" => "application/octet-stream",
+        _ => "application/vnd.pypi.simple.v1+html",
     }
 }
 
@@ -156,56 +157,56 @@ pub fn rewrite_relative_urls(data: &mut serde_json::Value, base: &str) {
     }
 }
 
+fn header_str(
+    req: &axum::extract::Request,
+    name: header::HeaderName,
+) -> Option<String> {
+    req.headers()
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
+}
+
 async fn serve_python_builds_file(
     State(state): State<AppState>,
     axum::extract::Path(tail): axum::extract::Path<String>,
     req: axum::extract::Request,
 ) -> Response {
     let path = state.repo_dir.join("python-builds").join(&tail);
-    let status;
-    let resp = match tokio::fs::read(&path).await {
+    let (status, resp) = match tokio::fs::read(&path).await {
         Ok(body) => {
-            status = 200;
             let mime = if tail.ends_with(".json") {
                 "application/json"
             } else {
                 "application/octet-stream"
             };
-            Response::builder()
+            let resp = Response::builder()
                 .status(200)
                 .header("Content-Type", mime)
                 .body(axum::body::Body::from(body))
-                .unwrap()
+                .unwrap();
+            (200, resp)
         }
         Err(_) => {
-            status = 404;
-            (StatusCode::NOT_FOUND, "Not Found").into_response()
+            let resp = (StatusCode::NOT_FOUND, "Not Found").into_response();
+            (404, resp)
         }
     };
     state
         .access_logger
         .log(&crate::access_log::AccessRecord {
             timestamp: chrono::Utc::now().to_rfc3339(),
-            client_ip: req
-                .headers()
-                .get("X-Forwarded-For")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown")
-                .to_string(),
+            client_ip: header_str(
+                &req,
+                "X-Forwarded-For".parse().unwrap_or(header::FORWARDED),
+            )
+            .unwrap_or_else(|| "unknown".to_string()),
             method: "GET".to_string(),
             path: format!("/python-builds/{}", tail),
             status_code: status,
-            user_agent: req
-                .headers()
-                .get(header::USER_AGENT)
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string()),
+            user_agent: header_str(&req, header::USER_AGENT),
             bytes_sent: None,
-            referer: req
-                .headers()
-                .get(header::REFERER)
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string()),
+            referer: header_str(&req, header::REFERER),
         })
         .ok();
     resp

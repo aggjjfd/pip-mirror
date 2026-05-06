@@ -52,12 +52,9 @@ fn test_content_type_html_default() {
 }
 
 #[test]
-fn test_content_type_wheel_defaults_to_html() {
+fn test_content_type_wheel_returns_octet_stream() {
     let p = Path::new("foo/pkg-1.0-py3-none-any.whl");
-    assert_eq!(
-        server::content_type_for(p),
-        "application/vnd.pypi.simple.v1+html"
-    );
+    assert_eq!(server::content_type_for(p), "application/octet-stream");
 }
 
 #[test]

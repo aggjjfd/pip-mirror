@@ -17,6 +17,7 @@ async fn resolve_one(
     let all_versions = pip_mirror::downloader::get_all_versions(
         &HttpCtx { client, pypi_url },
         pkg_name,
+        false,
     )
     .await
     .unwrap();

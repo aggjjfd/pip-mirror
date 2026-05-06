@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 MAX_CCN = 10
-MAX_SCORE = 67
+MAX_SCORE = 66
 MAX_FILE_NLOC = 350
 
 

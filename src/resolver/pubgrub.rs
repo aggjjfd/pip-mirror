@@ -23,21 +23,14 @@ fn process_solution_entry(ctx: EntryCtx<'_>) {
     let Some(versions) = ctx.all_versions.get(pkg) else {
         return;
     };
+    let mut set = ctx.result.entry(pkg.clone()).or_default();
     let Some(idx) = versions.iter().position(|v| v == sol_ver) else {
-        ctx.result
-            .entry(pkg.to_string())
-            .or_default()
-            .push(sol_ver.clone());
+        set.push(sol_ver.clone());
         return;
     };
     let start = idx.saturating_sub(ctx.half);
     let end = (idx + ctx.half + 1).min(versions.len());
-    let mut set = ctx.result.entry(pkg.clone()).or_default();
-    for v in &versions[start..end] {
-        if !set.contains(v) {
-            set.push(v.clone());
-        }
-    }
+    set.extend(versions[start..end].iter().cloned());
 }
 
 pub fn compute_version_windows(
@@ -127,17 +120,14 @@ fn split_operator(s: &str) -> Option<(&str, &str)> {
 }
 
 fn bump_release(release: &[u64], idx: usize) -> Version {
-    let mut parts = release.to_vec();
-    if idx < parts.len() {
-        parts[idx] += 1;
-        parts.truncate(idx + 1);
+    let mut parts = if idx < release.len() {
+        release[..=idx].to_vec()
     } else {
-        while parts.len() <= idx {
-            parts.push(0);
-        }
-        parts[idx] += 1;
-        parts.truncate(idx + 1);
-    }
+        let mut v = release.to_vec();
+        v.resize(idx + 1, 0);
+        v
+    };
+    parts[idx] += 1;
     Version::from_str(
         &parts
             .iter()
@@ -203,6 +193,7 @@ pub fn parse_python_requires(lines: &[String]) -> Vec<DepSpec> {
         if line.contains("extra ==")
             || line.contains("sys_platform ==")
             || line.contains("os_name ==")
+            || line.contains("platform_machine ==")
         {
             continue;
         }

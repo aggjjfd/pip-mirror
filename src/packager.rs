@@ -7,6 +7,21 @@ use flate2::Compression;
 
 use crate::downloader::FileInfo;
 
+pub fn pack_full_mirror(
+    repo: &Path,
+    output: &Path,
+    compression: flate2::Compression,
+) -> std::io::Result<()> {
+    let archive = std::fs::File::create(output)?;
+    let encoder = flate2::write::GzEncoder::new(archive, compression);
+    let mut tar = tar::Builder::new(encoder);
+    tar.follow_symlinks(false);
+    tar.append_dir_all(repo.file_name().unwrap_or(repo.as_os_str()), repo)?;
+    let encoder = tar.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
 pub struct IncrementalPackage<'a> {
     pub simple_files: &'a [FileInfo],
     pub python_builds_files: &'a [PathBuf],
@@ -119,7 +134,7 @@ pub fn pack_mirror_archive(
     repo: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let archive = std::env::current_dir()?.join("mirror.tar.gz");
-    crate::downloader::pack_full_mirror(repo, &archive, tar_compression())?;
+    pack_full_mirror(repo, &archive, tar_compression())?;
     let sha = write_sha256(&archive)?;
     let mb = std::fs::metadata(&archive)?.len() as f64 / 1024.0 / 1024.0;
     tracing::info!("mirror.tar.gz : {} ({mb:.2} MB)", archive.display());
