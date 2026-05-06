@@ -266,3 +266,31 @@ fn test_parse_python_requires_skips_real_extra() {
     ]);
     assert_eq!(deps.len(), 1, "只有 requests 保留");
 }
+
+#[test]
+fn test_parse_python_requires_platform_not_darwin_kept_on_linux() {
+    // Linux 上保留 platform_system != "Darwin"
+    let deps = pubgrub::parse_python_requires(&[
+        "watchdog>=2.1.5,<7; platform_system != \"Darwin\"".to_string(),
+    ]);
+    assert_eq!(deps.len(), 1);
+    assert_eq!(deps[0].0, "watchdog");
+}
+
+#[test]
+fn test_parse_python_requires_platform_darwin_skipped_on_linux() {
+    // Linux 上跳过 sys_platform == 'darwin'
+    let deps = pubgrub::parse_python_requires(&[
+        "pyobjc; sys_platform == 'darwin'".to_string(),
+    ]);
+    assert_eq!(deps.len(), 0);
+}
+
+#[test]
+fn test_parse_python_requires_platform_win32_skipped_on_linux() {
+    // Linux 上跳过 sys_platform == 'win32'
+    let deps = pubgrub::parse_python_requires(&[
+        "pypiwin32; sys_platform == 'win32'".to_string(),
+    ]);
+    assert_eq!(deps.len(), 0);
+}

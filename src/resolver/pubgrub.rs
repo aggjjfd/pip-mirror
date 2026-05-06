@@ -189,28 +189,45 @@ pub fn spec_to_range(spec: &str) -> Range<Version> {
     range
 }
 
-fn has_platform_marker(line: &str) -> bool {
-    let Some((_, marker)) = line.split_once(';') else {
-        return false;
-    };
+fn skip_by_platform(marker: &str) -> bool {
+    let os = std::env::consts::OS;
     let m = marker.trim().to_lowercase();
+    for (keyword, target_os) in &[
+        ("darwin", "macos"),
+        ("win32", "windows"),
+        ("windows", "windows"),
+    ] {
+        if !m.contains(keyword) {
+            continue;
+        }
+        if m.contains("==") && os != *target_os {
+            return true;
+        }
+        if m.contains("!=") && os == *target_os {
+            return true;
+        }
+    }
+    false
+}
+
+fn should_skip_marker(marker: &str) -> bool {
+    let m = marker.trim().to_lowercase();
+    // extras 由调用方通过 extras 参数控制，这里跳过
     m.contains("extra ==")
         || m.contains("extra!=")
         || m.contains("extra in ")
         || m.contains("extra not in")
-        || m.contains("sys_platform")
-        || m.contains("os_name")
-        || m.contains("platform_machine")
-        || m.contains("platform_system")
+        || skip_by_platform(marker)
 }
 
 pub fn parse_python_requires(lines: &[String]) -> Vec<DepSpec> {
     let mut deps = Vec::new();
     for line in lines {
-        if has_platform_marker(line) {
+        let req = line.split(';').next().unwrap_or(line).trim();
+        let marker = line.split(';').nth(1);
+        if marker.is_some_and(should_skip_marker) {
             continue;
         }
-        let req = line.split(';').next().unwrap_or(line).trim();
         let (name, spec) = split_name_spec(req);
         let clean = crate::filters::normalize_package_name(
             name.split('[').next().unwrap_or(name),
