@@ -348,6 +348,9 @@ pub async fn download_pkg_files(
             .join("simple")
             .join(&fi.package_name)
             .join(&fi.filename);
+        if dest.exists() {
+            continue;
+        }
         let (ok, _) = download_file(client, fi, &dest).await;
         if !ok {
             continue;
