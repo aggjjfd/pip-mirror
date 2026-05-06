@@ -20,16 +20,18 @@ pub struct FileRecord<'a> {
 impl DownloadStore {
     pub fn open(db_path: &Path) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(db_path)?;
+        Self::migrate(&conn)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS downloaded_files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                filename TEXT NOT NULL UNIQUE,
+                filename TEXT NOT NULL,
                 package_name TEXT NOT NULL,
                 version TEXT NOT NULL DEFAULT '',
                 sha256 TEXT NOT NULL,
                 size INTEGER,
                 metadata_sha256 TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(package_name, filename)
             );
             CREATE INDEX IF NOT EXISTS idx_dl_package ON downloaded_files(package_name);
             CREATE INDEX IF NOT EXISTS idx_dl_filename ON downloaded_files(filename);",
@@ -37,6 +39,44 @@ impl DownloadStore {
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
+        let old_sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='downloaded_files'",
+                [],
+                |row| row.get(0),
+            )
+            .ok();
+        let is_old = old_sql
+            .as_ref()
+            .map(|s| s.contains("UNIQUE(filename)"))
+            .unwrap_or(false);
+        if !is_old {
+            return Ok(());
+        }
+        conn.execute(
+            "ALTER TABLE downloaded_files RENAME TO downloaded_files_old",
+            [],
+        )?;
+        conn.execute_batch(
+            "CREATE TABLE downloaded_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL,
+                package_name TEXT NOT NULL,
+                version TEXT NOT NULL DEFAULT '',
+                sha256 TEXT NOT NULL,
+                size INTEGER,
+                metadata_sha256 TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(package_name, filename)
+            );
+            INSERT INTO downloaded_files (filename, package_name, version, sha256, size, metadata_sha256, created_at)
+            SELECT filename, package_name, version, sha256, size, metadata_sha256, created_at FROM downloaded_files_old;
+            DROP TABLE downloaded_files_old;",
+        )?;
+        Ok(())
     }
 
     pub fn add_file(
@@ -54,13 +94,14 @@ impl DownloadStore {
 
     pub fn set_metadata_sha256(
         &self,
+        package_name: &str,
         filename: &str,
         meta_sha256: &str,
     ) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE downloaded_files SET metadata_sha256 = ?1 WHERE filename = ?2",
-            rusqlite::params![meta_sha256, filename],
+            "UPDATE downloaded_files SET metadata_sha256 = ?1 WHERE package_name = ?2 AND filename = ?3",
+            rusqlite::params![meta_sha256, package_name, filename],
         )?;
         Ok(())
     }
@@ -100,16 +141,18 @@ impl DownloadStore {
         )
     }
 
-    pub fn has_file(&self, filename: &str) -> bool {
+    pub fn has_file(
+        &self,
+        package_name: &str,
+        filename: &str,
+    ) -> Result<bool, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        let Ok(count): Result<i64, _> = conn.query_row(
-            "SELECT COUNT(*) FROM downloaded_files WHERE filename = ?1",
-            rusqlite::params![filename],
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM downloaded_files WHERE package_name = ?1 AND filename = ?2",
+            rusqlite::params![package_name, filename],
             |r| r.get(0),
-        ) else {
-            return false;
-        };
-        count > 0
+        )?;
+        Ok(count > 0)
     }
 
     pub fn hash_file(path: &Path) -> Result<String, std::io::Error> {
@@ -157,6 +200,8 @@ impl DownloadStore {
             sha256: &sha256,
             size,
         };
-        let _ = self.add_file(&rec);
+        if let Err(e) = self.add_file(&rec) {
+            tracing::warn!("写入 .store.db 失败: {e}");
+        }
     }
 }

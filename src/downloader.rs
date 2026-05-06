@@ -41,19 +41,15 @@ fn collect_release_files(
         releases.as_object().unwrap_or(&serde_json::Map::new())
     {
         for f in file_list.as_array().unwrap_or(&vec![]) {
-            let filename = f["filename"].as_str().unwrap_or("").to_string();
-            let file_url = f["url"].as_str().unwrap_or("").to_string();
-            let sha256 = f
-                .get("digests")
-                .and_then(|d| d.get("sha256"))
-                .and_then(|s| s.as_str())
-                .map(String::from);
-            let size = f["size"].as_u64();
             files.push(FileInfo {
-                filename,
-                url: file_url,
-                sha256,
-                size,
+                filename: f["filename"].as_str().unwrap_or("").to_string(),
+                url: f["url"].as_str().unwrap_or("").to_string(),
+                sha256: f
+                    .get("digests")
+                    .and_then(|d| d.get("sha256"))
+                    .and_then(|s| s.as_str())
+                    .map(String::from),
+                size: f["size"].as_u64(),
                 package_name: pkg.to_string(),
                 version: version.clone(),
             });
@@ -93,21 +89,20 @@ fn filter_stable_versions(files: &[FileInfo]) -> Vec<FileInfo> {
         })
         .cloned()
         .collect();
-    if stable.is_empty() {
-        let pkg = files
-            .first()
-            .map(|f| f.package_name.as_str())
-            .unwrap_or("?");
-        let n = files
-            .iter()
-            .map(|f| &f.version)
-            .collect::<HashSet<_>>()
-            .len();
-        tracing::warn!("  ! {pkg} 仅有预发行版 ({n} 个版本), 回退保留全部");
-        files.to_vec()
-    } else {
-        stable
+    if !stable.is_empty() {
+        return stable;
     }
+    let pkg = files
+        .first()
+        .map(|f| f.package_name.as_str())
+        .unwrap_or("?");
+    let n = files
+        .iter()
+        .map(|f| &f.version)
+        .collect::<HashSet<_>>()
+        .len();
+    tracing::warn!("  ! {pkg} 仅有预发行版 ({n} 个版本), 回退保留全部");
+    files.to_vec()
 }
 
 fn group_by_version(
@@ -230,78 +225,35 @@ pub async fn download_file(
         return (false, "读取失败".into());
     };
     if fi.sha256.as_ref().is_some_and(|e| {
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        format!("{:x}", hasher.finalize()).to_lowercase() != e.to_lowercase()
+        let mut h = Sha256::new();
+        h.update(&bytes);
+        format!("{:x}", h.finalize()).to_lowercase() != e.to_lowercase()
     }) {
         return (false, "hash 校验失败".into());
     }
     write_atomic(dest, &bytes).await
 }
 
-use pep440_rs::Version;
-use std::str::FromStr;
-
-pub async fn get_all_versions(
-    http: &HttpCtx<'_>,
-    package: &str,
-    allow_prerelease: bool,
-) -> Result<Vec<Version>, reqwest::Error> {
-    let bare = package.split_once('[').map_or(package, |(n, _)| n);
-    let normalized = crate::filters::normalize_package_name(bare);
-    let url = format!(
-        "{}/pypi/{}/json",
-        http.pypi_url.trim_end_matches('/'),
-        normalized
-    );
-    let resp: serde_json::Value =
-        http.client.get(&url).send().await?.json().await?;
-    let mut versions: Vec<Version> = resp
-        .get("releases")
-        .and_then(|r| r.as_object())
-        .map(|obj| {
-            obj.keys()
-                .filter_map(|v| Version::from_str(v).ok())
-                .filter(|v| allow_prerelease || !v.any_prerelease())
-                .collect()
-        })
-        .unwrap_or_default();
-    versions.sort_by(|a, b| b.cmp(a));
-    Ok(versions)
-}
-
-/// Get requires_dist for a specific package version.
-pub async fn get_requires_dist(
-    http: &HttpCtx<'_>,
-    package: &str,
-    version: &str,
-) -> Result<Option<Vec<String>>, reqwest::Error> {
-    let bare = package.split_once('[').map_or(package, |(n, _)| n);
-    let normalized = crate::filters::normalize_package_name(bare);
-    let url = format!(
-        "{}/pypi/{}/{}/json",
-        http.pypi_url.trim_end_matches('/'),
-        normalized,
-        version
-    );
-    let resp: serde_json::Value =
-        http.client.get(&url).send().await?.json().await?;
-    let rd = resp
-        .get("info")
-        .and_then(|i| i.get("requires_dist"))
-        .and_then(|r| r.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        });
-    Ok(rd)
-}
-
 enum DownloadOutcome {
     Skipped(FileInfo),
     Downloaded(FileInfo),
     Failed(FileInfo, String),
+}
+
+fn warn_stale_record(
+    store: &crate::store::DownloadStore,
+    pkg: &str,
+    filename: &str,
+    dest: &std::path::Path,
+) {
+    match store.has_file(pkg, filename) {
+        Ok(true) => tracing::warn!(
+            "DB 有记录但磁盘文件缺失，重新下载: {}",
+            dest.display()
+        ),
+        Ok(false) => {}
+        Err(e) => tracing::warn!("查询 .store.db 失败: {e}"),
+    }
 }
 
 async fn try_download(
@@ -314,10 +266,11 @@ async fn try_download(
         .join("simple")
         .join(&fi.package_name)
         .join(&fi.filename);
-    let in_db = store.as_ref().is_some_and(|s| s.has_file(&fi.filename));
-    let on_disk = store.is_none() && dest.exists();
-    if in_db || on_disk {
+    if dest.exists() {
         return DownloadOutcome::Skipped(fi.clone());
+    }
+    if let Some(s) = store {
+        warn_stale_record(s, &fi.package_name, &fi.filename, &dest);
     }
     let (ok, msg) = download_file(client, fi, &dest).await;
     if ok {

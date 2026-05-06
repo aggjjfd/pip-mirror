@@ -14,7 +14,7 @@ async fn resolve_one(
     client: &reqwest::Client,
     pypi_url: &str,
 ) -> DashMap<String, Vec<Version>> {
-    let all_versions = pip_mirror::downloader::get_all_versions(
+    let all_versions = pip_mirror::resolver::metadata::get_all_versions(
         &HttpCtx { client, pypi_url },
         pkg_name,
         false,

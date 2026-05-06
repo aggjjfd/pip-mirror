@@ -92,7 +92,7 @@ docker compose exec pip-mirror \
 1. 清空 `packages/simple/`、`packages/python-builds/` 与 `.store.db`（`.access_log.db` 不动）。
 2. 跑 wheel + Python 解释器同步，等同模式一，但因为目录已清空所以全部都是新下载。
 3. 重建索引。
-4. 把 `packages/` 整个目录打到仓库根目录的 `mirror.tar.gz`（gzip level 0，显式排除 `.access_log.db`）。
+4. 把 `packages/` 整个目录打到仓库根目录的 `mirror.tar.gz`（默认 gzip level 9，可通过 `PIP_MIRROR_TAR_COMPRESSION=none` 关闭压缩；显式排除 `.access_log.db`）。
 5. 同目录写 `mirror.sha256`，格式与 `sha256sum` 兼容（`<sha256>  mirror.tar.gz`）。
 
 `sync-full` **不**会产出 `incremental_*.tar.gz`。模式一与模式二产物互斥，不要混用。

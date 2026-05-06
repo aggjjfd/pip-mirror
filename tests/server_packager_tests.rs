@@ -117,16 +117,6 @@ fn test_no_changes_has_simple_files() {
 
 #[test]
 fn test_create_incremental_package_returns_io_error() {
-    // 使用一个不可写的路径，验证不会 panic，而是返回 Err
-    let spec = IncrementalPackage {
-        simple_files: &[],
-        python_builds_files: &[],
-        python_builds_index: None,
-        repository_dir: Path::new("/nonexistent/repo"),
-        output_dir: Path::new("/proc/self/fd"), // Linux 上不可创建目录
-    };
-    // 由于 simple_files 为空，no_changes 返回 true，所以不会尝试 IO
-    // 改为有文件的场景
     let fi = pip_mirror::downloader::FileInfo {
         filename: "pkg-1.0.whl".to_string(),
         url: "https://x.com/pkg.whl".to_string(),

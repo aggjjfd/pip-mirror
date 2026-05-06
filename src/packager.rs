@@ -7,6 +7,45 @@ use flate2::Compression;
 
 use crate::downloader::FileInfo;
 
+fn is_excluded(name: &std::ffi::OsStr, exclude: &[&str]) -> bool {
+    exclude.contains(&name.to_string_lossy().as_ref())
+}
+
+fn append_entry(
+    tar: &mut tar::Builder<impl std::io::Write>,
+    path: &Path,
+    dest: &str,
+    exclude: &[&str],
+) -> std::io::Result<()> {
+    if is_excluded(path.file_name().unwrap_or_default(), exclude) {
+        return Ok(());
+    }
+    if !path.is_dir() {
+        tar.append_path_with_name(path, dest)?;
+        return Ok(());
+    }
+    tar.append_dir(dest, path)?;
+    append_dir_contents(tar, path, dest, exclude)
+}
+
+fn append_dir_contents(
+    tar: &mut tar::Builder<impl std::io::Write>,
+    path: &Path,
+    dest: &str,
+    exclude: &[&str],
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if is_excluded(&name, exclude) {
+            continue;
+        }
+        let child_dest = format!("{}/{}", dest, name.to_string_lossy());
+        append_entry(tar, &entry.path(), &child_dest, exclude)?;
+    }
+    Ok(())
+}
+
 pub fn pack_full_mirror(
     repo: &Path,
     output: &Path,
@@ -16,7 +55,9 @@ pub fn pack_full_mirror(
     let encoder = flate2::write::GzEncoder::new(archive, compression);
     let mut tar = tar::Builder::new(encoder);
     tar.follow_symlinks(false);
-    tar.append_dir_all(repo.file_name().unwrap_or(repo.as_os_str()), repo)?;
+    let dest = repo.file_name().and_then(|n| n.to_str()).unwrap_or("repo");
+    tar.append_dir(dest, repo)?;
+    append_dir_contents(&mut tar, repo, dest, &[".access_log.db"])?;
     let encoder = tar.into_inner()?;
     encoder.finish()?;
     Ok(())

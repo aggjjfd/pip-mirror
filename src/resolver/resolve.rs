@@ -23,7 +23,7 @@ async fn fetch_versions(
     pkg: &str,
     allow_prerelease: bool,
 ) -> Option<Vec<Version>> {
-    crate::downloader::get_all_versions(http, pkg, allow_prerelease)
+    crate::resolver::metadata::get_all_versions(http, pkg, allow_prerelease)
         .await
         .ok()
         .filter(|v| !v.is_empty())
@@ -55,7 +55,7 @@ async fn explore_pkg_deps(
     for ver in &explore {
         let vs = ver.to_string();
         let Ok(Some(rd)) =
-            crate::downloader::get_requires_dist(http, pkg, &vs).await
+            crate::resolver::metadata::get_requires_dist(http, pkg, &vs).await
         else {
             continue;
         };
@@ -124,13 +124,14 @@ async fn fetch_pkg_deps(
         let deps = if let Some(c) = ctx.cache.get(&key) {
             c.clone()
         } else {
-            let d =
-                match crate::downloader::get_requires_dist(ctx.http, &pkg, &vs)
-                    .await
-                {
-                    Ok(Some(rd)) => parse_python_requires(&rd),
-                    _ => vec![],
-                };
+            let d = match crate::resolver::metadata::get_requires_dist(
+                ctx.http, &pkg, &vs,
+            )
+            .await
+            {
+                Ok(Some(rd)) => parse_python_requires(&rd),
+                _ => vec![],
+            };
             ctx.cache.insert(key.clone(), d.clone());
             d
         };
