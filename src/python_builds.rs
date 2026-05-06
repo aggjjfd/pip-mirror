@@ -95,8 +95,8 @@ fn platform_match(entry: &serde_json::Value) -> bool {
         (os, arch_family, libc),
         ("windows", "x86_64", "none") | ("linux", "x86_64", "gnu")
     );
-    // 只保留最通用的 x86_64 v1 baseline，跳过 v2/v3/v4 微架构变体
-    os_ok && (arch_variant.is_empty() || arch_variant == "v1")
+    // 保留 v1 baseline（所有 CPU）和 v3（AVX2，Broadwell+）
+    os_ok && (arch_variant.is_empty() || matches!(arch_variant, "v1" | "v3"))
 }
 
 fn is_target_entry(key: &str, entry: &serde_json::Value) -> bool {
