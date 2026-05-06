@@ -164,11 +164,13 @@ async fn cmd_sync(
     let (_client, downloaded) =
         pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true).await?;
     std::fs::create_dir_all(&config.incremental_dir)?;
-    if let Some(a) = pip_mirror::packager::build_incremental_package(
+    if let Some(a) = pip_mirror::packager::build_incremental_package_async(
         &config.repository_dir,
         &downloaded,
         &config.incremental_dir,
-    )? {
+    )
+    .await?
+    {
         log_incremental_archive(&a);
     }
     Ok(())

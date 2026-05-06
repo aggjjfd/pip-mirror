@@ -89,7 +89,7 @@ fn platform_match(entry: &serde_json::Value) -> bool {
     let libc = entry.get("libc").and_then(|l| l.as_str()).unwrap_or("");
     matches!(
         (os, arch_family, libc),
-        ("windows", "x86_64" | "i686", "none") | ("linux", "x86_64", "gnu")
+        ("windows", "x86_64", "none") | ("linux", "x86_64", "gnu")
     )
 }
 
@@ -220,7 +220,10 @@ pub async fn download_python_build(
     let bytes = fetch_and_verify(client, entry).await?;
     let tmp = dest_dir.join(format!("{}.tmp", entry.filename));
     tokio::fs::write(&tmp, &bytes).await?;
-    tokio::fs::rename(&tmp, &dest).await?;
+    if let Err(e) = tokio::fs::rename(&tmp, &dest).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(format!("重命名失败: {e}").into());
+    }
     Ok((dest, true))
 }
 

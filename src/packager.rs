@@ -156,3 +156,19 @@ pub fn build_incremental_package(
     };
     Ok(create_incremental_package(&inc))
 }
+
+pub async fn build_incremental_package_async(
+    repo: &Path,
+    downloaded: &[crate::downloader::FileInfo],
+    output_dir: &Path,
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    let repo = repo.to_path_buf();
+    let output_dir = output_dir.to_path_buf();
+    let downloaded = downloaded.to_vec();
+    Ok(tokio::task::spawn_blocking(move || {
+        build_incremental_package(&repo, &downloaded, &output_dir)
+            .map_err(|e| format!("{e}"))
+    })
+    .await
+    .map_err(|e| format!("打包线程错误: {e}"))??)
+}

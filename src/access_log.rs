@@ -85,30 +85,34 @@ impl AccessLogger {
 
     pub fn get_top_ips(&self, limit: usize) -> Vec<(String, u64)> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT client_ip, COUNT(*) as cnt FROM access_log
-                 GROUP BY client_ip ORDER BY cnt DESC LIMIT ?1",
-            )
-            .unwrap();
-        stmt.query_map([limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .flatten()
-            .collect()
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT client_ip, COUNT(*) as cnt FROM access_log
+             GROUP BY client_ip ORDER BY cnt DESC LIMIT ?1",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt
+            .query_map([limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))
+        else {
+            return Vec::new();
+        };
+        rows.flatten().collect()
     }
 
     pub fn get_top_paths(&self, limit: usize) -> Vec<(String, u64)> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT path, COUNT(*) as cnt FROM access_log
-                 GROUP BY path ORDER BY cnt DESC LIMIT ?1",
-            )
-            .unwrap();
-        stmt.query_map([limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .flatten()
-            .collect()
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT path, COUNT(*) as cnt FROM access_log
+             GROUP BY path ORDER BY cnt DESC LIMIT ?1",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt
+            .query_map([limit as i64], |row| Ok((row.get(0)?, row.get(1)?)))
+        else {
+            return Vec::new();
+        };
+        rows.flatten().collect()
     }
 
     fn record_from_row(
@@ -128,11 +132,16 @@ impl AccessLogger {
 
     pub fn get_recent(&self, limit: usize) -> Vec<AccessRecord> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT timestamp, client_ip, method, path, status_code, user_agent, bytes_sent, referer FROM access_log ORDER BY id DESC LIMIT ?1").unwrap();
-        stmt.query_map([limit as i64], Self::record_from_row)
-            .unwrap()
-            .flatten()
-            .collect()
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT timestamp, client_ip, method, path, status_code, user_agent, bytes_sent, referer FROM access_log ORDER BY id DESC LIMIT ?1"
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = stmt.query_map([limit as i64], Self::record_from_row)
+        else {
+            return Vec::new();
+        };
+        rows.flatten().collect()
     }
 }
 

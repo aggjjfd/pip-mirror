@@ -227,6 +227,7 @@ async fn write_atomic(dest_path: &Path, bytes: &[u8]) -> (bool, String) {
         return (false, format!("写入: {e}"));
     }
     if let Err(e) = tokio::fs::rename(&tmp, dest_path).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
         return (false, format!("重命名: {e}"));
     }
     (true, String::new())
@@ -315,7 +316,7 @@ pub async fn get_requires_dist(
     Ok(rd)
 }
 
-fn record_download(
+async fn record_download(
     store: &Option<crate::store::DownloadStore>,
     fi: &FileInfo,
     dest: &std::path::Path,
@@ -324,12 +325,13 @@ fn record_download(
     let sha256 = fi.sha256.clone().unwrap_or_else(|| {
         crate::store::DownloadStore::hash_file(dest).unwrap_or_default()
     });
+    let size = tokio::fs::metadata(dest).await.ok().map(|m| m.len());
     let rec = crate::store::FileRecord {
         filename: &fi.filename,
         package_name: &fi.package_name,
         version: &fi.version,
         sha256: &sha256,
-        size: std::fs::metadata(dest).ok().map(|m| m.len()),
+        size,
     };
     let _ = s.add_file(&rec);
 }
@@ -358,7 +360,7 @@ pub async fn download_pkg_files(
             continue;
         }
         downloaded.push(fi.clone());
-        record_download(&store, fi, &dest);
+        record_download(&store, fi, &dest).await;
     }
     downloaded
 }

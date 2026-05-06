@@ -19,20 +19,21 @@ impl fmt::Display for TargetEnv {
     }
 }
 
-/// All 21 targets: 7 Python versions × 3 platforms.
-pub fn all_targets() -> [TargetEnv; 21] {
+/// All targets: N Python versions × M platforms.
+pub fn all_targets() -> Vec<TargetEnv> {
     let py_versions = ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"];
     let platforms = [("linux", "x86_64"), ("win32", "x86"), ("win32", "AMD64")];
 
-    std::array::from_fn(|i| {
-        let pv_idx = i / 3;
-        let plat_idx = i % 3;
-        let pv = py_versions[pv_idx];
-        TargetEnv {
-            python_version: pv.to_string(),
-            python_full_version: format!("{pv}.0"),
-            sys_platform: platforms[plat_idx].0.to_string(),
-            platform_machine: platforms[plat_idx].1.to_string(),
+    let mut targets = Vec::new();
+    for pv in py_versions {
+        for (sys, machine) in platforms {
+            targets.push(TargetEnv {
+                python_version: pv.to_string(),
+                python_full_version: format!("{pv}.0"),
+                sys_platform: sys.to_string(),
+                platform_machine: machine.to_string(),
+            });
         }
-    })
+    }
+    targets
 }

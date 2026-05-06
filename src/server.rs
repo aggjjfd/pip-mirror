@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use axum::{
     Router,
+    body::Body,
     extract::State,
     http::{Method, StatusCode, header},
     response::{IntoResponse, Response},
@@ -101,13 +102,28 @@ pub fn content_type_for(path: &Path) -> &'static str {
         _ => "application/vnd.pypi.simple.v1+html",
     }
 }
+fn file_body(
+    file: tokio::fs::File,
+) -> impl futures::Stream<Item = Result<axum::body::Bytes, std::io::Error>> {
+    futures::stream::try_unfold(file, |mut file| async move {
+        let mut buf = vec![0u8; 65536];
+        match tokio::io::AsyncReadExt::read(&mut file, &mut buf).await {
+            Ok(0) => Ok(None),
+            Ok(n) => {
+                buf.truncate(n);
+                Ok(Some((axum::body::Bytes::from(buf), file)))
+            }
+            Err(e) => Err(e),
+        }
+    })
+}
 
-fn serve_file_response(body: Vec<u8>, path: &Path) -> Response {
+fn serve_stream_response(file: tokio::fs::File, path: &Path) -> Response {
     Response::builder()
         .status(200)
         .header("Content-Type", content_type_for(path))
         .header("Access-Control-Allow-Origin", "*")
-        .body(axum::body::Body::from(body))
+        .body(Body::from_stream(file_body(file)))
         .unwrap()
 }
 
@@ -135,8 +151,8 @@ async fn serve_simple(
     if !serve_path.exists() {
         return (StatusCode::NOT_FOUND, "Not Found").into_response();
     }
-    match tokio::fs::read(&serve_path).await {
-        Ok(body) => serve_file_response(body, &serve_path),
+    match tokio::fs::File::open(&serve_path).await {
+        Ok(file) => serve_stream_response(file, &serve_path),
         Err(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, "Read error").into_response()
         }
@@ -173,8 +189,8 @@ async fn serve_python_builds_file(
     req: axum::extract::Request,
 ) -> Response {
     let path = state.repo_dir.join("python-builds").join(&tail);
-    let (status, resp) = match tokio::fs::read(&path).await {
-        Ok(body) => {
+    let (status, resp) = match tokio::fs::File::open(&path).await {
+        Ok(file) => {
             let mime = if tail.ends_with(".json") {
                 "application/json"
             } else {
@@ -183,7 +199,7 @@ async fn serve_python_builds_file(
             let resp = Response::builder()
                 .status(200)
                 .header("Content-Type", mime)
-                .body(axum::body::Body::from(body))
+                .body(Body::from_stream(file_body(file)))
                 .unwrap();
             (200, resp)
         }

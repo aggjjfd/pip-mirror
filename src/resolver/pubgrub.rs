@@ -180,6 +180,10 @@ pub fn spec_to_range(spec: &str) -> Range<Version> {
             continue;
         };
         if op == "!=" {
+            range = range.intersection(
+                &Range::strictly_lower_than(ver.clone())
+                    .union(&Range::strictly_higher_than(ver)),
+            );
             continue;
         }
         range = range.intersection(&op_to_range(op, ver));
@@ -187,14 +191,22 @@ pub fn spec_to_range(spec: &str) -> Range<Version> {
     range
 }
 
+fn has_platform_marker(line: &str) -> bool {
+    let Some((_, marker)) = line.split_once(';') else {
+        return false;
+    };
+    let m = marker.trim();
+    m.contains("extra")
+        || m.contains("sys_platform")
+        || m.contains("os_name")
+        || m.contains("platform_machine")
+        || m.contains("platform_system")
+}
+
 pub fn parse_python_requires(lines: &[String]) -> Vec<DepSpec> {
     let mut deps = Vec::new();
     for line in lines {
-        if line.contains("extra ==")
-            || line.contains("sys_platform ==")
-            || line.contains("os_name ==")
-            || line.contains("platform_machine ==")
-        {
+        if has_platform_marker(line) {
             continue;
         }
         let req = line.split(';').next().unwrap_or(line).trim();

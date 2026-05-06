@@ -8,7 +8,6 @@ use crate::downloader::{
     FileInfo, HttpCtx, download_pkg_files, fetch_json_api,
 };
 use crate::indexer::generate_index;
-use crate::packager::pack_mirror_archive;
 use crate::python_builds::download_python_builds_batch;
 use crate::resolver::pubgrub::bare_name;
 use crate::resolver::resolve::resolve_dependencies;
@@ -47,7 +46,9 @@ pub async fn do_sync(
     download_python_builds: bool,
 ) -> Result<(reqwest::Client, Vec<FileInfo>), Box<dyn std::error::Error>> {
     let repo = &config.repository_dir;
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
     let http = HttpCtx {
         client: &client,
         pypi_url: &config.pypi_url,
@@ -62,32 +63,51 @@ pub async fn do_sync(
         config.max_versions,
     )
     .await;
-    if !no_deps && !top_versions.is_empty() {
-        let params = crate::resolver::resolve::ResolveParams {
-            top_packages: pkgs,
-            top_versions: &top_versions,
-            pypi_url: &config.pypi_url,
-            max_depth: config.max_depth,
-            max_versions: config.max_versions,
-            allow_prerelease: config.allow_prerelease,
-        };
-        let deps = resolve_dependencies(&params, &client).await;
-        if !deps.is_empty() {
-            let d = download_dep_versions(
-                &http,
-                repo,
-                &deps,
-                config.include_source,
-            )
-            .await;
-            downloaded.extend(d);
-        }
-    }
+    let dep_files = resolve_and_download_deps(
+        pkgs,
+        config,
+        &http,
+        repo,
+        &top_versions,
+        no_deps,
+    )
+    .await;
+    downloaded.extend(dep_files);
     if download_python_builds {
         download_python_builds_batch(&client, repo).await?;
     }
-    generate_index(repo);
+    let repo_clone = repo.to_path_buf();
+    tokio::task::spawn_blocking(move || generate_index(&repo_clone))
+        .await
+        .map_err(|e| format!("索引生成线程错误: {e}"))?;
     Ok((client, downloaded))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn resolve_and_download_deps(
+    pkgs: &[String],
+    config: &crate::config::Config,
+    http: &HttpCtx<'_>,
+    repo: &Path,
+    top_versions: &DashMap<String, Vec<Version>>,
+    no_deps: bool,
+) -> Vec<FileInfo> {
+    if no_deps || top_versions.is_empty() {
+        return Vec::new();
+    }
+    let params = crate::resolver::resolve::ResolveParams {
+        top_packages: pkgs,
+        top_versions,
+        pypi_url: &config.pypi_url,
+        max_depth: config.max_depth,
+        max_versions: config.max_versions,
+        allow_prerelease: config.allow_prerelease,
+    };
+    let deps = resolve_dependencies(&params, http.client).await;
+    if deps.is_empty() {
+        return Vec::new();
+    }
+    download_dep_versions(http, repo, &deps, config.include_source).await
 }
 
 async fn download_dep_versions(
@@ -171,8 +191,20 @@ pub async fn finalize_mirror(
     repo: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let entries = download_python_builds_batch(client, repo).await?;
-    crate::python_builds::build_python_builds_index(&entries, repo)?;
-    generate_index(repo);
-    pack_mirror_archive(repo)?;
+    let repo_clone = repo.to_path_buf();
+    let entries_clone = entries.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::python_builds::build_python_builds_index(
+            &entries_clone,
+            &repo_clone,
+        )
+        .map_err(|e| format!("构建索引失败: {e}"))?;
+        generate_index(&repo_clone);
+        crate::packager::pack_mirror_archive(&repo_clone)
+            .map_err(|e| format!("打包镜像失败: {e}"))?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("打包线程错误: {e}"))??;
     Ok(())
 }
