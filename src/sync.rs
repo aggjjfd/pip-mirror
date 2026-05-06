@@ -5,7 +5,8 @@ use pep440_rs::Version;
 use tracing::info;
 
 use crate::downloader::{
-    FileInfo, HttpCtx, download_pkg_files, fetch_json_api,
+    FileInfo, HttpCtx, collect_version_files, download_pkg_files,
+    fetch_json_api,
 };
 use crate::indexer::generate_index;
 use crate::python_builds::download_python_builds_batch;
@@ -142,6 +143,7 @@ async fn download_dep_versions(
             .into_iter()
             .filter(|f| vers_set.contains(&f.version))
             .collect();
+        let selected = collect_version_files(&selected);
         for fi in &selected {
             info!("  → {} {} [{}]", fi.package_name, fi.version, fi.filename);
         }
@@ -179,6 +181,7 @@ async fn sync_top_packages(
             max_versions,
             ctx.allow_prerelease,
         );
+        let selected = collect_version_files(&selected);
         let mut vers: Vec<Version> = selected
             .iter()
             .filter_map(|f| f.version.parse().ok())
