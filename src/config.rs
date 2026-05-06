@@ -80,17 +80,22 @@ fn try_env() -> Option<Config> {
     })
 }
 
+fn try_default_toml() -> Option<Config> {
+    let p = Path::new("pip-mirror.toml");
+    p.exists().then(|| load_explicit(p).ok()).flatten()
+}
+
 impl Config {
     pub fn load(
         path: Option<&Path>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let Some(p) = path else {
-            return Ok(try_env().unwrap_or_default());
-        };
-        if !p.exists() {
-            return Err(format!("配置文件不存在: {}", p.display()).into());
+        match path {
+            Some(p) if !p.exists() => {
+                Err(format!("配置文件不存在: {}", p.display()).into())
+            }
+            Some(p) => load_explicit(p),
+            None => Ok(try_env().or_else(try_default_toml).unwrap_or_default()),
         }
-        load_explicit(p)
     }
 }
 
