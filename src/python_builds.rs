@@ -81,16 +81,22 @@ fn target_minor_ok(entry: &serde_json::Value) -> bool {
 
 fn platform_match(entry: &serde_json::Value) -> bool {
     let os = entry.get("os").and_then(|o| o.as_str()).unwrap_or("");
-    let arch_family = entry
-        .get("arch")
+    let arch = entry.get("arch");
+    let arch_family = arch
         .and_then(|a| a.get("family"))
         .and_then(|f| f.as_str())
         .unwrap_or("");
+    let arch_variant = arch
+        .and_then(|a| a.get("variant"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let libc = entry.get("libc").and_then(|l| l.as_str()).unwrap_or("");
-    matches!(
+    let os_ok = matches!(
         (os, arch_family, libc),
         ("windows", "x86_64", "none") | ("linux", "x86_64", "gnu")
-    )
+    );
+    // 只保留最通用的 x86_64 v1 baseline，跳过 v2/v3/v4 微架构变体
+    os_ok && (arch_variant.is_empty() || arch_variant == "v1")
 }
 
 fn is_target_entry(key: &str, entry: &serde_json::Value) -> bool {
