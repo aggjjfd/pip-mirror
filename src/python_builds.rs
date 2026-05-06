@@ -9,6 +9,15 @@ const UV_METADATA_URL: &str = "https://raw.githubusercontent.com/astral-sh/uv/ma
 
 const TARGET_MINORS: &[u32] = &[8, 9, 10, 11, 12, 13, 14];
 
+/// Allowed (os, arch_family, libc) triplets for python-build-standalone.
+const PLATFORM_TRIPLETS: &[(&str, &str, &str)] =
+    &[("windows", "x86_64", "none"), ("linux", "x86_64", "gnu")];
+
+/// Accepted x86_64 micro-architecture variants.
+/// v1 = SSE2 baseline (all x86_64 CPUs).
+/// v3 = AVX2 (Haswell / Broadwell+).
+const ACCEPTED_ARCH_VARIANTS: &[&str] = &["v1", "v3"];
+
 #[derive(Debug, Clone)]
 pub struct PythonBuildEntry {
     pub key: String,
@@ -91,12 +100,12 @@ fn platform_match(entry: &serde_json::Value) -> bool {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let libc = entry.get("libc").and_then(|l| l.as_str()).unwrap_or("");
-    let os_ok = matches!(
-        (os, arch_family, libc),
-        ("windows", "x86_64", "none") | ("linux", "x86_64", "gnu")
-    );
-    // 保留 v1 baseline（所有 CPU）和 v3（AVX2，Broadwell+）
-    os_ok && (arch_variant.is_empty() || matches!(arch_variant, "v1" | "v3"))
+    let os_ok = PLATFORM_TRIPLETS
+        .iter()
+        .any(|(o, f, l)| *o == os && *f == arch_family && *l == libc);
+    let variant_ok = arch_variant.is_empty()
+        || ACCEPTED_ARCH_VARIANTS.contains(&arch_variant);
+    os_ok && variant_ok
 }
 
 fn is_target_entry(key: &str, entry: &serde_json::Value) -> bool {
