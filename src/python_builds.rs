@@ -172,13 +172,24 @@ fn group_by_platform(
     result
 }
 
-fn should_skip_existing(dest: &Path, expected: &Option<String>) -> bool {
+async fn should_skip_existing(dest: &Path, expected: &Option<String>) -> bool {
     if !dest.exists() {
         return false;
     }
     match expected {
-        Some(e) => crate::store::DownloadStore::hash_file(dest)
-            .is_ok_and(|a| a.to_lowercase() == e.to_lowercase()),
+        Some(e) => {
+            let dest = dest.to_path_buf();
+            let e = e.clone();
+            match tokio::task::spawn_blocking(move || {
+                crate::store::DownloadStore::hash_file(&dest)
+                    .map(|a| a.to_lowercase() == e.to_lowercase())
+            })
+            .await
+            {
+                Ok(Ok(skip)) => skip,
+                Ok(Err(_)) | Err(_) => false,
+            }
+        }
         None => true,
     }
 }
@@ -214,7 +225,7 @@ pub async fn download_python_build(
     dest_dir: &Path,
 ) -> Result<(PathBuf, bool), Box<dyn std::error::Error>> {
     let dest = dest_dir.join(&entry.filename);
-    if should_skip_existing(&dest, &entry.sha256) {
+    if should_skip_existing(&dest, &entry.sha256).await {
         return Ok((dest, false));
     }
     let bytes = fetch_and_verify(client, entry).await?;

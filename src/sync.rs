@@ -148,8 +148,16 @@ async fn download_dep_versions(
         let d =
             download_pkg_files(http.client, repo, &selected, include_source)
                 .await;
-        downloaded.extend(d);
-        info!("  [OK] {pkg}: {} 个文件", selected.len());
+        let dl_count = d.downloaded.len();
+        downloaded.extend(d.downloaded);
+        for (fi, err) in &d.failed {
+            tracing::warn!(
+                "  [FAIL] {} {}: {err}",
+                fi.package_name,
+                fi.filename
+            );
+        }
+        info!("  [OK] {pkg}: {} 个文件", dl_count);
     }
     downloaded
 }
@@ -181,7 +189,14 @@ async fn sync_top_packages(
         info!("  [OK] {pkg}: {} files", selected.len());
         let d = download_pkg_files(ctx.http.client, ctx.repo, &selected, true)
             .await;
-        downloaded.extend(d);
+        downloaded.extend(d.downloaded);
+        for (fi, err) in &d.failed {
+            tracing::warn!(
+                "  [FAIL] {} {}: {err}",
+                fi.package_name,
+                fi.filename
+            );
+        }
     }
     (top_versions, downloaded)
 }

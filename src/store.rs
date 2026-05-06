@@ -106,4 +106,45 @@ impl DownloadStore {
         std::io::copy(&mut file, &mut hasher)?;
         Ok(format!("{:x}", hasher.finalize()))
     }
+
+    fn handle_hash_result(
+        hr: Result<Result<String, std::io::Error>, tokio::task::JoinError>,
+    ) -> String {
+        match hr {
+            Ok(Ok(hash)) => hash,
+            Ok(Err(e)) => {
+                tracing::warn!("计算文件 hash 失败: {e}");
+                String::new()
+            }
+            Err(e) => {
+                tracing::warn!("hash 计算任务 panic: {e}");
+                String::new()
+            }
+        }
+    }
+
+    pub async fn record_download(
+        &self,
+        fi: &crate::downloader::FileInfo,
+        dest: &std::path::Path,
+    ) {
+        let sha256 = if let Some(h) = fi.sha256.clone() {
+            h
+        } else {
+            let dest = dest.to_path_buf();
+            let hr =
+                tokio::task::spawn_blocking(move || Self::hash_file(&dest))
+                    .await;
+            Self::handle_hash_result(hr)
+        };
+        let size = tokio::fs::metadata(dest).await.ok().map(|m| m.len());
+        let rec = FileRecord {
+            filename: &fi.filename,
+            package_name: &fi.package_name,
+            version: &fi.version,
+            sha256: &sha256,
+            size,
+        };
+        let _ = self.add_file(&rec);
+    }
 }

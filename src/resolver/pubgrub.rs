@@ -143,11 +143,9 @@ pub fn compatible_range(ver: Version) -> Range<Version> {
     if release.len() >= 3 {
         let upper = bump_release(release, release.len() - 2);
         Range::higher_than(ver).intersection(&Range::strictly_lower_than(upper))
-    } else if release.len() == 2 {
+    } else {
         let upper = bump_release(release, 0);
         Range::higher_than(ver).intersection(&Range::strictly_lower_than(upper))
-    } else {
-        Range::higher_than(ver)
     }
 }
 
@@ -195,8 +193,11 @@ fn has_platform_marker(line: &str) -> bool {
     let Some((_, marker)) = line.split_once(';') else {
         return false;
     };
-    let m = marker.trim();
-    m.contains("extra")
+    let m = marker.trim().to_lowercase();
+    m.contains("extra ==")
+        || m.contains("extra!=")
+        || m.contains("extra in ")
+        || m.contains("extra not in")
         || m.contains("sys_platform")
         || m.contains("os_name")
         || m.contains("platform_machine")

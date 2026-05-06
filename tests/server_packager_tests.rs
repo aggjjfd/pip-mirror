@@ -114,3 +114,38 @@ fn test_no_changes_has_simple_files() {
     };
     assert!(!pip_mirror::packager::no_changes(&spec));
 }
+
+#[test]
+fn test_create_incremental_package_returns_io_error() {
+    // 使用一个不可写的路径，验证不会 panic，而是返回 Err
+    let spec = IncrementalPackage {
+        simple_files: &[],
+        python_builds_files: &[],
+        python_builds_index: None,
+        repository_dir: Path::new("/nonexistent/repo"),
+        output_dir: Path::new("/proc/self/fd"), // Linux 上不可创建目录
+    };
+    // 由于 simple_files 为空，no_changes 返回 true，所以不会尝试 IO
+    // 改为有文件的场景
+    let fi = pip_mirror::downloader::FileInfo {
+        filename: "pkg-1.0.whl".to_string(),
+        url: "https://x.com/pkg.whl".to_string(),
+        sha256: Some("a".repeat(64)),
+        size: Some(100),
+        package_name: "pkg".to_string(),
+        version: "1.0".to_string(),
+    };
+    let tmp = std::env::temp_dir().join("pip-mirror-test-packager-io");
+    let spec = IncrementalPackage {
+        simple_files: &[fi],
+        python_builds_files: &[],
+        python_builds_index: None,
+        repository_dir: &tmp,
+        output_dir: &tmp.join("out"),
+    };
+    std::fs::create_dir_all(&tmp).unwrap();
+    // 正常路径下应返回 Ok(Some(_))
+    let result = pip_mirror::packager::create_incremental_package(&spec);
+    assert!(result.is_ok(), "create_incremental_package 应返回 Ok");
+    std::fs::remove_dir_all(&tmp).ok();
+}

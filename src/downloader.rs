@@ -1,13 +1,11 @@
-use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
-
-use dashmap::DashMap;
-use reqwest::Client;
-use sha2::{Digest, Sha256};
-
 use crate::filters::{
     is_accepted_wheel, is_source_distribution, platform_to_target,
 };
+use dashmap::DashMap;
+use reqwest::Client;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 pub struct HttpCtx<'a> {
     pub client: &'a Client,
@@ -34,22 +32,6 @@ pub struct DownloadResult {
     pub warnings: Vec<String>,
 }
 
-// ── helpers for flattening deep nesting ──
-
-fn extract_file_fields(
-    value: &serde_json::Value,
-) -> (String, String, Option<String>, Option<u64>) {
-    let filename = value["filename"].as_str().unwrap_or("").to_string();
-    let file_url = value["url"].as_str().unwrap_or("").to_string();
-    let sha256 = value
-        .get("digests")
-        .and_then(|d| d.get("sha256"))
-        .and_then(|s| s.as_str())
-        .map(String::from);
-    let size = value["size"].as_u64();
-    (filename, file_url, sha256, size)
-}
-
 fn collect_release_files(
     releases: &serde_json::Value,
     pkg: &str,
@@ -59,7 +41,14 @@ fn collect_release_files(
         releases.as_object().unwrap_or(&serde_json::Map::new())
     {
         for f in file_list.as_array().unwrap_or(&vec![]) {
-            let (filename, file_url, sha256, size) = extract_file_fields(f);
+            let filename = f["filename"].as_str().unwrap_or("").to_string();
+            let file_url = f["url"].as_str().unwrap_or("").to_string();
+            let sha256 = f
+                .get("digests")
+                .and_then(|d| d.get("sha256"))
+                .and_then(|s| s.as_str())
+                .map(String::from);
+            let size = f["size"].as_u64();
             files.push(FileInfo {
                 filename,
                 url: file_url,
@@ -145,13 +134,11 @@ pub fn select_latest_versions(
     if max_versions == 0 {
         return files.to_vec();
     }
-
     let candidates = if allow_prerelease {
         files.to_vec()
     } else {
         filter_stable_versions(files)
     };
-
     let by_ver = group_by_version(candidates);
     by_ver
         .into_iter()
@@ -212,12 +199,6 @@ pub fn backfill_one_target(
     None
 }
 
-fn hash_ok(bytes: &[u8], expected: &str) -> bool {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize()).to_lowercase() == expected.to_lowercase()
-}
-
 async fn write_atomic(dest_path: &Path, bytes: &[u8]) -> (bool, String) {
     if let Some(parent) = dest_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
@@ -249,13 +230,15 @@ pub async fn download_file(
     let Ok(bytes) = resp.bytes().await else {
         return (false, "读取失败".into());
     };
-    if fi.sha256.as_ref().is_some_and(|e| !hash_ok(&bytes, e)) {
+    if fi.sha256.as_ref().is_some_and(|e| {
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize()).to_lowercase() != e.to_lowercase()
+    }) {
         return (false, "hash 校验失败".into());
     }
     write_atomic(dest, &bytes).await
 }
-
-// ── PyPI data fetching (used by resolver) ──
 
 use pep440_rs::Version;
 use std::str::FromStr;
@@ -288,7 +271,7 @@ pub async fn get_all_versions(
     Ok(versions)
 }
 
-/// Get requires_dist for a specific package version. Returns list of (dep_name, specifier, extras_marker_str).
+/// Get requires_dist for a specific package version.
 pub async fn get_requires_dist(
     http: &HttpCtx<'_>,
     package: &str,
@@ -316,24 +299,37 @@ pub async fn get_requires_dist(
     Ok(rd)
 }
 
-async fn record_download(
+enum DownloadOutcome {
+    Skipped(FileInfo),
+    Downloaded(FileInfo),
+    Failed(FileInfo, String),
+}
+
+async fn try_download(
+    client: &reqwest::Client,
     store: &Option<crate::store::DownloadStore>,
     fi: &FileInfo,
-    dest: &std::path::Path,
-) {
-    let Some(s) = store else { return };
-    let sha256 = fi.sha256.clone().unwrap_or_else(|| {
-        crate::store::DownloadStore::hash_file(dest).unwrap_or_default()
-    });
-    let size = tokio::fs::metadata(dest).await.ok().map(|m| m.len());
-    let rec = crate::store::FileRecord {
-        filename: &fi.filename,
-        package_name: &fi.package_name,
-        version: &fi.version,
-        sha256: &sha256,
-        size,
-    };
-    let _ = s.add_file(&rec);
+    repo: &std::path::Path,
+    include_source: bool,
+) -> DownloadOutcome {
+    let dest = repo
+        .join("simple")
+        .join(&fi.package_name)
+        .join(&fi.filename);
+    if (!include_source && is_source_distribution(&fi.filename))
+        || dest.exists()
+    {
+        return DownloadOutcome::Skipped(fi.clone());
+    }
+    let (ok, msg) = download_file(client, fi, &dest).await;
+    if ok {
+        if let Some(s) = store {
+            s.record_download(fi, &dest).await;
+        }
+        DownloadOutcome::Downloaded(fi.clone())
+    } else {
+        DownloadOutcome::Failed(fi.clone(), msg)
+    }
 }
 
 pub async fn download_pkg_files(
@@ -341,26 +337,15 @@ pub async fn download_pkg_files(
     repo: &std::path::Path,
     files: &[FileInfo],
     include_source: bool,
-) -> Vec<FileInfo> {
-    let mut downloaded = Vec::new();
+) -> DownloadResult {
+    let mut result = DownloadResult::default();
     let store = crate::store::DownloadStore::open(&repo.join(".store.db")).ok();
     for fi in files {
-        if !include_source && is_source_distribution(&fi.filename) {
-            continue;
+        match try_download(client, &store, fi, repo, include_source).await {
+            DownloadOutcome::Skipped(f) => result.skipped.push(f),
+            DownloadOutcome::Downloaded(f) => result.downloaded.push(f),
+            DownloadOutcome::Failed(f, msg) => result.failed.push((f, msg)),
         }
-        let dest = repo
-            .join("simple")
-            .join(&fi.package_name)
-            .join(&fi.filename);
-        if dest.exists() {
-            continue;
-        }
-        let (ok, _) = download_file(client, fi, &dest).await;
-        if !ok {
-            continue;
-        }
-        downloaded.push(fi.clone());
-        record_download(&store, fi, &dest).await;
     }
-    downloaded
+    result
 }

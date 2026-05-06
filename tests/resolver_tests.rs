@@ -203,3 +203,66 @@ fn test_version_window_filters_prereleases() {
     assert!(versions.contains(&v100));
     assert!(versions.contains(&v090));
 }
+
+#[test]
+fn test_compatible_range_single_segment_has_upper_bound() {
+    // PEP 440: ~=1 等价于 >=1.0.0,<2.0.0
+    let v1: Version = "1.0.0".parse().unwrap();
+    let v2: Version = "2.0.0".parse().unwrap();
+    let range = pubgrub::compatible_range(v1.clone());
+    assert!(range.contains(&v1));
+    assert!(!range.contains(&v2));
+}
+
+#[test]
+fn test_compatible_range_two_segment() {
+    // PEP 440: ~=1.5 等价于 >=1.5.0,<2.0.0
+    let v15: Version = "1.5".parse().unwrap();
+    let v16: Version = "1.6.0".parse().unwrap();
+    let v20: Version = "2.0.0".parse().unwrap();
+    let v14: Version = "1.4.0".parse().unwrap();
+    let range = pubgrub::compatible_range(v15.clone());
+    assert!(range.contains(&v15));
+    assert!(range.contains(&v16));
+    assert!(!range.contains(&v14));
+    assert!(!range.contains(&v20));
+}
+
+#[test]
+fn test_compatible_range_three_segment() {
+    let v123: Version = "1.2.3".parse().unwrap();
+    let v130: Version = "1.3.0".parse().unwrap();
+    let v124: Version = "1.2.4".parse().unwrap();
+    let v121: Version = "1.2.1".parse().unwrap();
+    let v200: Version = "2.0.0".parse().unwrap();
+    let range = pubgrub::compatible_range(v123.clone());
+    assert!(range.contains(&v123));
+    assert!(range.contains(&v124));
+    assert!(!range.contains(&v121)); // < 1.2.3
+    assert!(!range.contains(&v130));
+    assert!(!range.contains(&v200));
+}
+
+#[test]
+fn test_parse_python_requires_does_not_skip_extra_substring() {
+    // "extra" 作为其他标记值的一部分，不应被跳过
+    let deps = pubgrub::parse_python_requires(&[
+        "dep; platform_release == \"extra_feature\"".to_string(),
+        "requests".to_string(),
+    ]);
+    assert_eq!(
+        deps.len(),
+        2,
+        "platform_release == extra_feature 不应被跳过"
+    );
+}
+
+#[test]
+fn test_parse_python_requires_skips_real_extra() {
+    let deps = pubgrub::parse_python_requires(&[
+        "dep; extra == \"dev\"".to_string(),
+        "dep2; extra!=\"test\"".to_string(),
+        "requests".to_string(),
+    ]);
+    assert_eq!(deps.len(), 1, "只有 requests 保留");
+}

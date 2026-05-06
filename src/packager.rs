@@ -83,18 +83,19 @@ pub fn no_changes(spec: &IncrementalPackage<'_>) -> bool {
 
 pub fn create_incremental_package(
     spec: &IncrementalPackage<'_>,
-) -> Option<PathBuf> {
+) -> Result<Option<PathBuf>, std::io::Error> {
     if no_changes(spec) {
         info!("no changes: 本次没有新文件下载, 未产生增量包");
-        return None;
+        return Ok(None);
     }
-    std::fs::create_dir_all(spec.output_dir).ok();
+    std::fs::create_dir_all(spec.output_dir)?;
     let archive_path = spec.output_dir.join(format!(
         "incremental_{}.tar.gz",
         chrono::Utc::now().format("%Y%m%d_%H%M%S")
     ));
+    let archive_file = std::fs::File::create(&archive_path)?;
     let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
-        std::fs::File::create(&archive_path).unwrap(),
+        archive_file,
         flate2::Compression::default(),
     ));
     add_simple_files(&mut tar, spec);
@@ -105,7 +106,7 @@ pub fn create_incremental_package(
     }
     drop(tar);
     info!("增量包已创建: {}", archive_path.display());
-    Some(archive_path)
+    Ok(Some(archive_path))
 }
 
 /// Write sha256 checksum file in sha256sum format.
@@ -154,7 +155,7 @@ pub fn build_incremental_package(
         repository_dir: repo,
         output_dir,
     };
-    Ok(create_incremental_package(&inc))
+    Ok(create_incremental_package(&inc)?)
 }
 
 pub async fn build_incremental_package_async(
