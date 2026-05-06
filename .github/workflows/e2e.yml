@@ -353,6 +353,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # 清除 RUNNER_TRACKING_ID 防止 GitHub Actions 在步骤边界杀掉后台进程
+          $env:RUNNER_TRACKING_ID = $null
           $bin = "$(Get-Location)\target\release\pip-mirror.exe"
           $proc = Start-Process -PassThru -WindowStyle Hidden `
             -FilePath $bin -ArgumentList 'serve','-c','stage.toml' `
