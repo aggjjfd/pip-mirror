@@ -220,7 +220,7 @@ jobs:
           cd /tmp/wan
           $PIP_MIRROR_BIN sync -c "$GITHUB_WORKSPACE/wan-inc.toml" 2>&1 | tee sync.log
           ls -lh incremental/incremental_*.tar.gz
-          ARCHIVE=$(ls incremental/incremental_*.tar.gz | head -1)
+          ARCHIVE=$(realpath incremental/incremental_*.tar.gz | head -1)
           echo "INCREMENTAL=$ARCHIVE" >> "$GITHUB_ENV"
           # 列出增量包内容
           tar -tzf "$ARCHIVE" | tee /tmp/inc-list.txt
