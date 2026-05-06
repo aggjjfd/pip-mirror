@@ -72,17 +72,6 @@ fn load_explicit(p: &Path) -> Result<Config, Box<dyn std::error::Error>> {
     Ok(toml::from_str(&content)?)
 }
 
-fn try_pyproject() -> Option<Config> {
-    let pyproject = Path::new("pyproject.toml");
-    if !pyproject.exists() {
-        return None;
-    }
-    let content = std::fs::read_to_string(pyproject).ok()?;
-    let root: toml::Value = toml::from_str(&content).ok()?;
-    let tool_config = root.get("tool")?.get("pip-mirror")?;
-    toml::Value::try_into(tool_config.clone()).ok()
-}
-
 fn try_env() -> Option<Config> {
     let pkgs = std::env::var("PIP_MIRROR_PACKAGES").ok()?;
     Some(Config {
@@ -96,7 +85,7 @@ impl Config {
         path: Option<&Path>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let Some(p) = path else {
-            return Ok(try_pyproject().or_else(try_env).unwrap_or_default());
+            return Ok(try_env().unwrap_or_default());
         };
         if !p.exists() {
             return Err(format!("配置文件不存在: {}", p.display()).into());

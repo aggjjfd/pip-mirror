@@ -179,11 +179,16 @@ docker compose build
 
 ## 配置
 
-支持三种配置来源，优先级从高到低：
+支持两种配置来源，优先级从高到低：
 
 1. `-c` 指定独立 TOML 文件
-2. `pyproject.toml` 里的 `[tool.pip-mirror]` 段
-3. 环境变量 `PIP_MIRROR_PACKAGES`（逗号分隔包名，其余取默认值）
+2. 环境变量 `PIP_MIRROR_PACKAGES`（逗号分隔包名，其余取默认值）
+
+生成示例配置文件：
+
+```bash
+./target/release/pip-mirror init -o pip-mirror.toml
+```
 
 独立 TOML 文件示例：
 

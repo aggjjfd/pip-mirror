@@ -59,6 +59,11 @@ enum Command {
         #[arg(short = 'n', long, default_value = "20")]
         limit: usize,
     },
+    /// 生成示例配置文件
+    Init {
+        #[arg(short = 'o', long, default_value = "pip-mirror.toml")]
+        output: PathBuf,
+    },
 }
 
 async fn cmd_sync_d(
@@ -131,6 +136,12 @@ fn try_import(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
 fn try_access(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
     if let Command::AccessLog { config, limit } = cmd {
         return cmd_access_log(config.as_deref(), limit);
+    }
+    try_init(cmd)
+}
+fn try_init(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
+    if let Command::Init { output } = cmd {
+        return cmd_init(&output);
     }
     Ok(())
 }
@@ -268,5 +279,34 @@ fn cmd_access_log(
     );
     print_access_ips(&logger);
     print_access_recent(&logger, limit);
+    Ok(())
+}
+
+const INIT_TEMPLATE: &str = r#"packages = [
+    "requests",
+    "gradio",
+    "markitdown[pptx,docx,xls,xlsx,pdf]",
+]
+repository_dir = "./packages"
+incremental_dir = "./incremental"
+pypi_url = "https://pypi.org"
+index_url = "https://mirrors.ustc.edu.cn/pypi/simple"
+include_source = true
+workers = 4
+max_depth = 3
+max_versions = 5
+allow_prerelease = false
+server_host = "0.0.0.0"
+server_port = 8080
+"#;
+
+fn cmd_init(
+    output: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if output.exists() {
+        return Err(format!("文件已存在: {}", output.display()).into());
+    }
+    std::fs::write(output, INIT_TEMPLATE)?;
+    info!("示例配置已生成: {}", output.display());
     Ok(())
 }
