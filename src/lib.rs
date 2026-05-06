@@ -9,3 +9,4 @@ pub mod python_builds;
 pub mod resolver;
 pub mod server;
 pub mod store;
+pub mod sync;

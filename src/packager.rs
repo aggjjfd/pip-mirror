@@ -127,55 +127,13 @@ pub fn pack_mirror_archive(
     Ok(())
 }
 
-fn file_info_from_entry(
-    e: std::fs::DirEntry,
-    pkg: &str,
-) -> Option<crate::downloader::FileInfo> {
-    let f = e.file_name().to_string_lossy().to_string();
-    if f.ends_with(".json") || f.ends_with(".html") {
-        return None;
-    }
-    Some(crate::downloader::FileInfo {
-        package_name: pkg.to_string(),
-        filename: f,
-        version: String::new(),
-        url: String::new(),
-        sha256: None,
-        size: None,
-    })
-}
-
-fn collect_simple_files(
-    repo: &Path,
-    pkgs: &[String],
-) -> Vec<crate::downloader::FileInfo> {
-    pkgs.iter()
-        .filter_map(|p| {
-            // pkgs 来自 raw config(可能带 [extras]、大小写、`_`/`.`),
-            // 先 PEP 503 normalize 再去 simple/<name>/ 取文件,
-            // 否则会看不到 download 阶段已经写好的目录。
-            let normalized = crate::filters::normalize_package_name(p);
-            let dir = repo.join("simple").join(&normalized);
-            let entries = std::fs::read_dir(dir).ok()?;
-            let captured = normalized.clone();
-            Some(
-                entries
-                    .filter_map(|e| e.ok())
-                    .filter_map(move |e| file_info_from_entry(e, &captured)),
-            )
-        })
-        .flatten()
-        .collect()
-}
-
 pub fn build_incremental_package(
     repo: &Path,
-    pkgs: &[String],
+    downloaded: &[crate::downloader::FileInfo],
     output_dir: &Path,
 ) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
-    let simple_files = collect_simple_files(repo, pkgs);
     let inc = IncrementalPackage {
-        simple_files: &simple_files,
+        simple_files: downloaded,
         python_builds_files: &[],
         python_builds_index: None,
         repository_dir: repo,

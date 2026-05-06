@@ -87,9 +87,8 @@ pub fn extract_extras(package_ref: &str) -> (String, HashSet<String>) {
 }
 
 pub fn bare_name(package_ref: &str) -> String {
-    package_ref
-        .split_once('[')
-        .map_or(package_ref.to_string(), |(n, _)| n.to_string())
+    let name = package_ref.split_once('[').map_or(package_ref, |(n, _)| n);
+    crate::filters::normalize_package_name(name)
 }
 
 /// Split a PEP 508 requirement (marker already stripped) into (package_name, version_spec).

@@ -340,7 +340,8 @@ pub async fn download_pkg_files(
     client: &reqwest::Client,
     repo: &std::path::Path,
     files: &[FileInfo],
-) {
+) -> Vec<FileInfo> {
+    let mut downloaded = Vec::new();
     let store = crate::store::DownloadStore::open(&repo.join(".store.db")).ok();
     for fi in files {
         let dest = repo
@@ -351,6 +352,7 @@ pub async fn download_pkg_files(
         if !ok {
             continue;
         }
+        downloaded.push(fi.clone());
         let Some(ref s) = store else { continue };
         let sha256 = fi.sha256.clone().unwrap_or_else(|| {
             crate::store::DownloadStore::hash_file(&dest).unwrap_or_default()
@@ -364,4 +366,5 @@ pub async fn download_pkg_files(
         };
         let _ = s.add_file(&rec);
     }
+    downloaded
 }
