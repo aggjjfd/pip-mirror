@@ -274,6 +274,13 @@ async fn try_download(
     }
 }
 
+fn should_skip(fi: &FileInfo, include_source: bool) -> bool {
+    if !include_source && is_source_distribution(&fi.filename) {
+        return true;
+    }
+    fi.filename.ends_with(".whl") && !is_accepted_wheel(&fi.filename)
+}
+
 pub async fn download_pkg_files(
     client: &reqwest::Client,
     repo: &std::path::Path,
@@ -283,7 +290,7 @@ pub async fn download_pkg_files(
     let mut result = DownloadResult::default();
     let store = crate::store::DownloadStore::open(&repo.join(".store.db")).ok();
     for fi in files {
-        if !include_source && is_source_distribution(&fi.filename) {
+        if should_skip(fi, include_source) {
             result.skipped.push(fi.clone());
             continue;
         }
