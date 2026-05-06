@@ -64,6 +64,13 @@ const NORMALIZE_CASES: &[(&str, &str)] = &[
     ("some.package", "some-package"),
     ("some_package", "some-package"),
     ("Some.Package_Name", "some-package-name"),
+    // PEP 503: 连续 [-_.] 折叠成单个 -
+    ("foo--bar", "foo-bar"),
+    ("Foo._Bar", "foo-bar"),
+    // PEP 508 extras 一律剥掉(simple/<pkg>/ 不带 extras)
+    ("markitdown[pptx,docx,xls,xlsx,pdf]", "markitdown"),
+    ("Markitdown[pptx]", "markitdown"),
+    ("requests", "requests"),
 ];
 
 #[test]

@@ -79,18 +79,19 @@ pub async fn fetch_json_api(
     http: &HttpCtx<'_>,
     pkg: &str,
 ) -> Result<Vec<FileInfo>, reqwest::Error> {
-    // strip extras brackets: "markitdown[pptx]" → "markitdown"
-    let bare = pkg.split_once('[').map_or(pkg, |(n, _)| n);
+    // 一次性 PEP 503 normalize + 剥 extras,
+    // 之后 simple/<pkg>/ 目录、.store.db、tar 路径全部走这个名字
+    let normalized = super::filters::normalize_package_name(pkg);
     let url = format!(
         "{}/pypi/{}/json",
         http.pypi_url.trim_end_matches('/'),
-        super::filters::normalize_package_name(bare)
+        normalized
     );
     let resp: serde_json::Value =
         http.client.get(&url).send().await?.json().await?;
     Ok(resp
         .get("releases")
-        .map(|r| collect_release_files(r, pkg))
+        .map(|r| collect_release_files(r, &normalized))
         .unwrap_or_default())
 }
 

@@ -151,12 +151,17 @@ fn collect_simple_files(
 ) -> Vec<crate::downloader::FileInfo> {
     pkgs.iter()
         .filter_map(|p| {
-            let dir = repo.join("simple").join(p);
+            // pkgs 来自 raw config(可能带 [extras]、大小写、`_`/`.`),
+            // 先 PEP 503 normalize 再去 simple/<name>/ 取文件,
+            // 否则会看不到 download 阶段已经写好的目录。
+            let normalized = crate::filters::normalize_package_name(p);
+            let dir = repo.join("simple").join(&normalized);
             let entries = std::fs::read_dir(dir).ok()?;
+            let captured = normalized.clone();
             Some(
                 entries
                     .filter_map(|e| e.ok())
-                    .filter_map(move |e| file_info_from_entry(e, p)),
+                    .filter_map(move |e| file_info_from_entry(e, &captured)),
             )
         })
         .flatten()

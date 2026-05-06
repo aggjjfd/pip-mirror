@@ -107,5 +107,15 @@ pub fn is_source_distribution(filename: &str) -> bool {
 }
 
 pub fn normalize_package_name(name: &str) -> String {
-    name.to_lowercase().replace(['_', '.'], "-")
+    // PEP 503 + 顺手剥 PEP 508 extras specifier:
+    //   "Markitdown[pptx,docx]" -> "markitdown"
+    //   "ruamel.yaml.clib"      -> "ruamel-yaml-clib"
+    //   "zope__interface"       -> "zope-interface"
+    let bare = name.split_once('[').map_or(name, |(n, _)| n);
+    bare.to_lowercase()
+        .replace(['_', '.'], "-")
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }

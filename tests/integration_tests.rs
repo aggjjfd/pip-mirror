@@ -154,11 +154,11 @@ async fn test_resolve_all_e2e_packages() {
         let result = resolve_one(pkg, &client, pypi_url).await;
         println!("  -> {} dependency packages", result.len());
 
-        let uv_pkgs = uv_resolve(&bare_name(&pkg));
+        let uv_pkgs = uv_resolve(&bare_name(pkg));
         println!(
             "  uv -> {} packages (including {})",
             uv_pkgs.len(),
-            bare_name(&pkg)
+            bare_name(pkg)
         );
         compare_with_uv(pkg, &result, &uv_pkgs);
         println!("  ✓");
