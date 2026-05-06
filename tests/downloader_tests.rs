@@ -29,7 +29,7 @@ fn test_select_latest_versions_basic() {
             version: "0.9.0".to_string(),
         },
     ];
-    let selected = downloader::select_latest_versions(&files, 2);
+    let selected = downloader::select_latest_versions(&files, 2, false);
     let versions: Vec<_> =
         selected.iter().map(|f| f.version.as_str()).collect();
     assert_eq!(versions.len(), 2);
@@ -57,7 +57,7 @@ fn test_select_latest_versions_max_zero_returns_all() {
             version: "0.9.0".to_string(),
         },
     ];
-    let selected = downloader::select_latest_versions(&files, 0);
+    let selected = downloader::select_latest_versions(&files, 0, false);
     assert_eq!(selected.len(), 2);
 }
 

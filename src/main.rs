@@ -163,7 +163,11 @@ async fn do_sync(
         pypi_url: &config.pypi_url,
     };
     let top_versions = sync_top_packages(
-        &SyncCtx { http: &http, repo },
+        &SyncCtx {
+            http: &http,
+            repo,
+            allow_prerelease: config.allow_prerelease,
+        },
         pkgs,
         config.max_versions,
     )
@@ -236,6 +240,7 @@ fn clean_repo(
 struct SyncCtx<'a> {
     http: &'a pip_mirror::downloader::HttpCtx<'a>,
     repo: &'a std::path::Path,
+    allow_prerelease: bool,
 }
 
 async fn download_dep_versions(
@@ -293,6 +298,7 @@ async fn sync_top_packages(
         let selected = pip_mirror::downloader::select_latest_versions(
             &files,
             max_versions,
+            ctx.allow_prerelease,
         );
         let mut vers: Vec<pep440_rs::Version> = selected
             .iter()

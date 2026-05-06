@@ -96,14 +96,46 @@ pub async fn fetch_json_api(
 }
 
 /// Select the latest `max_versions` versions from a file list.
+/// When `allow_prerelease` is false, prerelease versions are dropped.
+/// If that leaves nothing, fall back to the original list with a warning.
 pub fn select_latest_versions(
     files: &[FileInfo],
     max_versions: usize,
+    allow_prerelease: bool,
 ) -> Vec<FileInfo> {
     if max_versions == 0 {
         return files.to_vec();
     }
-    let mut versions: Vec<String> = files
+
+    let mut candidates = files.to_vec();
+    if !allow_prerelease {
+        let stable: Vec<_> = candidates
+            .iter()
+            .filter(|f| {
+                f.version
+                    .parse::<pep440_rs::Version>()
+                    .map(|v| !v.any_prerelease())
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect();
+        if stable.is_empty() {
+            let pkg = files
+                .first()
+                .map(|f| f.package_name.as_str())
+                .unwrap_or("?");
+            let n = candidates
+                .iter()
+                .map(|f| &f.version)
+                .collect::<HashSet<_>>()
+                .len();
+            tracing::warn!("  ! {pkg} 仅有预发行版 ({n} 个版本), 回退保留全部");
+        } else {
+            candidates = stable;
+        }
+    }
+
+    let mut versions: Vec<String> = candidates
         .iter()
         .map(|f| f.version.clone())
         .collect::<HashSet<_>>()
@@ -121,7 +153,7 @@ pub fn select_latest_versions(
 
     let selected: HashSet<_> =
         versions.into_iter().take(max_versions).collect();
-    files
+    candidates
         .iter()
         .filter(|f| selected.contains(&f.version))
         .cloned()
