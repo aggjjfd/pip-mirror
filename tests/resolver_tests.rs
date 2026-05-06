@@ -5,6 +5,10 @@ use pep440_rs::Version;
 
 use pip_mirror::resolver::pubgrub;
 
+fn no_extras() -> HashSet<String> {
+    HashSet::new()
+}
+
 #[test]
 fn test_extract_extras_no_brackets() {
     let (name, extras) = pubgrub::extract_extras("requests");
@@ -41,10 +45,13 @@ fn test_bare_name() {
 
 #[test]
 fn test_parse_python_requires_simple() {
-    let deps = pubgrub::parse_python_requires(&[
-        "requests >=2.0".to_string(),
-        "numpy >=1.20.0,<2.0".to_string(),
-    ]);
+    let deps = pubgrub::parse_python_requires(
+        &[
+            "requests >=2.0".to_string(),
+            "numpy >=1.20.0,<2.0".to_string(),
+        ],
+        &no_extras(),
+    );
     assert_eq!(deps.len(), 2);
     assert_eq!(deps[0].0, "requests");
     assert_eq!(deps[0].1, ">=2.0");
@@ -52,10 +59,10 @@ fn test_parse_python_requires_simple() {
 
 #[test]
 fn test_parse_python_requires_skips_extras() {
-    let deps = pubgrub::parse_python_requires(&[
-        "dep; extra == \"dev\"".to_string(),
-        "requests".to_string(),
-    ]);
+    let deps = pubgrub::parse_python_requires(
+        &["dep; extra == \"dev\"".to_string(), "requests".to_string()],
+        &no_extras(),
+    );
     assert_eq!(deps.len(), 1); // "dep" skipped because "extra =="
 }
 
@@ -246,10 +253,13 @@ fn test_compatible_range_three_segment() {
 #[test]
 fn test_parse_python_requires_does_not_skip_extra_substring() {
     // "extra" 作为其他标记值的一部分，不应被跳过
-    let deps = pubgrub::parse_python_requires(&[
-        "dep; platform_release == \"extra_feature\"".to_string(),
-        "requests".to_string(),
-    ]);
+    let deps = pubgrub::parse_python_requires(
+        &[
+            "dep; platform_release == \"extra_feature\"".to_string(),
+            "requests".to_string(),
+        ],
+        &no_extras(),
+    );
     assert_eq!(
         deps.len(),
         2,
@@ -259,20 +269,24 @@ fn test_parse_python_requires_does_not_skip_extra_substring() {
 
 #[test]
 fn test_parse_python_requires_skips_real_extra() {
-    let deps = pubgrub::parse_python_requires(&[
-        "dep; extra == \"dev\"".to_string(),
-        "dep2; extra!=\"test\"".to_string(),
-        "requests".to_string(),
-    ]);
+    let deps = pubgrub::parse_python_requires(
+        &[
+            "dep; extra == \"dev\"".to_string(),
+            "dep2; extra!=\"test\"".to_string(),
+            "requests".to_string(),
+        ],
+        &no_extras(),
+    );
     assert_eq!(deps.len(), 1, "只有 requests 保留");
 }
 
 #[test]
 fn test_parse_python_requires_platform_not_darwin_kept_on_linux() {
     // Linux 上保留 platform_system != "Darwin"
-    let deps = pubgrub::parse_python_requires(&[
-        "watchdog>=2.1.5,<7; platform_system != \"Darwin\"".to_string(),
-    ]);
+    let deps = pubgrub::parse_python_requires(
+        &["watchdog>=2.1.5,<7; platform_system != \"Darwin\"".to_string()],
+        &no_extras(),
+    );
     assert_eq!(deps.len(), 1);
     assert_eq!(deps[0].0, "watchdog");
 }
@@ -280,27 +294,30 @@ fn test_parse_python_requires_platform_not_darwin_kept_on_linux() {
 #[test]
 fn test_parse_python_requires_platform_darwin_skipped_on_linux() {
     // Linux 上跳过 sys_platform == 'darwin'
-    let deps = pubgrub::parse_python_requires(&[
-        "pyobjc; sys_platform == 'darwin'".to_string(),
-    ]);
+    let deps = pubgrub::parse_python_requires(
+        &["pyobjc; sys_platform == 'darwin'".to_string()],
+        &no_extras(),
+    );
     assert_eq!(deps.len(), 0);
 }
 
 #[test]
 fn test_parse_python_requires_platform_win32_skipped_on_linux() {
     // Linux 上跳过 sys_platform == 'win32'
-    let deps = pubgrub::parse_python_requires(&[
-        "pypiwin32; sys_platform == 'win32'".to_string(),
-    ]);
+    let deps = pubgrub::parse_python_requires(
+        &["pypiwin32; sys_platform == 'win32'".to_string()],
+        &no_extras(),
+    );
     assert_eq!(deps.len(), 0);
 }
 
 #[test]
 fn test_parse_python_requires_linux_kept_on_linux() {
     // Linux 上保留 sys_platform == "linux"
-    let deps = pubgrub::parse_python_requires(&[
-        "inotify>=0.2; sys_platform == 'linux'".to_string(),
-    ]);
+    let deps = pubgrub::parse_python_requires(
+        &["inotify>=0.2; sys_platform == 'linux'".to_string()],
+        &no_extras(),
+    );
     assert_eq!(deps.len(), 1);
     assert_eq!(deps[0].0, "inotify");
 }
@@ -308,18 +325,20 @@ fn test_parse_python_requires_linux_kept_on_linux() {
 #[test]
 fn test_parse_python_requires_not_linux_skipped_on_linux() {
     // Linux 上跳过 platform_system != "Linux"
-    let deps = pubgrub::parse_python_requires(&[
-        "pywin32; platform_system != 'Linux'".to_string(),
-    ]);
+    let deps = pubgrub::parse_python_requires(
+        &["pywin32; platform_system != 'Linux'".to_string()],
+        &no_extras(),
+    );
     assert_eq!(deps.len(), 0);
 }
 
 #[test]
 fn test_parse_python_requires_machine_x86_64_kept() {
     // x86_64 上保留 platform_machine == "x86_64"
-    let deps = pubgrub::parse_python_requires(&[
-        "cryptography; platform_machine == 'x86_64'".to_string(),
-    ]);
+    let deps = pubgrub::parse_python_requires(
+        &["cryptography; platform_machine == 'x86_64'".to_string()],
+        &no_extras(),
+    );
     assert_eq!(deps.len(), 1);
     assert_eq!(deps[0].0, "cryptography");
 }
@@ -327,18 +346,20 @@ fn test_parse_python_requires_machine_x86_64_kept() {
 #[test]
 fn test_parse_python_requires_machine_arm64_skipped_on_x86() {
     // x86_64 上跳过 platform_machine == "arm64"
-    let deps = pubgrub::parse_python_requires(&[
-        "pyobjc; platform_machine == 'arm64'".to_string(),
-    ]);
+    let deps = pubgrub::parse_python_requires(
+        &["pyobjc; platform_machine == 'arm64'".to_string()],
+        &no_extras(),
+    );
     assert_eq!(deps.len(), 0);
 }
 
 #[test]
 fn test_parse_python_requires_os_name_posix_kept_on_linux() {
     // Linux 上保留 os_name == "posix"
-    let deps = pubgrub::parse_python_requires(&[
-        "ptyprocess; os_name == 'posix'".to_string(),
-    ]);
+    let deps = pubgrub::parse_python_requires(
+        &["ptyprocess; os_name == 'posix'".to_string()],
+        &no_extras(),
+    );
     assert_eq!(deps.len(), 1);
     assert_eq!(deps[0].0, "ptyprocess");
 }
@@ -350,7 +371,7 @@ fn test_parse_python_requires_and_combination() {
     let deps = pubgrub::parse_python_requires(&[
         "watchdog>=2.1.5; platform_system != 'Darwin' and python_version >= '3.8'"
             .to_string(),
-    ]);
+    ], &no_extras());
     assert_eq!(deps.len(), 1);
 }
 
@@ -358,10 +379,13 @@ fn test_parse_python_requires_and_combination() {
 fn test_parse_python_requires_or_combination() {
     // or 组合：任一条件满足就保留
     // sys_platform == "linux" (Linux 满足) or sys_platform == "darwin"
-    let deps = pubgrub::parse_python_requires(&[
-        "inotify>=0.2; sys_platform == 'linux' or sys_platform == 'darwin'"
-            .to_string(),
-    ]);
+    let deps = pubgrub::parse_python_requires(
+        &[
+            "inotify>=0.2; sys_platform == 'linux' or sys_platform == 'darwin'"
+                .to_string(),
+        ],
+        &no_extras(),
+    );
     assert_eq!(deps.len(), 1);
     assert_eq!(deps[0].0, "inotify");
 }
@@ -370,9 +394,57 @@ fn test_parse_python_requires_or_combination() {
 fn test_parse_python_requires_or_all_skip() {
     // or 组合：所有条件都不满足 → 跳过
     // sys_platform == "darwin" (不满足) or sys_platform == "win32" (不满足)
-    let deps = pubgrub::parse_python_requires(&[
-        "pyobjc; sys_platform == 'darwin' or sys_platform == 'win32'"
-            .to_string(),
-    ]);
+    let deps = pubgrub::parse_python_requires(
+        &[
+            "pyobjc; sys_platform == 'darwin' or sys_platform == 'win32'"
+                .to_string(),
+        ],
+        &no_extras(),
+    );
     assert_eq!(deps.len(), 0);
+}
+
+#[test]
+fn test_parse_python_requires_with_matching_extra() {
+    // extras 匹配时保留依赖
+    let extras = HashSet::from(["pptx".to_string()]);
+    let deps = pubgrub::parse_python_requires(
+        &[
+            "python-pptx>=0.6.21; extra == \"pptx\"".to_string(),
+            "requests".to_string(),
+        ],
+        &extras,
+    );
+    assert_eq!(deps.len(), 2);
+    assert_eq!(deps[0].0, "python-pptx");
+}
+
+#[test]
+fn test_parse_python_requires_with_mismatch_extra() {
+    // extras 不匹配时跳过
+    let extras = HashSet::from(["pdf".to_string()]);
+    let deps = pubgrub::parse_python_requires(
+        &[
+            "python-pptx>=0.6.21; extra == \"pptx\"".to_string(),
+            "requests".to_string(),
+        ],
+        &extras,
+    );
+    assert_eq!(deps.len(), 1);
+    assert_eq!(deps[0].0, "requests");
+}
+
+#[test]
+fn test_parse_python_requires_multi_extras_match_one() {
+    // 多个 extras 中有一个匹配就保留
+    let extras = HashSet::from(["pptx".to_string(), "docx".to_string()]);
+    let deps = pubgrub::parse_python_requires(
+        &[
+            "python-pptx>=0.6.21; extra == \"pptx\"".to_string(),
+            "python-docx>=0.8.0; extra == \"docx\"".to_string(),
+            "requests".to_string(),
+        ],
+        &extras,
+    );
+    assert_eq!(deps.len(), 3);
 }

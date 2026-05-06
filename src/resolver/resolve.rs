@@ -1,6 +1,6 @@
 use super::pubgrub::{
-    Solution, bare_name, compute_version_windows, parse_python_requires,
-    spec_to_range,
+    Solution, bare_name, collect_pkg_extras, compute_version_windows,
+    parse_python_requires, spec_to_range,
 };
 use crate::downloader::HttpCtx;
 use dashmap::DashMap;
@@ -35,10 +35,11 @@ async fn explore_pkg_deps(
     all_vers: &[Version],
     top_versions: &DashMap<String, Vec<Version>>,
     pkg_set: &mut HashSet<String>,
-    queue: &mut Vec<(String, usize)>,
+    queue: &mut Vec<(String, usize, HashSet<String>)>,
     depth: usize,
     cache: &CacheType,
     allow_prerelease: bool,
+    extras: &HashSet<String>,
 ) {
     let explore: Vec<Version> = top_versions
         .get(pkg)
@@ -59,7 +60,7 @@ async fn explore_pkg_deps(
         else {
             continue;
         };
-        let deps = parse_python_requires(&rd);
+        let deps = parse_python_requires(&rd, extras);
         let new_deps: Vec<String> = deps
             .iter()
             .map(|(dn, _)| crate::filters::normalize_package_name(dn))
@@ -67,7 +68,7 @@ async fn explore_pkg_deps(
             .collect();
         for dn in &new_deps {
             pkg_set.insert(dn.clone());
-            queue.push((dn.clone(), depth + 1));
+            queue.push((dn.clone(), depth + 1, HashSet::new()));
         }
         cache.insert((pkg.to_string(), vs), deps);
     }
@@ -75,14 +76,21 @@ async fn explore_pkg_deps(
 async fn bfs_collect(
     params: &ResolveParams<'_>,
     http: &HttpCtx<'_>,
+    pkg_extras: &HashMap<String, HashSet<String>>,
 ) -> (HashSet<String>, HashMap<String, Vec<Version>>, CacheType) {
     let top_names: Vec<_> =
         params.top_packages.iter().map(|r| bare_name(r)).collect();
     let mut pkg_set: HashSet<String> = top_names.iter().cloned().collect();
-    let mut queue: Vec<_> = top_names.iter().map(|n| (n.clone(), 0)).collect();
+    let mut queue: Vec<_> = top_names
+        .iter()
+        .map(|n| {
+            let extras = pkg_extras.get(n).cloned().unwrap_or_default();
+            (n.clone(), 0, extras)
+        })
+        .collect();
     let mut pkg_versions: HashMap<String, Vec<Version>> = HashMap::new();
     let cache: CacheType = Arc::new(DashMap::new());
-    while let Some((pkg, depth)) = queue.pop() {
+    while let Some((pkg, depth, extras)) = queue.pop() {
         let Some(all_vers) =
             fetch_versions(http, &pkg, params.allow_prerelease).await
         else {
@@ -100,6 +108,7 @@ async fn bfs_collect(
                 depth,
                 &cache,
                 params.allow_prerelease,
+                &extras,
             )
             .await;
         }
@@ -110,6 +119,7 @@ struct FetchCtx<'a> {
     http: &'a HttpCtx<'a>,
     cache: &'a CacheType,
     max_versions: usize,
+    pkg_extras: &'a HashMap<String, HashSet<String>>,
 }
 async fn fetch_pkg_deps(
     pkg: String,
@@ -118,6 +128,7 @@ async fn fetch_pkg_deps(
 ) -> Vec<((String, String), Vec<(String, String)>)> {
     let mut results = Vec::new();
     let pkg_key = pkg.clone();
+    let extras = ctx.pkg_extras.get(&pkg).cloned().unwrap_or_default();
     for ver in &vers {
         let vs = ver.to_string();
         let key = (pkg_key.clone(), vs.clone());
@@ -129,7 +140,7 @@ async fn fetch_pkg_deps(
             )
             .await
             {
-                Ok(Some(rd)) => parse_python_requires(&rd),
+                Ok(Some(rd)) => parse_python_requires(&rd, &extras),
                 _ => vec![],
             };
             ctx.cache.insert(key.clone(), d.clone());
@@ -154,8 +165,11 @@ async fn build_deps_map(
         let Some(vers) = pkg_versions.get(pkg) else {
             continue;
         };
-        let top: Vec<Version> = vers.iter().take(window).cloned().collect();
-        handles.push(fetch_pkg_deps(pkg.clone(), top, ctx));
+        handles.push(fetch_pkg_deps(
+            pkg.clone(),
+            vers.iter().take(window).cloned().collect(),
+            ctx,
+        ));
     }
     let mut deps_map = HashMap::new();
     for results in futures::future::join_all(handles).await {
@@ -165,7 +179,6 @@ async fn build_deps_map(
     }
     deps_map
 }
-
 fn build_root_range(
     top_pkg: &str,
     tvers: &[Version],
@@ -189,10 +202,9 @@ fn collect_solution(
 ) -> Solution {
     let sol: Solution = DashMap::new();
     for (pkg, ver) in solution {
-        if pkg == "__root__" {
-            continue;
+        if pkg != "__root__" {
+            sol.insert(pkg, ver);
         }
-        sol.insert(pkg, ver);
     }
     sol
 }
@@ -255,6 +267,31 @@ fn resolve_one(
         .ok()
         .map(collect_solution)
 }
+#[allow(clippy::too_many_arguments)]
+fn resolve_all(
+    top_names: &[String],
+    pkg_set: &HashSet<String>,
+    pkg_versions: &HashMap<String, Vec<Version>>,
+    deps_map: &HashMap<(String, String), Vec<(String, String)>>,
+    top_versions: &DashMap<String, Vec<Version>>,
+    allow_prerelease: bool,
+) -> Vec<Solution> {
+    let mut solutions = Vec::new();
+    for top_pkg in top_names {
+        match resolve_one(
+            top_pkg,
+            pkg_set,
+            pkg_versions,
+            deps_map,
+            top_versions,
+            allow_prerelease,
+        ) {
+            Some(sol) => solutions.push(sol),
+            None => warn!("  {top_pkg} pubgrub UNSAT"),
+        }
+    }
+    solutions
+}
 pub async fn resolve_dependencies(
     params: &ResolveParams<'_>,
     client: &reqwest::Client,
@@ -264,7 +301,9 @@ pub async fn resolve_dependencies(
         client,
         pypi_url: params.pypi_url,
     };
-    let (pkg_set, pkg_versions, req_cache) = bfs_collect(params, &http).await;
+    let pkg_extras = collect_pkg_extras(params.top_packages);
+    let (pkg_set, pkg_versions, req_cache) =
+        bfs_collect(params, &http, &pkg_extras).await;
     info!("  收集完成: {} 个包", pkg_set.len());
     let deps_map = build_deps_map(
         &pkg_set,
@@ -273,25 +312,20 @@ pub async fn resolve_dependencies(
             http: &http,
             cache: &req_cache,
             max_versions: params.max_versions,
+            pkg_extras: &pkg_extras,
         },
     )
     .await;
     let top_names: Vec<_> =
         params.top_packages.iter().map(|r| bare_name(r)).collect();
-    let mut all_solutions: Vec<Solution> = Vec::new();
-    for top_pkg in &top_names {
-        match resolve_one(
-            top_pkg,
-            &pkg_set,
-            &pkg_versions,
-            &deps_map,
-            params.top_versions,
-            params.allow_prerelease,
-        ) {
-            Some(sol) => all_solutions.push(sol),
-            None => warn!("  {top_pkg} pubgrub UNSAT"),
-        }
-    }
+    let all_solutions = resolve_all(
+        &top_names,
+        &pkg_set,
+        &pkg_versions,
+        &deps_map,
+        params.top_versions,
+        params.allow_prerelease,
+    );
     info!("  解析完成: {} 个解", all_solutions.len());
     if all_solutions.is_empty() {
         warn!("所有包均无有效解");

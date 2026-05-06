@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use dashmap::DashMap;
@@ -77,6 +77,20 @@ pub fn extract_extras(package_ref: &str) -> (String, HashSet<String>) {
             (name.to_string(), extras)
         }
     }
+}
+
+pub fn collect_pkg_extras(
+    packages: &[String],
+) -> std::collections::HashMap<String, HashSet<String>> {
+    let mut pkg_extras = HashMap::new();
+    for pkg_ref in packages {
+        let (name, extras) = extract_extras(pkg_ref);
+        if !extras.is_empty() {
+            pkg_extras
+                .insert(crate::filters::normalize_package_name(&name), extras);
+        }
+    }
+    pkg_extras
 }
 
 pub fn bare_name(package_ref: &str) -> String {
@@ -252,22 +266,41 @@ fn skip_by_platform(marker: &str) -> bool {
     eval_simple_condition(&m) == Some(false)
 }
 
-fn should_skip_marker(marker: &str) -> bool {
+fn has_matching_extra(
+    marker: &str,
+    extras: &std::collections::HashSet<String>,
+) -> bool {
+    extras.iter().any(|extra| {
+        let quoted = format!("\"{}\"", extra);
+        let single_quoted = format!("'{}'", extra);
+        marker.contains(&quoted) || marker.contains(&single_quoted)
+    })
+}
+
+fn should_skip_marker(
+    marker: &str,
+    extras: &std::collections::HashSet<String>,
+) -> bool {
     let m = marker.trim().to_lowercase();
-    // extras 由调用方通过 extras 参数控制，这里跳过
-    m.contains("extra ==")
+    if m.contains("extra ==")
         || m.contains("extra!=")
         || m.contains("extra in ")
         || m.contains("extra not in")
-        || skip_by_platform(marker)
+    {
+        return extras.is_empty() || !has_matching_extra(marker, extras);
+    }
+    skip_by_platform(marker)
 }
 
-pub fn parse_python_requires(lines: &[String]) -> Vec<DepSpec> {
+pub fn parse_python_requires(
+    lines: &[String],
+    extras: &std::collections::HashSet<String>,
+) -> Vec<DepSpec> {
     let mut deps = Vec::new();
     for line in lines {
         let req = line.split(';').next().unwrap_or(line).trim();
         let marker = line.split(';').nth(1);
-        if marker.is_some_and(should_skip_marker) {
+        if marker.is_some_and(|m| should_skip_marker(m, extras)) {
             continue;
         }
         let (name, spec) = split_name_spec(req);
