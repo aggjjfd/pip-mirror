@@ -240,22 +240,6 @@ enum DownloadOutcome {
     Failed(FileInfo, String),
 }
 
-fn warn_stale_record(
-    store: &crate::store::DownloadStore,
-    pkg: &str,
-    filename: &str,
-    dest: &std::path::Path,
-) {
-    match store.has_file(pkg, filename) {
-        Ok(true) => tracing::warn!(
-            "DB 有记录但磁盘文件缺失，重新下载: {}",
-            dest.display()
-        ),
-        Ok(false) => {}
-        Err(e) => tracing::warn!("查询 .store.db 失败: {e}"),
-    }
-}
-
 async fn try_download(
     client: &reqwest::Client,
     store: &Option<crate::store::DownloadStore>,
@@ -269,8 +253,15 @@ async fn try_download(
     if dest.exists() {
         return DownloadOutcome::Skipped(fi.clone());
     }
-    if let Some(s) = store {
-        warn_stale_record(s, &fi.package_name, &fi.filename, &dest);
+    // 外网机清包场景：db 有记录但磁盘无文件，跳过重新下载
+    if store.as_ref().is_some_and(|s| {
+        s.has_file(&fi.package_name, &fi.filename).unwrap_or(false)
+    }) {
+        tracing::debug!(
+            "db 有记录且磁盘无文件，跳过（清包场景）: {}",
+            dest.display()
+        );
+        return DownloadOutcome::Skipped(fi.clone());
     }
     let (ok, msg) = download_file(client, fi, &dest).await;
     if ok {
