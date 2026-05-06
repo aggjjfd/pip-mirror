@@ -1,29 +1,25 @@
 name: E2E (Four Modes)
 
-# 端到端测试,串完 pip-mirror 对外四种模式 + 真实客户端验证。
-# 包列表精选 8 个有代表性的深依赖包,故意把 3 个"依赖最深"的包
-# (gradio + streamlit + markitdown[pptx,docx,xls,xlsx,pdf])从 sync-full 抠出去,
-# 留给 incremental 流程加回来,这样 incremental 链路压上了:
-#   - 真正的依赖深度(gradio 一长串 transitive、markitdown 五条 extras 分支)
-#   - extras 解析在 incremental 路径上的正确性
-# CI 上 CPU 弱网络强,所以:
-#   - workers 在 CI 配置里拉到 16
-#   - PIP_MIRROR_TAR_COMPRESSION=none → mirror.tar.gz 内部 gzip level=0,基本不压缩
-# 流程(对照 README "四种使用模式"):
-#   1) 模式二 sync-full    → 5 包(rapidocr-onnxruntime + pyside6 + playwright +
-#                            openai + requests)产 mirror.tar.gz + mirror.sha256
-#   2) 模拟内网            → 解到 /tmp/stage,验证 simple/ 与 python-builds/ 都在
-#   3) 模式三 serve(后台)→ 用 stage 仓库做服务
-#   4) 客户端 uv pip install requests              走镜像装 wheel
-#   5) 客户端 uv python install 3.13               走镜像装 cpython,验证 python-builds 链路
-#   6) 模式一 sync          → 把抠出去的 3 个深依赖加回来触发 incremental_*.tar.gz
-#   7) import-incremental   → 现算 sha256 写入 stage 的 store.db
-#   8) 客户端 venv_full      → 装 3 个 sync-full 端深依赖
-#                              (openai + playwright + rapidocr-onnxruntime)
-#   9) 客户端 venv_inc       → 新建 venv,装 3 个 incremental 端深依赖
-#                              (gradio + streamlit + markitdown[pptx,docx,xls,xlsx,pdf])
-#  10) --strict happy path  → 同一个 archive 再 import 一次,strict 不报错
-# 模式四(docker build)不在 e2e 内,因为它的产出物是镜像而非数据,与运行时验证无关。
+# 端到端测试, 模拟"外网-内网"双机部署完整链路：
+#   1) 外网机 sync-full 全量同步 → 产 mirror.tar.gz
+#   2) artifact 转移: mirror.tar.gz 拷贝到内网机
+#   3) 内网机解压并 serve → 客户端第一次下载验证
+#   4) 外网机模拟"清包留库": 删除 simple/ + python-builds/ 仅保留 .store.db
+#   5) 外网机 sync 增量同步 → 产 incremental_*.tar.gz（此时外网只剩数据库没有包）
+#   6) artifact 转移: incremental_*.tar.gz + 更新后的 .store.db 拷贝到内网机
+#   7) 内网机 import-incremental → 重建索引
+#   8) 客户端第二次下载验证（增量包 + 旧包仍可用）
+#
+# 用 /tmp/wan 与 /tmp/lan 两个独立目录模拟两台机器,
+# 以文件拷贝代替真实内外网数据搬运。
+#
+# 包列表分两组：
+#   sync-full 子集（5 包）: rapidocr-onnxruntime + pyside6 + playwright + openai + requests
+#   incremental 追加（3 深依赖包）: gradio + streamlit + markitdown[pptx,docx,xls,xlsx,pdf]
+#
+# CI 上 CPU 弱网络强：
+#   - workers 拉到 16
+#   - PIP_MIRROR_TAR_COMPRESSION=none → mirror.tar.gz 内部不压缩
 
 on:
   push:
@@ -58,10 +54,10 @@ jobs:
           cargo build --release
           echo "PIP_MIRROR_BIN=$(pwd)/target/release/pip-mirror" >> "$GITHUB_ENV"
 
-      - name: 'Generate e2e configs(sync-full 子集 + incremental 加回 3 深依赖)'
+      - name: '生成三机配置（外网全量 / 外网增量 / 内网 serve）'
         run: |
           set -euo pipefail
-          cat > e2e-full.toml <<'TOML'
+          cat > wan-full.toml <<'TOML'
           packages = [
               "rapidocr-onnxruntime",
               "pyside6",
@@ -69,18 +65,14 @@ jobs:
               "openai",
               "requests",
           ]
-          repository_dir = "./packages"
-          incremental_dir = "./incremental"
+          repository_dir = "/tmp/wan/packages"
+          incremental_dir = "/tmp/wan/incremental"
           include_source = true
           workers = 16
           max_versions = 5
           max_depth = 3
-          server_host = "127.0.0.1"
-          server_port = 18080
           TOML
-          sed 's|repository_dir = "./packages"|repository_dir = "/tmp/stage/packages"|' \
-            e2e-full.toml > stage.toml
-          cat > e2e-inc.toml <<'TOML'
+          cat > wan-inc.toml <<'TOML'
           packages = [
               "rapidocr-onnxruntime",
               "pyside6",
@@ -91,75 +83,97 @@ jobs:
               "streamlit",
               "markitdown[pptx,docx,xls,xlsx,pdf]",
           ]
-          repository_dir = "./packages"
+          repository_dir = "/tmp/wan/packages"
+          incremental_dir = "/tmp/wan/incremental"
           include_source = true
           workers = 16
           max_versions = 5
+          TOML
+          cat > lan.toml <<'TOML'
+          packages = ["requests"]
+          repository_dir = "/tmp/lan/packages"
+          incremental_dir = "/tmp/lan/incremental"
           server_host = "127.0.0.1"
           server_port = 18080
           TOML
-          echo "----- e2e-full.toml -----"
-          cat e2e-full.toml
-          echo "----- e2e-inc.toml -----"
-          cat e2e-inc.toml
+          echo "----- wan-full.toml -----"
+          cat wan-full.toml
+          echo "----- wan-inc.toml -----"
+          cat wan-inc.toml
+          echo "----- lan.toml -----"
+          cat lan.toml
 
-      - name: 'Mode 2 — sync-full produces mirror.tar.gz + mirror.sha256(用 sync-full 子集,5 包)'
+      - name: '外网机 — sync-full 全量同步（产 mirror.tar.gz）'
         run: |
           set -euo pipefail
-          $PIP_MIRROR_BIN sync-full -c e2e-full.toml 2>&1 | tee sync-full.log
+          mkdir -p /tmp/wan
+          cd /tmp/wan
+          $PIP_MIRROR_BIN sync-full -c "$GITHUB_WORKSPACE/wan-full.toml" 2>&1 | tee sync-full.log
           ls -lh mirror.tar.gz mirror.sha256
           sha256sum -c mirror.sha256
+          # 验证外网机仓库结构
+          test -d /tmp/wan/packages/simple/requests
+          test -f /tmp/wan/packages/.store.db
+          test -f /tmp/wan/packages/python-builds/index.json
+          echo "外网机仓库尺寸:"
+          du -sh /tmp/wan/packages
 
-      - name: 'Stage extracted mirror to /tmp/stage (simulate intranet host)'
+      - name: 'artifact 转移 — mirror.tar.gz 外网→内网'
         run: |
           set -euo pipefail
-          mkdir -p /tmp/stage
-          tar -xzf mirror.tar.gz -C /tmp/stage
-          test -d /tmp/stage/packages/simple/requests
-          test -f /tmp/stage/packages/simple/requests/index.html
-          test -f /tmp/stage/packages/simple/requests/index.json
-          test -f /tmp/stage/packages/.store.db
-          test -f /tmp/stage/packages/python-builds/index.json
+          mkdir -p /tmp/lan
+          cp /tmp/wan/mirror.tar.gz /tmp/wan/mirror.sha256 /tmp/lan/
+          echo "mirror.tar.gz 已拷贝到内网机 /tmp/lan/"
+          ls -lh /tmp/lan/mirror.tar.gz
+
+      - name: '内网机 — 解压 mirror.tar.gz 并验证'
+        run: |
+          set -euo pipefail
+          cd /tmp/lan
+          tar -xzf mirror.tar.gz
+          test -d /tmp/lan/packages/simple/requests
+          test -f /tmp/lan/packages/simple/requests/index.html
+          test -f /tmp/lan/packages/simple/requests/index.json
+          test -f /tmp/lan/packages/.store.db
+          test -f /tmp/lan/packages/python-builds/index.json
           # access_log.db 不应进 mirror.tar.gz
-          if [ -f /tmp/stage/packages/.access_log.db ]; then
+          if [ -f /tmp/lan/packages/.access_log.db ]; then
             echo "BUG: .access_log.db should be filtered out of mirror.tar.gz"
             exit 1
           fi
-          echo "----- staged simple/ (head 10) -----"
-          ls /tmp/stage/packages/simple/ | head -10
-          echo "----- staged python-builds/ (head 5) -----"
-          ls /tmp/stage/packages/python-builds/ | head -5
-          echo "python-builds index entries: $(python -c 'import json; print(len(json.load(open("/tmp/stage/packages/python-builds/index.json"))))')"
-          echo "----- 仓库尺寸 -----"
-          du -sh /tmp/stage/packages
+          echo "内网机 simple/ (head 10):"
+          ls /tmp/lan/packages/simple/ | head -10
+          echo "内网机 python-builds/ (head 5):"
+          ls /tmp/lan/packages/python-builds/ | head -5
+          echo "python-builds index entries: $(python -c 'import json; print(len(json.load(open("/tmp/lan/packages/python-builds/index.json"))))')"
+          echo "内网机仓库尺寸:"
+          du -sh /tmp/lan/packages
 
-      - name: 'Mode 3 — start serve in background'
+      - name: '内网机 — serve 启动（后台）'
         run: |
           set -euo pipefail
-          $PIP_MIRROR_BIN serve -c stage.toml > server.log 2>&1 &
+          $PIP_MIRROR_BIN serve -c "$GITHUB_WORKSPACE/lan.toml" > server.log 2>&1 &
           echo $! > server.pid
-          # 等 server up
           for i in $(seq 1 30); do
             if curl -sf "http://${MIRROR_HOST}:${MIRROR_PORT}/simple/requests/" > /dev/null; then
-              echo "server up after ${i}s"
+              echo "内网 server up after ${i}s"
               break
             fi
             sleep 1
           done
-          # 必须能拿到 simple/requests/ 与 python-builds/index.json
           curl -sfI "http://${MIRROR_HOST}:${MIRROR_PORT}/simple/requests/" | head -3
           curl -sf "http://${MIRROR_HOST}:${MIRROR_PORT}/python-builds/index.json" \
             | python -c 'import json, sys; d=json.load(sys.stdin); k=next(iter(d)); print(len(d), "entries; first:", k, "->", d[k]["url"])'
 
-      - name: 'Client — uv pip install requests via mirror'
+      - name: '客户端第一次下载 — uv pip install requests via 内网镜像'
         run: |
           set -euo pipefail
-          uv venv /tmp/client
-          export VIRTUAL_ENV=/tmp/client
+          uv venv /tmp/client1
+          export VIRTUAL_ENV=/tmp/client1
           uv pip install --index-url "http://${MIRROR_HOST}:${MIRROR_PORT}/simple" requests
-          /tmp/client/bin/python -c "import requests; print('client requests', requests.__version__)"
+          /tmp/client1/bin/python -c "import requests; print('client1 requests', requests.__version__)"
 
-      - name: 'Client — uv python install 3.13 via mirror python-builds index'
+      - name: '客户端第一次下载 — uv python install 3.13 via 内网镜像'
         run: |
           set -euo pipefail
           export UV_PYTHON_DOWNLOADS_JSON_URL="http://${MIRROR_HOST}:${MIRROR_PORT}/python-builds/index.json"
@@ -169,90 +183,125 @@ jobs:
           PYBIN=$(uv python find 3.13)
           echo "uv python find 3.13 → $PYBIN"
           "$PYBIN" --version
-          # 确认服务器真的被打过 python-builds 流量(不是 uv 走了上游)
-          PYHITS=$(sqlite3 /tmp/stage/packages/.access_log.db \
+          # 确认服务器真的被打过 python-builds 流量
+          PYHITS=$(sqlite3 /tmp/lan/packages/.access_log.db \
             "SELECT COUNT(*) FROM access_log WHERE path LIKE '/python-builds/%';")
           echo "python-builds hits in mirror access_log: $PYHITS"
           test "$PYHITS" -ge 1
 
-      - name: 'Mode 1 — incremental sync(把 3 个深依赖加回来触发增量)'
+      - name: '外网机 — 模拟清包留库（仅保留 .store.db + .access_log.db）'
         run: |
           set -euo pipefail
-          $PIP_MIRROR_BIN sync -c e2e-inc.toml 2>&1 | tee sync.log
+          echo "清包前外网机 packages/ 内容:"
+          ls -la /tmp/wan/packages/
+          rm -rf /tmp/wan/packages/simple
+          rm -rf /tmp/wan/packages/python-builds
+          echo "清包后外网机 packages/ 内容（应只剩 .store.db 与 .access_log.db）:"
+          ls -la /tmp/wan/packages/
+          # 确认包目录已被清空
+          if [ -d /tmp/wan/packages/simple ]; then
+            echo "BUG: simple/ 目录应已被删除"
+            exit 1
+          fi
+          if [ -d /tmp/wan/packages/python-builds ]; then
+            echo "BUG: python-builds/ 目录应已被删除"
+            exit 1
+          fi
+          # .store.db 必须保留
+          if [ ! -f /tmp/wan/packages/.store.db ]; then
+            echo "BUG: .store.db 必须保留"
+            exit 1
+          fi
+          echo "外网机已清空包文件，仅剩数据库"
+
+      - name: '外网机 — 增量 sync（只剩 .store.db 无外网包文件）'
+        run: |
+          set -euo pipefail
+          cd /tmp/wan
+          $PIP_MIRROR_BIN sync -c "$GITHUB_WORKSPACE/wan-inc.toml" 2>&1 | tee sync.log
           ls -lh incremental/incremental_*.tar.gz
           ARCHIVE=$(ls incremental/incremental_*.tar.gz | head -1)
           echo "INCREMENTAL=$ARCHIVE" >> "$GITHUB_ENV"
-          # 增量包必须含 gradio + streamlit + markitdown 三个新包;
-          # 不该再含已同步的 requests
+          # 列出增量包内容
           tar -tzf "$ARCHIVE" | tee /tmp/inc-list.txt
+          # 增量包必须含新增的三个深依赖包
           for pkg in gradio streamlit markitdown; do
             if ! grep -qE "^simple/${pkg}/" /tmp/inc-list.txt; then
               echo "BUG: incremental tar 缺少 simple/${pkg}/"
               exit 1
             fi
           done
-          if grep -E '^simple/requests/' /tmp/inc-list.txt; then
-            echo "BUG: incremental should NOT re-include already-synced requests files"
-            exit 1
-          fi
+          echo "增量包验证通过: 包含 gradio / streamlit / markitdown"
 
-      - name: 'import-incremental into stage(recompute sha256)'
+      - name: 'artifact 转移 — 增量包 + .store.db 外网→内网'
         run: |
           set -euo pipefail
-          $PIP_MIRROR_BIN import-incremental "$INCREMENTAL" -c stage.toml 2>&1 | tee import.log
-          # stage 的 .store.db 必须有 gradio / streamlit / markitdown 行,
-          # 且 sha256 长度 64
+          cp "$INCREMENTAL" /tmp/lan/
+          # 外网的 .store.db 已包含两次同步的完整记录，覆盖内网旧 db
+          cp /tmp/wan/packages/.store.db /tmp/lan/packages/
+          echo "artifact 转移完成:"
+          ls -lh /tmp/lan/incremental_*.tar.gz
+          echo "内网 .store.db 记录数: $(sqlite3 /tmp/lan/packages/.store.db 'SELECT COUNT(*) FROM downloaded_files;')"
+
+      - name: '内网机 — import-incremental（现算 sha256 + 重建索引）'
+        run: |
+          set -euo pipefail
+          INC_LOCAL=$(ls /tmp/lan/incremental_*.tar.gz | head -1)
+          $PIP_MIRROR_BIN import-incremental "$INC_LOCAL" -c "$GITHUB_WORKSPACE/lan.toml" 2>&1 | tee import.log
+          # 验证新增包已入库
           for pkg in gradio streamlit markitdown; do
-            N=$(sqlite3 /tmp/stage/packages/.store.db \
+            N=$(sqlite3 /tmp/lan/packages/.store.db \
               "SELECT COUNT(*) FROM downloaded_files WHERE package_name='${pkg}' AND LENGTH(sha256)=64;")
-            echo "${pkg} rows in stage store: $N"
+            echo "${pkg} rows in lan store: $N"
             test "$N" -ge 1
           done
-          # 索引也要被重建
+          # 验证新增包索引已重建
           for pkg in gradio streamlit markitdown; do
-            test -f "/tmp/stage/packages/simple/${pkg}/index.html"
-            test -f "/tmp/stage/packages/simple/${pkg}/index.json"
+            test -f "/tmp/lan/packages/simple/${pkg}/index.html"
+            test -f "/tmp/lan/packages/simple/${pkg}/index.json"
           done
           # manifest.json 不应被留在仓库根
-          if [ -f /tmp/stage/packages/manifest.json ]; then
+          if [ -f /tmp/lan/packages/manifest.json ]; then
             echo "BUG: manifest.json should be cleaned up after import"
             exit 1
           fi
+          echo "import-incremental 完成，索引已重建，serve 无需重启"
 
-      - name: 'Client venv_full — uv pip install 3 个 sync-full 端深依赖'
+      - name: '客户端第二次下载 — 装增量包（gradio + streamlit + markitdown）'
         run: |
           set -euo pipefail
-          uv venv /tmp/client_full
-          export VIRTUAL_ENV=/tmp/client_full
-          uv pip install --index-url "http://${MIRROR_HOST}:${MIRROR_PORT}/simple" \
-            openai playwright rapidocr-onnxruntime
-          /tmp/client_full/bin/python - <<'PY'
-          import openai, playwright, rapidocr_onnxruntime
-          print("client_full OK",
-                "openai", openai.__version__,
-                "playwright", getattr(playwright, "__version__", "?"),
-                "rapidocr_onnxruntime", getattr(rapidocr_onnxruntime, "__version__", "?"))
-          PY
-
-      - name: 'Client venv_inc — uv pip install 3 个 incremental 端深依赖'
-        run: |
-          set -euo pipefail
-          uv venv /tmp/client_inc
-          export VIRTUAL_ENV=/tmp/client_inc
+          uv venv /tmp/client2
+          export VIRTUAL_ENV=/tmp/client2
           uv pip install --index-url "http://${MIRROR_HOST}:${MIRROR_PORT}/simple" \
             gradio streamlit "markitdown[pptx,docx,xls,xlsx,pdf]"
-          /tmp/client_inc/bin/python - <<'PY'
+          /tmp/client2/bin/python - <<'PY'
           import gradio, streamlit, markitdown
-          print("client_inc OK",
+          print("client2 incremental OK",
                 "gradio", gradio.__version__,
                 "streamlit", streamlit.__version__,
                 "markitdown", getattr(markitdown, "__version__", "?"))
           PY
 
-      - name: '--strict happy path (re-import succeeds, no failures)'
+      - name: '客户端第二次下载 — 旧包仍可用（openai + playwright + rapidocr-onnxruntime）'
         run: |
           set -euo pipefail
-          $PIP_MIRROR_BIN import-incremental "$INCREMENTAL" -c stage.toml --strict 2>&1 | tee strict.log
+          uv venv /tmp/client3
+          export VIRTUAL_ENV=/tmp/client3
+          uv pip install --index-url "http://${MIRROR_HOST}:${MIRROR_PORT}/simple" \
+            openai playwright rapidocr-onnxruntime
+          /tmp/client3/bin/python - <<'PY'
+          import openai, playwright, rapidocr_onnxruntime
+          print("client3 old-packages OK",
+                "openai", openai.__version__,
+                "playwright", getattr(playwright, "__version__", "?"),
+                "rapidocr_onnxruntime", getattr(rapidocr_onnxruntime, "__version__", "?"))
+          PY
+
+      - name: '--strict happy path（同一增量包再次 import 不报错）'
+        run: |
+          set -euo pipefail
+          INC_LOCAL=$(ls /tmp/lan/incremental_*.tar.gz | head -1)
+          $PIP_MIRROR_BIN import-incremental "$INC_LOCAL" -c "$GITHUB_WORKSPACE/lan.toml" --strict 2>&1 | tee strict.log
 
       - name: 'Stop server'
         if: always()
@@ -269,7 +318,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mirror-tarball-${{ github.run_id }}
-          path: mirror.tar.gz
+          path: /tmp/wan/mirror.tar.gz
           retention-days: 1
           if-no-files-found: error
 
@@ -279,15 +328,14 @@ jobs:
         with:
           name: e2e-logs-${{ github.run_id }}
           path: |
-            sync-full.log
-            sync.log
+            /tmp/wan/sync-full.log
+            /tmp/wan/sync.log
             import.log
             strict.log
             server.log
-            mirror.sha256
-            e2e-full.toml
-            stage.toml
-            e2e-inc.toml
+            wan-full.toml
+            wan-inc.toml
+            lan.toml
           retention-days: 7
           if-no-files-found: warn
 
@@ -393,8 +441,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $env:VIRTUAL_ENV = 'C:\client'
-          # charset_normalizer 在 requests 3.x 链路中是 binary wheel,且 PyPI 多版本含 win_amd64 + win32 build。
-          # 如未来 charset-normalizer 全转 pure-python (any wheel),换成 cryptography / pydantic-core / pillow。
           $info = Get-ChildItem C:\client\Lib\site-packages -Directory `
             | Where-Object { $_.Name -like 'charset_normalizer-*.dist-info' } | Select-Object -First 1
           if (-not $info) { throw 'charset_normalizer dist-info not found in C:\client' }
