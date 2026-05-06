@@ -100,6 +100,18 @@ impl DownloadStore {
         )
     }
 
+    pub fn has_file(&self, filename: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        let Ok(count): Result<i64, _> = conn.query_row(
+            "SELECT COUNT(*) FROM downloaded_files WHERE filename = ?1",
+            rusqlite::params![filename],
+            |r| r.get(0),
+        ) else {
+            return false;
+        };
+        count > 0
+    }
+
     pub fn hash_file(path: &Path) -> Result<String, std::io::Error> {
         let mut hasher = Sha256::new();
         let mut file = std::fs::File::open(path)?;

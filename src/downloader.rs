@@ -150,16 +150,15 @@ pub fn select_latest_versions(
 
 /// Collect all accepted wheels and sdists for a version.
 pub fn collect_version_files(files: &[FileInfo]) -> Vec<FileInfo> {
-    let mut result = Vec::new();
-    for fi in files {
-        let is_whl = fi.filename.ends_with(".whl");
-        let accepted = is_whl && is_accepted_wheel(&fi.filename);
-        let is_sdist = !is_whl && is_source_distribution(&fi.filename);
-        if accepted || is_sdist {
-            result.push(fi.clone());
-        }
-    }
-    result
+    files
+        .iter()
+        .filter(|fi| {
+            let is_whl = fi.filename.ends_with(".whl");
+            is_whl && is_accepted_wheel(&fi.filename)
+                || !is_whl && is_source_distribution(&fi.filename)
+        })
+        .cloned()
+        .collect()
 }
 
 /// Check if a version has a wheel covering the given target platform.
@@ -310,15 +309,14 @@ async fn try_download(
     store: &Option<crate::store::DownloadStore>,
     fi: &FileInfo,
     repo: &std::path::Path,
-    include_source: bool,
 ) -> DownloadOutcome {
     let dest = repo
         .join("simple")
         .join(&fi.package_name)
         .join(&fi.filename);
-    if (!include_source && is_source_distribution(&fi.filename))
-        || dest.exists()
-    {
+    let in_db = store.as_ref().is_some_and(|s| s.has_file(&fi.filename));
+    let on_disk = store.is_none() && dest.exists();
+    if in_db || on_disk {
         return DownloadOutcome::Skipped(fi.clone());
     }
     let (ok, msg) = download_file(client, fi, &dest).await;
@@ -341,7 +339,11 @@ pub async fn download_pkg_files(
     let mut result = DownloadResult::default();
     let store = crate::store::DownloadStore::open(&repo.join(".store.db")).ok();
     for fi in files {
-        match try_download(client, &store, fi, repo, include_source).await {
+        if !include_source && is_source_distribution(&fi.filename) {
+            result.skipped.push(fi.clone());
+            continue;
+        }
+        match try_download(client, &store, fi, repo).await {
             DownloadOutcome::Skipped(f) => result.skipped.push(f),
             DownloadOutcome::Downloaded(f) => result.downloaded.push(f),
             DownloadOutcome::Failed(f, msg) => result.failed.push((f, msg)),
