@@ -212,8 +212,9 @@ fn populate_provider(
                 continue;
             }
             let cache_key = (pkg.clone(), ver.to_string());
-            let deps_raw =
-                deps_map.get(&cache_key).cloned().unwrap_or_default();
+            let Some(deps_raw) = deps_map.get(&cache_key) else {
+                continue;
+            };
             let deps: Vec<(String, Range<Version>)> = deps_raw
                 .iter()
                 .filter(|(n, _)| pkg_set.contains(n))
