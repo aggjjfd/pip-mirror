@@ -294,3 +294,85 @@ fn test_parse_python_requires_platform_win32_skipped_on_linux() {
     ]);
     assert_eq!(deps.len(), 0);
 }
+
+#[test]
+fn test_parse_python_requires_linux_kept_on_linux() {
+    // Linux 上保留 sys_platform == "linux"
+    let deps = pubgrub::parse_python_requires(&[
+        "inotify>=0.2; sys_platform == 'linux'".to_string(),
+    ]);
+    assert_eq!(deps.len(), 1);
+    assert_eq!(deps[0].0, "inotify");
+}
+
+#[test]
+fn test_parse_python_requires_not_linux_skipped_on_linux() {
+    // Linux 上跳过 platform_system != "Linux"
+    let deps = pubgrub::parse_python_requires(&[
+        "pywin32; platform_system != 'Linux'".to_string(),
+    ]);
+    assert_eq!(deps.len(), 0);
+}
+
+#[test]
+fn test_parse_python_requires_machine_x86_64_kept() {
+    // x86_64 上保留 platform_machine == "x86_64"
+    let deps = pubgrub::parse_python_requires(&[
+        "cryptography; platform_machine == 'x86_64'".to_string(),
+    ]);
+    assert_eq!(deps.len(), 1);
+    assert_eq!(deps[0].0, "cryptography");
+}
+
+#[test]
+fn test_parse_python_requires_machine_arm64_skipped_on_x86() {
+    // x86_64 上跳过 platform_machine == "arm64"
+    let deps = pubgrub::parse_python_requires(&[
+        "pyobjc; platform_machine == 'arm64'".to_string(),
+    ]);
+    assert_eq!(deps.len(), 0);
+}
+
+#[test]
+fn test_parse_python_requires_os_name_posix_kept_on_linux() {
+    // Linux 上保留 os_name == "posix"
+    let deps = pubgrub::parse_python_requires(&[
+        "ptyprocess; os_name == 'posix'".to_string(),
+    ]);
+    assert_eq!(deps.len(), 1);
+    assert_eq!(deps[0].0, "ptyprocess");
+}
+
+#[test]
+fn test_parse_python_requires_and_combination() {
+    // and 组合：两个条件都满足才保留
+    // platform_system != "Darwin" (Linux 满足) and python_version >= "3.8" (不确定，保守保留)
+    let deps = pubgrub::parse_python_requires(&[
+        "watchdog>=2.1.5; platform_system != 'Darwin' and python_version >= '3.8'"
+            .to_string(),
+    ]);
+    assert_eq!(deps.len(), 1);
+}
+
+#[test]
+fn test_parse_python_requires_or_combination() {
+    // or 组合：任一条件满足就保留
+    // sys_platform == "linux" (Linux 满足) or sys_platform == "darwin"
+    let deps = pubgrub::parse_python_requires(&[
+        "inotify>=0.2; sys_platform == 'linux' or sys_platform == 'darwin'"
+            .to_string(),
+    ]);
+    assert_eq!(deps.len(), 1);
+    assert_eq!(deps[0].0, "inotify");
+}
+
+#[test]
+fn test_parse_python_requires_or_all_skip() {
+    // or 组合：所有条件都不满足 → 跳过
+    // sys_platform == "darwin" (不满足) or sys_platform == "win32" (不满足)
+    let deps = pubgrub::parse_python_requires(&[
+        "pyobjc; sys_platform == 'darwin' or sys_platform == 'win32'"
+            .to_string(),
+    ]);
+    assert_eq!(deps.len(), 0);
+}

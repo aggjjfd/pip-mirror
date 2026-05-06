@@ -90,10 +90,9 @@ fn test_collect_version_files_filters_platform() {
         },
     ];
     let result = downloader::collect_version_files(&files);
-    // linux wheel accepted, macos rejected, sdist accepted
-    assert_eq!(result.len(), 2);
+    // linux wheel accepted, macos rejected, sdist skipped (same version has whl)
+    assert_eq!(result.len(), 1);
     assert!(result.iter().any(|f| f.filename.contains("manylinux")));
-    assert!(result.iter().any(|f| f.filename.ends_with(".tar.gz")));
 }
 
 #[test]

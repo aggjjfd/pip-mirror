@@ -144,16 +144,26 @@ pub fn select_latest_versions(
 }
 
 /// Collect all accepted wheels and sdists for a version.
+/// If a version has any accepted wheel, only wheels are kept (sdist skipped).
+/// If a version has no wheel, sdist is kept as fallback.
 pub fn collect_version_files(files: &[FileInfo]) -> Vec<FileInfo> {
-    files
-        .iter()
-        .filter(|fi| {
-            let is_whl = fi.filename.ends_with(".whl");
-            is_whl && is_accepted_wheel(&fi.filename)
-                || !is_whl && is_source_distribution(&fi.filename)
-        })
-        .cloned()
-        .collect()
+    let mut whl_versions = HashSet::new();
+    let mut result = Vec::with_capacity(files.len());
+    for fi in files {
+        if fi.filename.ends_with(".whl") && is_accepted_wheel(&fi.filename) {
+            whl_versions.insert(fi.version.clone());
+            result.push(fi.clone());
+        }
+    }
+    for fi in files {
+        if !fi.filename.ends_with(".whl")
+            && is_source_distribution(&fi.filename)
+            && !whl_versions.contains(&fi.version)
+        {
+            result.push(fi.clone());
+        }
+    }
+    result
 }
 
 /// Check if a version has a wheel covering the given target platform.

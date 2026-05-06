@@ -189,25 +189,67 @@ pub fn spec_to_range(spec: &str) -> Range<Version> {
     range
 }
 
-fn skip_by_platform(marker: &str) -> bool {
-    let os = std::env::consts::OS;
-    let m = marker.trim().to_lowercase();
-    for (keyword, target_os) in &[
-        ("darwin", "macos"),
-        ("win32", "windows"),
-        ("windows", "windows"),
-    ] {
-        if !m.contains(keyword) {
-            continue;
+/// 获取当前运行时环境变量值（PEP 508 规范）。
+fn env_value(var: &str) -> Option<String> {
+    match var {
+        "sys_platform" | "platform_system" => {
+            Some(std::env::consts::OS.to_lowercase())
         }
-        if m.contains("==") && os != *target_os {
-            return true;
-        }
-        if m.contains("!=") && os == *target_os {
-            return true;
-        }
+        "platform_machine" => Some(std::env::consts::ARCH.to_lowercase()),
+        "os_name" => Some(if std::env::consts::OS == "windows" {
+            "nt".to_string()
+        } else {
+            "posix".to_string()
+        }),
+        _ => None,
     }
-    false
+}
+
+/// 评估简单条件 `(变量 ==/!= 值)`。
+/// 返回 Some(true)  表示当前平台明确满足。
+/// 返回 Some(false) 表示当前平台明确不满足。
+/// 返回 None        表示无法评估（保守保留）。
+fn eval_simple_condition(cond: &str) -> Option<bool> {
+    for op in ["==", "!="] {
+        let Some((var, val)) = cond.split_once(op) else {
+            continue;
+        };
+        let current = env_value(var.trim())?;
+        let expected = val
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_lowercase();
+        let matches = current == expected;
+        return Some(if op == "==" { matches } else { !matches });
+    }
+    None
+}
+
+fn any_part_keeps(marker: &str) -> bool {
+    marker
+        .split(" or ")
+        .any(|p| eval_simple_condition(p.trim()) == Some(true))
+}
+
+fn any_part_skips(marker: &str) -> bool {
+    marker
+        .split(" and ")
+        .any(|p| eval_simple_condition(p.trim()) == Some(false))
+}
+
+/// 判断平台标记在当前运行时是否明确不满足（应跳过）。
+/// 支持 `and` / `or` 组合。
+fn skip_by_platform(marker: &str) -> bool {
+    let m = marker.trim().to_lowercase();
+
+    if m.contains(" or ") {
+        return !any_part_keeps(&m);
+    }
+    if m.contains(" and ") {
+        return any_part_skips(&m);
+    }
+    eval_simple_condition(&m) == Some(false)
 }
 
 fn should_skip_marker(marker: &str) -> bool {
