@@ -1,4 +1,6 @@
+use pip_mirror::downloader::FileInfo;
 use pip_mirror::filters;
+use pip_mirror::resolver::types::TargetEnv;
 
 const ACCEPTED_WHEELS: &[&str] = &[
     // 复合 manylinux tag（PEP 600 OR 语义）
@@ -129,4 +131,75 @@ fn test_normalize_name() {
             "normalize({raw})"
         );
     }
+}
+
+fn linux_target(py: &str) -> TargetEnv {
+    TargetEnv {
+        python_version: py.to_string(),
+        python_full_version: format!("{py}.0"),
+        sys_platform: "linux".to_string(),
+        platform_machine: "x86_64".to_string(),
+        platform_system: "Linux".to_string(),
+        os_name: "posix".to_string(),
+        implementation_name: "cpython".to_string(),
+        platform_python_implementation: "CPython".to_string(),
+        implementation_version: format!("{py}.0"),
+    }
+}
+
+fn file_info(filename: &str) -> FileInfo {
+    FileInfo {
+        filename: filename.to_string(),
+        url: format!("https://example.invalid/{filename}"),
+        sha256: None,
+        size: None,
+        package_name: "pyarrow".to_string(),
+        version: "24.0.0".to_string(),
+    }
+}
+
+#[test]
+fn test_wheel_installability_respects_python_minor() {
+    let py312 = linux_target("3.12");
+    assert!(filters::wheel_is_installable_for_target(
+        "pyarrow-24.0.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+        &py312,
+        "2.39",
+    ));
+    assert!(!filters::wheel_is_installable_for_target(
+        "pyarrow-24.0.0-cp313-cp313-manylinux_2_28_x86_64.whl",
+        &py312,
+        "2.39",
+    ));
+    assert!(!filters::wheel_is_installable_for_target(
+        "pyarrow-24.0.0-cp314-cp314-manylinux_2_28_x86_64.whl",
+        &py312,
+        "2.39",
+    ));
+}
+
+#[test]
+fn test_select_files_skips_future_python_wheels() {
+    let files = vec![
+        file_info("pyarrow-24.0.0-cp312-cp312-manylinux_2_28_x86_64.whl"),
+        file_info("pyarrow-24.0.0-cp313-cp313-manylinux_2_28_x86_64.whl"),
+        file_info("pyarrow-24.0.0-cp314-cp314-manylinux_2_28_x86_64.whl"),
+    ];
+    let targets = TargetEnv::all_resolution_targets();
+    let selected =
+        filters::select_files_for_version(&files, &targets, true, "2.39");
+    let names: Vec<&str> =
+        selected.iter().map(|fi| fi.filename.as_str()).collect();
+
+    assert!(
+        names.contains(&"pyarrow-24.0.0-cp312-cp312-manylinux_2_28_x86_64.whl")
+    );
+    assert!(
+        !names
+            .contains(&"pyarrow-24.0.0-cp313-cp313-manylinux_2_28_x86_64.whl")
+    );
+    assert!(
+        !names
+            .contains(&"pyarrow-24.0.0-cp314-cp314-manylinux_2_28_x86_64.whl")
+    );
 }

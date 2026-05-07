@@ -222,16 +222,21 @@ async fn collect_planned_files(
     cache: &MetadataCache,
     expanded: &DashMap<String, Vec<Version>>,
 ) -> Result<Vec<FileInfo>, ResolveError> {
+    let targets = super::types::TargetEnv::all_resolution_targets();
     let jobs = build_file_jobs(expanded);
     let results = stream::iter(jobs)
-        .map(|(index, package, version)| async move {
-            let files = cache.get_version_files(&package, &version).await?;
-            let selected = crate::filters::select_files_for_version(
-                &files,
-                params.include_source,
-                params.linux_max_glibc,
-            );
-            Ok::<_, ResolveError>((index, selected))
+        .map(|(index, package, version)| {
+            let targets = &targets;
+            async move {
+                let files = cache.get_version_files(&package, &version).await?;
+                let selected = crate::filters::select_files_for_version(
+                    &files,
+                    targets,
+                    params.include_source,
+                    params.linux_max_glibc,
+                );
+                Ok::<_, ResolveError>((index, selected))
+            }
         })
         .buffer_unordered(params.metadata_workers)
         .collect::<Vec<_>>()

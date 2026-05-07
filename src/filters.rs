@@ -118,12 +118,89 @@ pub fn is_accepted_wheel_with_glibc(filename: &str, max_glibc: &str) -> bool {
 /// Parse the platform tag(s) from a wheel filename.
 /// Returns `None` if the file is not a `.whl`.
 pub fn parse_wheel_platform(filename: &str) -> Option<Vec<&str>> {
+    parse_wheel_tags(filename).map(|(_, _, platform_tags)| platform_tags)
+}
+
+fn parse_wheel_tags(
+    filename: &str,
+) -> Option<(Vec<&str>, Vec<&str>, Vec<&str>)> {
     if !filename.ends_with(".whl") {
         return None;
     }
     let stem = &filename[..filename.len() - 4];
     let parts: Vec<&str> = stem.split('-').collect();
-    (parts.len() >= 5).then(|| parts[parts.len() - 1].split('.').collect())
+    if parts.len() < 5 {
+        return None;
+    }
+    let py_tags = parts[parts.len() - 3].split('.').collect();
+    let abi_tags = parts[parts.len() - 2].split('.').collect();
+    let platform_tags = parts[parts.len() - 1].split('.').collect();
+    Some((py_tags, abi_tags, platform_tags))
+}
+
+fn parse_minor_from_tag(tag: &str, prefix: &str) -> Option<u32> {
+    let raw = tag.strip_prefix(prefix)?;
+    let digits: String =
+        raw.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.len() < 2 {
+        return None;
+    }
+    let major = digits[0..1].parse::<u32>().ok()?;
+    let minor = digits[1..].parse::<u32>().ok()?;
+    (major == 3).then_some(minor)
+}
+
+fn target_python_minor(target: &TargetEnv) -> Option<u32> {
+    let mut parts = target.python_version.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next()?.parse::<u32>().ok()?;
+    (major == 3).then_some(minor)
+}
+
+fn py_tag_matches_target(py_tag: &str, target_minor: u32) -> bool {
+    if py_tag == "py3" {
+        return true;
+    }
+    parse_minor_from_tag(py_tag, "cp")
+        .or_else(|| parse_minor_from_tag(py_tag, "py"))
+        .is_some_and(|minor| minor == target_minor)
+}
+
+fn abi_tag_matches_target(
+    abi_tag: &str,
+    target_minor: u32,
+    min_cp_minor: Option<u32>,
+) -> bool {
+    if abi_tag == "none" {
+        return true;
+    }
+    if abi_tag == "abi3" {
+        return min_cp_minor.is_none_or(|minor| target_minor >= minor);
+    }
+    if abi_tag.ends_with('t') {
+        return false;
+    }
+    parse_minor_from_tag(abi_tag, "cp")
+        .is_some_and(|minor| minor == target_minor)
+}
+
+fn python_abi_matches_target(filename: &str, target: &TargetEnv) -> bool {
+    let Some((py_tags, abi_tags, _)) = parse_wheel_tags(filename) else {
+        return false;
+    };
+    let Some(target_minor) = target_python_minor(target) else {
+        return false;
+    };
+    let min_cp_minor = py_tags
+        .iter()
+        .filter_map(|tag| parse_minor_from_tag(tag, "cp"))
+        .min();
+    py_tags
+        .iter()
+        .any(|py_tag| py_tag_matches_target(py_tag, target_minor))
+        && abi_tags.iter().any(|abi_tag| {
+            abi_tag_matches_target(abi_tag, target_minor, min_cp_minor)
+        })
 }
 
 /// Map a wheel platform sub-tag → set of target platform names.
@@ -229,6 +306,9 @@ pub fn wheel_is_installable_for_target(
     target: &TargetEnv,
     max_glibc: &str,
 ) -> bool {
+    if !python_abi_matches_target(filename, target) {
+        return false;
+    }
     let Some(target_key) = target_platform_key(target) else {
         return false;
     };
@@ -261,12 +341,26 @@ pub fn version_is_installable_for_target(
 
 // ── file selection helpers ──
 
+fn wheel_is_download_candidate(
+    fi: &FileInfo,
+    targets: &[TargetEnv],
+    max_glibc: &str,
+    glibc: (u32, u32),
+) -> bool {
+    fi.filename.ends_with(".whl")
+        && is_accepted_wheel_impl(&fi.filename, glibc)
+        && targets.iter().any(|target| {
+            wheel_is_installable_for_target(&fi.filename, target, max_glibc)
+        })
+}
+
 /// Select files for a single package@version under the given policy.
 ///
 /// Returns the kept wheels; if no wheel is kept and `include_source` is true,
 /// falls back to the sdist.
 pub fn select_files_for_version(
     files: &[FileInfo],
+    targets: &[TargetEnv],
     include_source: bool,
     max_glibc: &str,
 ) -> Vec<FileInfo> {
@@ -274,9 +368,7 @@ pub fn select_files_for_version(
 
     let mut kept_wheels = Vec::new();
     for fi in files {
-        if fi.filename.ends_with(".whl")
-            && is_accepted_wheel_impl(&fi.filename, glibc)
-        {
+        if wheel_is_download_candidate(fi, targets, max_glibc, glibc) {
             kept_wheels.push(fi.clone());
         }
     }

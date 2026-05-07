@@ -200,6 +200,7 @@ async fn build_top_only_plan(
     );
     let mut planned_files = Vec::new();
     let solved_versions: DashMap<String, Vec<Version>> = DashMap::new();
+    let targets = crate::resolver::types::TargetEnv::all_resolution_targets();
 
     for pkg in pkgs {
         let package = bare_name(pkg);
@@ -214,6 +215,7 @@ async fn build_top_only_plan(
             let files = cache.get_version_files(&package, &version).await?;
             let selected = crate::filters::select_files_for_version(
                 &files,
+                &targets,
                 config.include_source,
                 &config.linux_max_glibc,
             );
