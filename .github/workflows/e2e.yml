@@ -475,7 +475,7 @@ jobs:
             Write-Host "uv python find 3.12 -> $pybin"
             & "$pybin" --version
             if ($LASTEXITCODE -ne 0) { throw 'invoking installed python failed' }
-            $hits = & sqlite3 'C:\stage\packages\.access_log.db' "SELECT COUNT(*) FROM access_log WHERE path LIKE '/python-builds/%';"
+            $hits = (& C:\client\Scripts\python.exe -c "import sqlite3; conn=sqlite3.connect(r'C:\stage\packages\.access_log.db'); print(conn.execute(\"SELECT COUNT(*) FROM access_log WHERE path LIKE '/python-builds/%';\").fetchone()[0]); conn.close()").Trim()
             Write-Host "python-builds hits in mirror access_log: $hits"
             if ([int]$hits -lt 1) {
               throw 'access_log has zero /python-builds/ hits — uv may have bypassed mirror'
