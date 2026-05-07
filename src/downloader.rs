@@ -275,6 +275,7 @@ async fn try_download(
     }
     let (ok, msg) = download_file(client, fi, &dest).await;
     if ok {
+        tracing::info!("下载完成: {}", fi.filename);
         if let Some(s) = store {
             s.record_download(fi, &dest).await;
         }

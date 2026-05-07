@@ -197,7 +197,7 @@ async fn cmd_sync_full(
     info!("全量同步: {} 个包", pkgs.len());
     pip_mirror::sync::clean_repo(&config.repository_dir)?;
     let (client, _downloaded) =
-        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, false).await?;
+        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true).await?;
     pip_mirror::sync::finalize_mirror(&client, &config.repository_dir).await
 }
 
