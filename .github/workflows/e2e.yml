@@ -69,8 +69,8 @@ jobs:
           incremental_dir = "/tmp/wan/incremental"
           include_source = true
           workers = 16
-          max_versions = 5
-          max_depth = 3
+          top_versions_per_package = 5
+          adjacent_versions_per_side = 3
           TOML
           cat > wan-inc.toml <<'TOML'
           packages = [
@@ -87,7 +87,7 @@ jobs:
           incremental_dir = "/tmp/wan/incremental"
           include_source = true
           workers = 16
-          max_versions = 5
+          top_versions_per_package = 5
           TOML
           cat > lan.toml <<'TOML'
           packages = ["requests"]

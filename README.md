@@ -204,8 +204,8 @@ pypi_url = "https://pypi.org"
 index_url = "https://mirrors.ustc.edu.cn/pypi/simple"
 include_source = true
 workers = 4
-max_depth = 3
-max_versions = 5
+adjacent_versions_per_side = 3
+top_versions_per_package = 5
 allow_prerelease = false
 server_host = "0.0.0.0"
 server_port = 8080
@@ -220,8 +220,8 @@ server_port = 8080
 - `index_url`：Simple Index 源，用于实际下载文件。默认 `https://mirrors.ustc.edu.cn/pypi/simple`（国内可换清华、阿里云）。
 - `include_source`：缺平台 wheel 时是否回退 sdist，默认 `true`。
 - `workers`：并发下载任务数，默认 `4`。
-- `max_depth`：依赖解析深度，默认 `3`。
-- `max_versions`：每个包保留的最新版本数，默认 `5`。`0` 表示保留全部版本。
+- `adjacent_versions_per_side`：每个已解析版本两侧保留的相邻版本数，默认 `3`。
+- `top_versions_per_package`：每个包保留的最新版本数，默认 `5`。`0` 表示保留全部版本。
 - `allow_prerelease`：是否下载预发行版（rc/alpha/beta/dev），默认 `false`。
 - `server_host` / `server_port`：`pip-mirror serve` 的监听地址，默认 `0.0.0.0` / `8080`。
 
