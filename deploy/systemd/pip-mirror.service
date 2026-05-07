@@ -1,0 +1,17 @@
+[Unit]
+Description=pip-mirror private PyPI server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pipmirror
+Group=pipmirror
+WorkingDirectory=/var/lib/pip-mirror
+ExecStart=/usr/local/bin/pip-mirror serve -c /etc/pip-mirror/pip-mirror.toml
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
