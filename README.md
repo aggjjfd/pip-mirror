@@ -5,7 +5,7 @@
 特性
 
 - 同步 PyPI 包并自动解析依赖
-- 同步 `python-build-standalone` 解释器（uv 兼容）
+- 同步 `python-build-standalone` 解释器（uv 兼容，当前覆盖 CPython 3.8-3.12）
 - PEP 503 / PEP 658 / PEP 691 索引（含 sha256 与独立 metadata）
 - SQLite 增量记录，跳过已下载文件
 - 内置 HTTP server，支持反代 `X-Forwarded-For`，记录访问日志

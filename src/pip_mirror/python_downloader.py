@@ -22,7 +22,7 @@ logger = logging.getLogger("pip-mirror")
 _UV_METADATA_URL = (
     "https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json"
 )
-_TARGET_MINORS = {8, 9, 10, 11, 12, 13, 14}
+_TARGET_MINORS = {8, 9, 10, 11, 12}
 
 
 def _fetch_uv_metadata(session: requests.Session) -> dict:

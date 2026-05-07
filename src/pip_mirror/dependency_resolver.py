@@ -44,29 +44,23 @@ class DepConstraint:
     specifier: str
 
 
-# 21 个 target: 7 Python 版本 × 3 平台
+# 15 个 target: 5 Python 版本 × 3 平台
 _TARGET_ENVS: list[TargetEnv] = [
     TargetEnv("3.8",  "3.8.0",  "linux",   "x86_64"),
     TargetEnv("3.9",  "3.9.0",  "linux",   "x86_64"),
     TargetEnv("3.10", "3.10.0", "linux",   "x86_64"),
     TargetEnv("3.11", "3.11.0", "linux",   "x86_64"),
     TargetEnv("3.12", "3.12.0", "linux",   "x86_64"),
-    TargetEnv("3.13", "3.13.0", "linux",   "x86_64"),
-    TargetEnv("3.14", "3.14.0", "linux",   "x86_64"),
     TargetEnv("3.8",  "3.8.0",  "win32",   "x86"),
     TargetEnv("3.9",  "3.9.0",  "win32",   "x86"),
     TargetEnv("3.10", "3.10.0", "win32",   "x86"),
     TargetEnv("3.11", "3.11.0", "win32",   "x86"),
     TargetEnv("3.12", "3.12.0", "win32",   "x86"),
-    TargetEnv("3.13", "3.13.0", "win32",   "x86"),
-    TargetEnv("3.14", "3.14.0", "win32",   "x86"),
     TargetEnv("3.8",  "3.8.0",  "win32",   "AMD64"),
     TargetEnv("3.9",  "3.9.0",  "win32",   "AMD64"),
     TargetEnv("3.10", "3.10.0", "win32",   "AMD64"),
     TargetEnv("3.11", "3.11.0", "win32",   "AMD64"),
     TargetEnv("3.12", "3.12.0", "win32",   "AMD64"),
-    TargetEnv("3.13", "3.13.0", "win32",   "AMD64"),
-    TargetEnv("3.14", "3.14.0", "win32",   "AMD64"),
 ]
 
 
@@ -552,7 +546,7 @@ def resolve_dependencies(
     target_solutions: list[dict[str, str]] = []
 
     with make_session() as session:
-        # 并发对 21 个 target 调用 SAT 求解
+        # 并发对 15 个 target 调用 SAT 求解
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
                 executor.submit(

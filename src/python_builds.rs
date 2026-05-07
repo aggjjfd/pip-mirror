@@ -7,7 +7,7 @@ use tracing::info;
 
 const UV_METADATA_URL: &str = "https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json";
 
-const TARGET_MINORS: &[u32] = &[8, 9, 10, 11, 12, 13, 14];
+const TARGET_MINORS: &[u32] = &[8, 9, 10, 11, 12];
 
 /// Allowed (os, arch_family, libc) triplets for python-build-standalone.
 const PLATFORM_TRIPLETS: &[(&str, &str, &str)] =

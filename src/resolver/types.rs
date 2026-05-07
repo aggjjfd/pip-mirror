@@ -1,7 +1,7 @@
 use std::fmt;
 
 pub const SUPPORTED_PYTHON_MINORS: &[&str] =
-    &["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"];
+    &["3.8", "3.9", "3.10", "3.11", "3.12"];
 
 pub const SUPPORTED_RESOLUTION_TARGETS: &[(&str, &str, &str, &str)] = &[
     ("linux", "Linux", "x86_64", "posix"),

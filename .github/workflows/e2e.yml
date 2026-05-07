@@ -177,15 +177,16 @@ jobs:
           uv pip install --index-url "http://${MIRROR_HOST}:${MIRROR_PORT}/simple" requests
           /tmp/client1/bin/python -c "import requests; print('client1 requests', requests.__version__)"
 
-      - name: '客户端第一次下载 — uv python install 3.13 via 内网镜像'
+      - name: '客户端第一次下载 — uv python install 3.12 via 内网镜像'
         run: |
           set -euo pipefail
           export UV_PYTHON_DOWNLOADS_JSON_URL="http://${MIRROR_HOST}:${MIRROR_PORT}/python-builds/index.json"
           export UV_PYTHON_INSTALL_DIR=/tmp/uv-pythons
-          uv python install 3.13
+          export UV_PYTHON_PREFERENCE=managed-only
+          uv python install 3.12
           ls /tmp/uv-pythons
-          PYBIN=$(uv python find 3.13)
-          echo "uv python find 3.13 → $PYBIN"
+          PYBIN=$(uv python find 3.12)
+          echo "uv python find 3.12 → $PYBIN"
           "$PYBIN" --version
           # 确认服务器真的被打过 python-builds 流量
           PYHITS=$(sqlite3 /tmp/lan/packages/.access_log.db \
@@ -459,15 +460,16 @@ jobs:
           Write-Host "OK: charset_normalizer installed wheel tag(s):"
           $tagLines | ForEach-Object { Write-Host "  $_" }
 
-      - name: 'Client — uv python install 3.13 via mirror python-builds index (Windows)'
+      - name: 'Client — uv python install 3.12 via mirror python-builds index (Windows)'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $env:UV_PYTHON_DOWNLOADS_JSON_URL = "http://$($env:MIRROR_HOST):$($env:MIRROR_PORT)/python-builds/index.json"
           $env:UV_PYTHON_INSTALL_DIR = 'C:\uv-pythons'
-          uv python install 3.13
-          $pybin = (uv python find 3.13).Trim()
-          Write-Host "uv python find 3.13 -> $pybin"
+          $env:UV_PYTHON_PREFERENCE = 'managed-only'
+          uv python install 3.12
+          $pybin = (uv python find 3.12).Trim()
+          Write-Host "uv python find 3.12 -> $pybin"
           & "$pybin" --version
           $hits = & sqlite3 'C:\stage\packages\.access_log.db' "SELECT COUNT(*) FROM access_log WHERE path LIKE '/python-builds/%';"
           Write-Host "python-builds hits in mirror access_log: $hits"

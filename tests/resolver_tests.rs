@@ -283,8 +283,8 @@ fn test_parse_requires_dist_direct_url_is_error() {
 fn test_all_resolution_targets_count() {
     use pip_mirror::resolver::types::TargetEnv;
     let targets = TargetEnv::all_resolution_targets();
-    // 7 python versions × 3 platforms = 21
-    assert_eq!(targets.len(), 21);
+    // 5 python versions × 3 platforms = 15
+    assert_eq!(targets.len(), 15);
 }
 
 #[test]
