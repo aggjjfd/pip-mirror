@@ -421,17 +421,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          function Invoke-Checked {
-            param(
-              [string]$FilePath,
-              [string[]]$Args
-            )
-            & $FilePath @Args
-            if ($LASTEXITCODE -ne 0) {
-              throw "Command failed ($LASTEXITCODE): $FilePath $($Args -join ' ')"
-            }
-          }
-
           $bin = "$(Get-Location)\target\release\pip-mirror.exe"
           $proc = $null
           try {
@@ -455,10 +444,13 @@ jobs:
               throw 'server did not come up within 60 s'
             }
 
-            Invoke-Checked uv @('venv', 'C:\client')
+            uv venv C:\client
+            if ($LASTEXITCODE -ne 0) { throw 'uv venv C:\client failed' }
             $env:VIRTUAL_ENV = 'C:\client'
-            Invoke-Checked uv @('pip', 'install', '--index-url', "http://$($env:MIRROR_HOST):$($env:MIRROR_PORT)/simple", 'requests')
-            Invoke-Checked 'C:\client\Scripts\python.exe' @('-c', "import requests; print('client requests', requests.__version__)")
+            uv pip install --index-url "http://$($env:MIRROR_HOST):$($env:MIRROR_PORT)/simple" requests
+            if ($LASTEXITCODE -ne 0) { throw 'uv pip install requests failed' }
+            & C:\client\Scripts\python.exe -c "import requests; print('client requests', requests.__version__)"
+            if ($LASTEXITCODE -ne 0) { throw 'client python import requests failed' }
 
             $info = Get-ChildItem C:\client\Lib\site-packages -Directory `
               | Where-Object { $_.Name -like 'charset_normalizer-*.dist-info' } | Select-Object -First 1
@@ -477,10 +469,12 @@ jobs:
             $env:UV_PYTHON_DOWNLOADS_JSON_URL = "http://$($env:MIRROR_HOST):$($env:MIRROR_PORT)/python-builds/index.json"
             $env:UV_PYTHON_INSTALL_DIR = 'C:\uv-pythons'
             $env:UV_PYTHON_PREFERENCE = 'only-managed'
-            Invoke-Checked uv @('python', 'install', '3.12')
+            uv python install 3.12
+            if ($LASTEXITCODE -ne 0) { throw 'uv python install 3.12 failed' }
             $pybin = (uv python find 3.12).Trim()
             Write-Host "uv python find 3.12 -> $pybin"
-            Invoke-Checked $pybin @('--version')
+            & "$pybin" --version
+            if ($LASTEXITCODE -ne 0) { throw 'invoking installed python failed' }
             $hits = & sqlite3 'C:\stage\packages\.access_log.db' "SELECT COUNT(*) FROM access_log WHERE path LIKE '/python-builds/%';"
             Write-Host "python-builds hits in mirror access_log: $hits"
             if ([int]$hits -lt 1) {
