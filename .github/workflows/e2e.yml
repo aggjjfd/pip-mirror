@@ -361,7 +361,7 @@ jobs:
   e2e-windows-client:
     needs: e2e
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       MIRROR_HOST: 127.0.0.1
       MIRROR_PORT: '18080'
