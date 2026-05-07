@@ -157,31 +157,42 @@ fn target_python_minor(target: &TargetEnv) -> Option<u32> {
     (major == 3).then_some(minor)
 }
 
+fn py_tag_minor(py_tag: &str) -> Option<u32> {
+    parse_minor_from_tag(py_tag, "cp")
+        .or_else(|| parse_minor_from_tag(py_tag, "py"))
+}
+
 fn py_tag_matches_target(py_tag: &str, target_minor: u32) -> bool {
     if py_tag == "py3" {
         return true;
     }
-    parse_minor_from_tag(py_tag, "cp")
-        .or_else(|| parse_minor_from_tag(py_tag, "py"))
-        .is_some_and(|minor| minor == target_minor)
+    py_tag_minor(py_tag).is_some_and(|minor| minor == target_minor)
 }
 
-fn abi_tag_matches_target(
-    abi_tag: &str,
-    target_minor: u32,
-    min_cp_minor: Option<u32>,
-) -> bool {
-    if abi_tag == "none" {
+fn abi3_pair_matches(py_tag: &str, target_minor: u32) -> bool {
+    if py_tag == "py3" {
         return true;
     }
-    if abi_tag == "abi3" {
-        return min_cp_minor.is_none_or(|minor| target_minor >= minor);
-    }
+    py_tag_minor(py_tag).is_some_and(|minor| target_minor >= minor)
+}
+
+fn tag_pair_matches_target(
+    py_tag: &str,
+    abi_tag: &str,
+    target_minor: u32,
+) -> bool {
     if abi_tag.ends_with('t') {
         return false;
     }
-    parse_minor_from_tag(abi_tag, "cp")
-        .is_some_and(|minor| minor == target_minor)
+    if abi_tag == "abi3" {
+        return abi3_pair_matches(py_tag, target_minor);
+    }
+    if abi_tag == "none" {
+        return py_tag_matches_target(py_tag, target_minor);
+    }
+    parse_minor_from_tag(abi_tag, "cp").is_some_and(|minor| {
+        minor == target_minor && py_tag_matches_target(py_tag, target_minor)
+    })
 }
 
 fn python_abi_matches_target(filename: &str, target: &TargetEnv) -> bool {
@@ -191,16 +202,11 @@ fn python_abi_matches_target(filename: &str, target: &TargetEnv) -> bool {
     let Some(target_minor) = target_python_minor(target) else {
         return false;
     };
-    let min_cp_minor = py_tags
-        .iter()
-        .filter_map(|tag| parse_minor_from_tag(tag, "cp"))
-        .min();
-    py_tags
-        .iter()
-        .any(|py_tag| py_tag_matches_target(py_tag, target_minor))
-        && abi_tags.iter().any(|abi_tag| {
-            abi_tag_matches_target(abi_tag, target_minor, min_cp_minor)
+    py_tags.iter().any(|py_tag| {
+        abi_tags.iter().any(|abi_tag| {
+            tag_pair_matches_target(py_tag, abi_tag, target_minor)
         })
+    })
 }
 
 /// Map a wheel platform sub-tag → set of target platform names.

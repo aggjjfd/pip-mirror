@@ -176,6 +176,16 @@ fn test_wheel_installability_respects_python_minor() {
         &py312,
         "2.39",
     ));
+    assert!(filters::wheel_is_installable_for_target(
+        "hf_xet-1.5.0-cp39-abi3-manylinux_2_28_x86_64.whl",
+        &py312,
+        "2.39",
+    ));
+    assert!(!filters::wheel_is_installable_for_target(
+        "hf_xet-1.5.0-cp313-abi3-manylinux_2_28_x86_64.whl",
+        &py312,
+        "2.39",
+    ));
 }
 
 #[test]
