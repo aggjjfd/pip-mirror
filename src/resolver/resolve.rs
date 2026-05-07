@@ -162,7 +162,7 @@ fn build_solve_jobs(
     targets: &[TargetEnv],
 ) -> Vec<SolveJob> {
     let mut packages: Vec<_> = top_versions.iter().collect();
-    packages.sort_by(|(left, _), (right, _)| left.cmp(right));
+    packages.sort_by_key(|(package, _)| *package);
 
     packages
         .into_iter()

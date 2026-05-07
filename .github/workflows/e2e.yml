@@ -18,7 +18,7 @@ name: E2E (Four Modes)
 #   incremental 追加（3 深依赖包）: gradio + streamlit + markitdown[pptx,docx,xls,xlsx,pdf]
 #
 # CI 上 CPU 弱网络强：
-#   - workers 拉到 16
+#   - resolve/download 并发拉到 16，metadata 并发拉到 32
 #   - PIP_MIRROR_TAR_COMPRESSION=none → mirror.tar.gz 内部不压缩
 
 on:
@@ -68,7 +68,9 @@ jobs:
           repository_dir = "/tmp/wan/packages"
           incremental_dir = "/tmp/wan/incremental"
           include_source = true
-          workers = 16
+          resolve_workers = 16
+          metadata_workers = 32
+          download_workers = 16
           top_versions_per_package = 5
           adjacent_versions_per_side = 3
           TOML
@@ -86,7 +88,9 @@ jobs:
           repository_dir = "/tmp/wan/packages"
           incremental_dir = "/tmp/wan/incremental"
           include_source = true
-          workers = 16
+          resolve_workers = 16
+          metadata_workers = 32
+          download_workers = 16
           top_versions_per_package = 5
           TOML
           cat > lan.toml <<'TOML'
