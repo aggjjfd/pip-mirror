@@ -2,6 +2,7 @@ use std::str::FromStr;
 
 use futures::{StreamExt, stream};
 use pep440_rs::{Version, VersionSpecifiers};
+use pubgrub::Range;
 
 use crate::filters::version_is_installable_for_target;
 
@@ -9,7 +10,7 @@ use super::error::ResolveError;
 use super::metadata::MetadataCache;
 use super::types::TargetEnv;
 
-const VERSION_MATCH_CONCURRENCY: usize = 16;
+const MAX_VERSION_MATCH_CHECKS_PER_PACKAGE: usize = 16;
 
 pub struct SolveContext<'a> {
     pub cache: &'a MetadataCache,
@@ -17,6 +18,7 @@ pub struct SolveContext<'a> {
     pub allow_prerelease: bool,
     pub include_source: bool,
     pub linux_max_glibc: &'a str,
+    pub metadata_workers: usize,
 }
 
 pub async fn version_matches_target(
@@ -44,7 +46,7 @@ pub async fn version_matches_target(
 pub async fn candidate_versions_for_package(
     ctx: &SolveContext<'_>,
     package: &str,
-    matches_range: impl Fn(&Version) -> bool,
+    matches_range: &Range<Version>,
 ) -> Result<Vec<Version>, ResolveError> {
     let candidate_pool: Vec<Version> =
         build_candidate_pool(ctx, package, matches_range).await?;
@@ -55,7 +57,7 @@ pub async fn candidate_versions_for_package(
 async fn build_candidate_pool(
     ctx: &SolveContext<'_>,
     package: &str,
-    matches_range: impl Fn(&Version) -> bool,
+    matches_range: &Range<Version>,
 ) -> Result<Vec<Version>, ResolveError> {
     Ok(ctx
         .cache
@@ -63,7 +65,7 @@ async fn build_candidate_pool(
         .await?
         .into_iter()
         .filter(|version| ctx.allow_prerelease || !version.any_prerelease())
-        .filter(matches_range)
+        .filter(|version| matches_range.contains(version))
         .collect())
 }
 
@@ -82,7 +84,7 @@ async fn concurrent_match_checks(
                 Ok::<_, ResolveError>((version, matches))
             }
         })
-        .buffer_unordered(VERSION_MATCH_CONCURRENCY)
+        .buffer_unordered(MAX_VERSION_MATCH_CHECKS_PER_PACKAGE)
         .collect::<Vec<_>>()
         .await;
     results.into_iter().collect()
@@ -102,8 +104,9 @@ fn requires_python_matches_target(
     requires_python: &str,
     ctx: &SolveContext<'_>,
 ) -> Result<bool, ResolveError> {
+    let normalized = normalize_requires_python_spec(requires_python);
     let specifiers =
-        VersionSpecifiers::from_str(requires_python).map_err(|err| {
+        VersionSpecifiers::from_str(&normalized).map_err(|err| {
             ResolveError::InvalidRequiresPython {
                 package: package.to_string(),
                 version: version.clone(),
@@ -117,4 +120,13 @@ fn requires_python_matches_target(
 fn target_python_version(target: &TargetEnv) -> Version {
     Version::from_str(&target.python_full_version)
         .expect("supported target Python versions must be valid")
+}
+
+fn normalize_requires_python_spec(requires_python: &str) -> String {
+    requires_python
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(",")
 }

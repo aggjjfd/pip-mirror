@@ -1,3 +1,5 @@
+mod pipeline;
+
 use crate::filters::{
     is_accepted_wheel, is_source_distribution, platform_to_target,
 };
@@ -6,6 +8,7 @@ use reqwest::Client;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 
 pub struct HttpCtx<'a> {
     pub client: &'a Client,
@@ -252,7 +255,7 @@ enum DownloadOutcome {
 
 async fn try_download(
     client: &reqwest::Client,
-    store: &Option<crate::store::DownloadStore>,
+    store: &Option<Arc<crate::store::DownloadStore>>,
     fi: &FileInfo,
     repo: &std::path::Path,
 ) -> DownloadOutcome {
@@ -286,10 +289,8 @@ async fn try_download(
 }
 
 fn should_skip(fi: &FileInfo, include_source: bool) -> bool {
-    if !include_source && is_source_distribution(&fi.filename) {
-        return true;
-    }
-    fi.filename.ends_with(".whl") && !is_accepted_wheel(&fi.filename)
+    (!include_source && is_source_distribution(&fi.filename))
+        || (fi.filename.ends_with(".whl") && !is_accepted_wheel(&fi.filename))
 }
 
 pub async fn download_pkg_files(
@@ -297,19 +298,14 @@ pub async fn download_pkg_files(
     repo: &std::path::Path,
     files: &[FileInfo],
     include_source: bool,
+    download_workers: usize,
 ) -> DownloadResult {
-    let mut result = DownloadResult::default();
-    let store = crate::store::DownloadStore::open(&repo.join(".store.db")).ok();
-    for fi in files {
-        if should_skip(fi, include_source) {
-            result.skipped.push(fi.clone());
-            continue;
-        }
-        match try_download(client, &store, fi, repo).await {
-            DownloadOutcome::Skipped(f) => result.skipped.push(f),
-            DownloadOutcome::Downloaded(f) => result.downloaded.push(f),
-            DownloadOutcome::Failed(f, msg) => result.failed.push((f, msg)),
-        }
-    }
-    result
+    pipeline::run_download_pipeline(
+        client,
+        repo,
+        files,
+        include_source,
+        download_workers,
+    )
+    .await
 }

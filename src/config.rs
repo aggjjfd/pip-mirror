@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 const DEFAULT_INCLUDE_SOURCE: bool = false;
-const DEFAULT_WORKERS: usize = 4;
+const DEFAULT_RESOLVE_WORKERS: usize = 8;
+const DEFAULT_METADATA_WORKERS: usize = 32;
+const DEFAULT_DOWNLOAD_WORKERS: usize = 8;
 const DEFAULT_TOP_VERSIONS_PER_PACKAGE: usize = 5;
 const DEFAULT_ADJACENT_VERSIONS_PER_SIDE: usize = 2;
 const DEFAULT_LINUX_MAX_GLIBC: &str = "2.39";
@@ -25,8 +27,12 @@ pub struct Config {
     pub index_url: String,
     #[serde(default = "default_include_source")]
     pub include_source: bool,
-    #[serde(default = "default_workers")]
-    pub workers: usize,
+    #[serde(default = "default_resolve_workers")]
+    pub resolve_workers: usize,
+    #[serde(default = "default_metadata_workers")]
+    pub metadata_workers: usize,
+    #[serde(default = "default_download_workers")]
+    pub download_workers: usize,
     #[serde(default = "default_top_versions_per_package")]
     pub top_versions_per_package: usize,
     #[serde(default = "default_adjacent_versions_per_side")]
@@ -56,8 +62,14 @@ fn default_index_url() -> String {
 fn default_include_source() -> bool {
     DEFAULT_INCLUDE_SOURCE
 }
-fn default_workers() -> usize {
-    DEFAULT_WORKERS
+fn default_resolve_workers() -> usize {
+    DEFAULT_RESOLVE_WORKERS
+}
+fn default_metadata_workers() -> usize {
+    DEFAULT_METADATA_WORKERS
+}
+fn default_download_workers() -> usize {
+    DEFAULT_DOWNLOAD_WORKERS
 }
 fn default_top_versions_per_package() -> usize {
     DEFAULT_TOP_VERSIONS_PER_PACKAGE
@@ -125,7 +137,9 @@ impl Default for Config {
             pypi_url: default_pypi_url(),
             index_url: default_index_url(),
             include_source: default_include_source(),
-            workers: default_workers(),
+            resolve_workers: default_resolve_workers(),
+            metadata_workers: default_metadata_workers(),
+            download_workers: default_download_workers(),
             top_versions_per_package: default_top_versions_per_package(),
             adjacent_versions_per_side: default_adjacent_versions_per_side(),
             allow_prerelease: false,

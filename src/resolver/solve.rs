@@ -5,25 +5,20 @@ use pubgrub::{
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::eligibility::{SolveContext, candidate_versions_for_package};
+use super::discovery::{DiscoveredClosure, discover_closure};
+use super::eligibility::SolveContext;
 use super::error::ResolveError;
 use super::markers::{ParsedDependency, parse_requires_dist};
 use super::pubgrub::spec_to_range;
 
 const ROOT_PACKAGE: &str = "__root__";
 
-type DependencyKey = (String, Version);
 pub type ActiveExtrasMap = HashMap<String, HashSet<String>>;
 pub type SolvedVersions = HashMap<String, Version>;
 
 pub struct SolveResult {
     pub solved_versions: SolvedVersions,
     pub active_extras: ActiveExtrasMap,
-}
-
-struct DiscoveredClosure {
-    dependencies: HashMap<DependencyKey, Vec<ParsedDependency>>,
-    discovered_versions: HashSet<DependencyKey>,
 }
 
 pub async fn solve_one_target(
@@ -67,54 +62,14 @@ fn initial_active_extras(
     active_extras
 }
 
-async fn discover_closure(
-    ctx: &SolveContext<'_>,
-    root_pkg: &str,
-    root_ver: &Version,
-    active_extras: &ActiveExtrasMap,
-) -> Result<DiscoveredClosure, ResolveError> {
-    let mut dependencies = HashMap::new();
-    let mut discovered_versions = HashSet::new();
-    let mut scheduled_versions =
-        HashSet::from([(root_pkg.to_string(), root_ver.clone())]);
-    let mut seen_constraints: HashMap<String, Vec<Range<Version>>> =
-        HashMap::new();
-    let mut queue = VecDeque::from([(root_pkg.to_string(), root_ver.clone())]);
-
-    while let Some((package, version)) = queue.pop_front() {
-        if !discovered_versions.insert((package.clone(), version.clone())) {
-            continue;
-        }
-
-        let extras = package_extras(active_extras, &package);
-        let parsed =
-            parse_version_dependencies(ctx, &package, &version, &extras)
-                .await?;
-        enqueue_dependency_candidates(
-            ctx,
-            &parsed,
-            &mut seen_constraints,
-            &mut scheduled_versions,
-            &mut queue,
-        )
-        .await?;
-        dependencies.insert((package, version), parsed);
-    }
-
-    Ok(DiscoveredClosure {
-        dependencies,
-        discovered_versions,
-    })
-}
-
-fn package_extras(
+pub(crate) fn package_extras(
     active_extras: &ActiveExtrasMap,
     package: &str,
 ) -> HashSet<String> {
     active_extras.get(package).cloned().unwrap_or_default()
 }
 
-async fn parse_version_dependencies(
+pub(crate) async fn parse_version_dependencies(
     ctx: &SolveContext<'_>,
     package: &str,
     version: &Version,
@@ -122,43 +77,6 @@ async fn parse_version_dependencies(
 ) -> Result<Vec<ParsedDependency>, ResolveError> {
     let requires_dist = ctx.cache.get_requires_dist(package, version).await?;
     Ok(parse_requires_dist(&requires_dist, extras, ctx.target)?)
-}
-
-fn enqueue_if_new(
-    key: DependencyKey,
-    scheduled: &mut HashSet<DependencyKey>,
-    queue: &mut VecDeque<DependencyKey>,
-) {
-    if scheduled.insert(key.clone()) {
-        queue.push_back(key);
-    }
-}
-
-async fn enqueue_dependency_candidates(
-    ctx: &SolveContext<'_>,
-    dependencies: &[ParsedDependency],
-    seen_constraints: &mut HashMap<String, Vec<Range<Version>>>,
-    scheduled_versions: &mut HashSet<DependencyKey>,
-    queue: &mut VecDeque<DependencyKey>,
-) -> Result<(), ResolveError> {
-    for dependency in dependencies {
-        let ranges = seen_constraints
-            .entry(dependency.package_name.clone())
-            .or_default();
-        ranges.push(spec_to_range(&dependency.version_spec));
-
-        let candidates = candidate_versions_for_package(
-            ctx,
-            &dependency.package_name,
-            |version| ranges.iter().any(|range| range.contains(version)),
-        )
-        .await?;
-        for version in candidates {
-            let key = (dependency.package_name.clone(), version);
-            enqueue_if_new(key, scheduled_versions, queue);
-        }
-    }
-    Ok(())
 }
 
 fn solve_discovered_graph(

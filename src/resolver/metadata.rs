@@ -136,12 +136,12 @@ impl MetadataCache {
     pub fn new(
         client: reqwest::Client,
         pypi_url: String,
-        workers: usize,
+        metadata_workers: usize,
     ) -> Self {
         Self {
             client,
             pypi_url,
-            sem: tokio::sync::Semaphore::new(workers),
+            sem: tokio::sync::Semaphore::new(metadata_workers),
             package_index: DashMap::new(),
             version_metadata: DashMap::new(),
         }

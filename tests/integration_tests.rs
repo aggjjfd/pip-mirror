@@ -11,7 +11,8 @@ use pip_mirror::resolver::types::TargetEnv;
 
 const PYPI_URL: &str = "https://pypi.org";
 const LINUX_MAX_GLIBC: &str = "2.39";
-const TEST_WORKERS: usize = 4;
+const TEST_RESOLVE_WORKERS: usize = 4;
+const TEST_METADATA_WORKERS: usize = 8;
 
 fn py312_linux_target() -> TargetEnv {
     TargetEnv {
@@ -83,7 +84,8 @@ async fn solve_exact_target(
     target: &TargetEnv,
 ) -> (Version, HashSet<String>) {
     let client = reqwest::Client::new();
-    let cache = MetadataCache::new(client, PYPI_URL.to_string(), TEST_WORKERS);
+    let cache =
+        MetadataCache::new(client, PYPI_URL.to_string(), TEST_METADATA_WORKERS);
     let package = bare_name(package_ref);
     let extras = collect_pkg_extras(&[package_ref.to_string()])
         .remove(&package)
@@ -94,6 +96,7 @@ async fn solve_exact_target(
         allow_prerelease: false,
         include_source: false,
         linux_max_glibc: LINUX_MAX_GLIBC,
+        metadata_workers: TEST_METADATA_WORKERS,
     };
     let root_version =
         select_first_installable_version(&cache, &ctx, &package).await;
@@ -169,7 +172,8 @@ async fn test_build_dependency_plan_e2e_smoke() {
             allow_prerelease: false,
             include_source: false,
             linux_max_glibc: LINUX_MAX_GLIBC,
-            workers: TEST_WORKERS,
+            resolve_workers: TEST_RESOLVE_WORKERS,
+            metadata_workers: TEST_METADATA_WORKERS,
         };
         let plan = build_dependency_plan(&params, &client)
             .await

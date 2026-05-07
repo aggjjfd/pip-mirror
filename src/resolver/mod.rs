@@ -1,3 +1,4 @@
+pub(crate) mod discovery;
 pub mod eligibility;
 pub mod error;
 pub mod markers;

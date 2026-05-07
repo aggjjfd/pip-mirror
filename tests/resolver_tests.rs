@@ -190,6 +190,17 @@ fn test_parse_dependency_line_python_version_match() {
 }
 
 #[test]
+fn test_parse_dependency_line_normalizes_legacy_wildcard_specifier() {
+    use pip_mirror::resolver::markers::parse_dependency_line;
+    let dep =
+        parse_dependency_line("click (>=7.*)", &no_extras(), &linux_target())
+            .unwrap()
+            .unwrap();
+    assert_eq!(dep.package_name, "click");
+    assert_eq!(dep.version_spec, ">=7");
+}
+
+#[test]
 fn test_parse_dependency_line_python_version_no_match() {
     use pip_mirror::resolver::markers::parse_dependency_line;
     let dep = parse_dependency_line(

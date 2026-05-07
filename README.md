@@ -202,11 +202,14 @@ repository_dir = "./packages"
 incremental_dir = "./incremental"
 pypi_url = "https://pypi.org"
 index_url = "https://mirrors.ustc.edu.cn/pypi/simple"
-include_source = true
-workers = 4
-adjacent_versions_per_side = 3
+include_source = false
+resolve_workers = 8
+metadata_workers = 32
+download_workers = 8
+adjacent_versions_per_side = 2
 top_versions_per_package = 5
 allow_prerelease = false
+linux_max_glibc = "2.39"
 server_host = "0.0.0.0"
 server_port = 8080
 ```
@@ -218,12 +221,15 @@ server_port = 8080
 - `incremental_dir`：增量包输出目录，默认 `./incremental`。
 - `pypi_url`：PyPI JSON API 源，用于取 metadata，默认 `https://pypi.org`。
 - `index_url`：Simple Index 源，用于实际下载文件。默认 `https://mirrors.ustc.edu.cn/pypi/simple`（国内可换清华、阿里云）。
-- `include_source`：缺平台 wheel 时是否回退 sdist，默认 `true`。
-- `workers`：并发下载任务数，默认 `4`。
-- `adjacent_versions_per_side`：每个已解析版本两侧保留的相邻版本数，默认 `3`。
+- `include_source`：缺平台 wheel 时是否回退 sdist，默认 `false`。
+- `resolve_workers`：顶层版本发现和 `(包, 版本, target)` 求解任务的并发上限，默认 `8`。
+- `metadata_workers`：PyPI 元数据请求总并发上限，默认 `32`。这是全局请求上限，不是“每个包”的并发。
+- `download_workers`：文件下载并发上限，默认 `8`。
+- `adjacent_versions_per_side`：每个已解析版本两侧保留的相邻版本数，默认 `2`。
 - `top_versions_per_package`：每个包保留的最新版本数，默认 `5`。`0` 表示保留全部版本。
 - `allow_prerelease`：是否下载预发行版（rc/alpha/beta/dev），默认 `false`。
-- `server_host` / `server_port`：`pip-mirror serve` 的监听地址，默认 `0.0.0.0` / `8080`。
+- `linux_max_glibc`：Linux 目标接受的最高 glibc 版本，默认 `2.39`。
+- `server_host` / `server_port`：`pip-mirror serve` 的监听地址，默认 `127.0.0.1` / `8080`。
 
 命令行覆盖：
 

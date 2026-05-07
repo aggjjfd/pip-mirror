@@ -1,4 +1,7 @@
+use std::collections::{HashMap, HashSet};
+
 use dashmap::DashMap;
+use futures::{StreamExt, stream};
 use pep440_rs::Version;
 
 use super::error::ResolveError;
@@ -15,18 +18,28 @@ pub async fn expand_solved_versions(
     cache: &MetadataCache,
     adjacent_versions_per_side: usize,
     allow_prerelease: bool,
+    metadata_workers: usize,
 ) -> Result<DashMap<String, Vec<Version>>, ResolveError> {
     let result: DashMap<String, Vec<Version>> = DashMap::new();
+    let solved_versions = collect_solved_versions(all_solutions);
+    let filtered_versions = fetch_filtered_versions(
+        cache,
+        &solved_versions,
+        allow_prerelease,
+        metadata_workers,
+    )
+    .await?;
 
-    for sol in all_solutions {
-        for (pkg, ver) in &sol.solved_versions {
-            let all_vers = cache.get_all_versions(pkg).await?;
-            let filtered = filter_by_prerelease(all_vers, allow_prerelease);
+    for (pkg, versions) in solved_versions {
+        let filtered = filtered_versions
+            .get(&pkg)
+            .expect("solved package must have fetched version list");
+        for ver in versions {
             add_version_with_adjacent(
                 &result,
-                pkg,
-                ver,
-                &filtered,
+                &pkg,
+                &ver,
+                filtered,
                 adjacent_versions_per_side,
             );
         }
@@ -34,6 +47,44 @@ pub async fn expand_solved_versions(
 
     normalize_versions(&result);
     Ok(result)
+}
+
+fn collect_solved_versions(
+    all_solutions: &[SolveResult],
+) -> HashMap<String, HashSet<Version>> {
+    let mut solved = HashMap::new();
+    for sol in all_solutions {
+        for (pkg, ver) in &sol.solved_versions {
+            solved
+                .entry(pkg.clone())
+                .or_insert_with(HashSet::new)
+                .insert(ver.clone());
+        }
+    }
+    solved
+}
+
+async fn fetch_filtered_versions(
+    cache: &MetadataCache,
+    solved_versions: &HashMap<String, HashSet<Version>>,
+    allow_prerelease: bool,
+    metadata_workers: usize,
+) -> Result<HashMap<String, Vec<Version>>, ResolveError> {
+    let mut packages: Vec<_> = solved_versions.keys().cloned().collect();
+    packages.sort();
+
+    let results = stream::iter(packages)
+        .map(|package| async move {
+            let versions = cache.get_all_versions(&package).await?;
+            Ok::<_, ResolveError>((
+                package,
+                filter_by_prerelease(versions, allow_prerelease),
+            ))
+        })
+        .buffer_unordered(metadata_workers)
+        .collect::<Vec<_>>()
+        .await;
+    results.into_iter().collect()
 }
 
 fn filter_by_prerelease(

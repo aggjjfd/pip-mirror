@@ -301,6 +301,7 @@ async fn test_solve_one_target_reaches_fixpoint_after_extra_propagation() {
         allow_prerelease: false,
         include_source: false,
         linux_max_glibc: "2.39",
+        metadata_workers: 8,
     };
 
     let result = solve_one_target(

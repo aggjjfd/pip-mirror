@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use dashmap::DashMap;
+use futures::{StreamExt, stream};
 use pep440_rs::Version;
 use tracing::info;
 
@@ -22,7 +23,8 @@ pub struct PlanParams<'a> {
     pub allow_prerelease: bool,
     pub include_source: bool,
     pub linux_max_glibc: &'a str,
-    pub workers: usize,
+    pub resolve_workers: usize,
+    pub metadata_workers: usize,
 }
 
 pub struct DependencyPlan {
@@ -37,7 +39,7 @@ pub async fn build_dependency_plan(
     let cache = MetadataCache::new(
         client.clone(),
         params.pypi_url.to_string(),
-        params.workers,
+        params.metadata_workers,
     );
     let top_versions = collect_top_versions(params, &cache).await?;
     let pkg_extras = collect_pkg_extras(params.top_packages);
@@ -50,6 +52,7 @@ pub async fn build_dependency_plan(
         &cache,
         params.adjacent_versions_per_side,
         params.allow_prerelease,
+        params.metadata_workers,
     )
     .await?;
     merge_top_versions(&expanded, &top_versions);
@@ -85,19 +88,25 @@ async fn collect_top_versions(
     params: &PlanParams<'_>,
     cache: &MetadataCache,
 ) -> Result<HashMap<String, Vec<Version>>, ResolveError> {
-    let mut top_versions = HashMap::new();
-    for package_ref in params.top_packages {
-        let package = bare_name(package_ref);
-        let all_versions = cache.get_all_versions(&package).await?;
-        let selected = select_top_versions(
-            all_versions,
-            params.top_versions_per_package,
-            params.allow_prerelease,
-        );
-        info!("顶层包 {}: 选定 {} 个版本", package, selected.len());
-        top_versions.insert(package, selected);
-    }
-    Ok(top_versions)
+    let results = stream::iter(params.top_packages.iter())
+        .map(|package_ref| async move {
+            let package = bare_name(package_ref);
+            let all_versions = cache.get_all_versions(&package).await?;
+            let selected = select_top_versions(
+                all_versions,
+                params.top_versions_per_package,
+                params.allow_prerelease,
+            );
+            info!("顶层包 {}: 选定 {} 个版本", package, selected.len());
+            Ok::<_, ResolveError>((package, selected))
+        })
+        .buffer_unordered(params.resolve_workers)
+        .collect::<Vec<_>>()
+        .await;
+    let mut top_versions =
+        results.into_iter().collect::<Result<Vec<_>, _>>()?;
+    top_versions.sort_by(|(left, _), (right, _)| left.cmp(right));
+    Ok(top_versions.into_iter().collect())
 }
 
 async fn solve_all_targets(
@@ -107,38 +116,76 @@ async fn solve_all_targets(
     pkg_extras: &HashMap<String, std::collections::HashSet<String>>,
     targets: &[TargetEnv],
 ) -> Result<Vec<super::solve::SolveResult>, ResolveError> {
-    let mut all_solutions = Vec::new();
-    for (package, versions) in top_versions {
-        let extras = pkg_extras.get(package).cloned().unwrap_or_default();
-        for version in versions {
-            let mut solutions = solve_version_targets(
-                params, cache, package, version, &extras, targets,
-            )
-            .await?;
-            all_solutions.append(&mut solutions);
-        }
-    }
-    Ok(all_solutions)
+    let jobs = build_solve_jobs(top_versions, pkg_extras, targets);
+    let results = stream::iter(jobs)
+        .map(|job| async move {
+            let ctx = build_solve_context(params, cache, &job.target);
+            if !version_matches_target(&ctx, &job.package, &job.version).await?
+            {
+                return Ok::<_, ResolveError>((job.index, None));
+            }
+            info!(
+                "开始求解: {}@{} -> {}",
+                job.package, job.version, job.target
+            );
+            let solved =
+                solve_one_target(&ctx, &job.package, &job.version, &job.extras)
+                    .await?;
+            info!(
+                "求解完成: {}@{} -> {}",
+                job.package, job.version, job.target
+            );
+            Ok((job.index, Some(solved)))
+        })
+        .buffer_unordered(params.resolve_workers)
+        .collect::<Vec<_>>()
+        .await;
+    let mut solved = results.into_iter().collect::<Result<Vec<_>, _>>()?;
+    solved.sort_by_key(|(index, _)| *index);
+    Ok(solved
+        .into_iter()
+        .filter_map(|(_, result)| result)
+        .collect())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn solve_version_targets(
-    params: &PlanParams<'_>,
-    cache: &MetadataCache,
-    package: &str,
-    version: &Version,
-    extras: &std::collections::HashSet<String>,
+struct SolveJob {
+    index: usize,
+    package: String,
+    version: Version,
+    extras: HashSet<String>,
+    target: TargetEnv,
+}
+
+fn build_solve_jobs(
+    top_versions: &HashMap<String, Vec<Version>>,
+    pkg_extras: &HashMap<String, HashSet<String>>,
     targets: &[TargetEnv],
-) -> Result<Vec<super::solve::SolveResult>, ResolveError> {
-    let mut solutions = Vec::new();
-    for target in targets {
-        let ctx = build_solve_context(params, cache, target);
-        if !version_matches_target(&ctx, package, version).await? {
-            continue;
-        }
-        solutions.push(solve_one_target(&ctx, package, version, extras).await?);
-    }
-    Ok(solutions)
+) -> Vec<SolveJob> {
+    let mut packages: Vec<_> = top_versions.iter().collect();
+    packages.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    packages
+        .into_iter()
+        .flat_map(|(package, versions)| {
+            let extras = pkg_extras.get(package).cloned().unwrap_or_default();
+            versions.iter().cloned().flat_map(move |version| {
+                let package = package.clone();
+                let extras = extras.clone();
+                targets.iter().cloned().map(move |target| SolveJob {
+                    index: 0,
+                    package: package.clone(),
+                    version: version.clone(),
+                    extras: extras.clone(),
+                    target,
+                })
+            })
+        })
+        .enumerate()
+        .map(|(index, mut job)| {
+            job.index = index;
+            job
+        })
+        .collect()
 }
 
 fn build_solve_context<'a>(
@@ -152,6 +199,7 @@ fn build_solve_context<'a>(
         allow_prerelease: params.allow_prerelease,
         include_source: params.include_source,
         linux_max_glibc: params.linux_max_glibc,
+        metadata_workers: params.metadata_workers,
     }
 }
 
@@ -174,20 +222,48 @@ async fn collect_planned_files(
     cache: &MetadataCache,
     expanded: &DashMap<String, Vec<Version>>,
 ) -> Result<Vec<FileInfo>, ResolveError> {
-    let mut planned_files = Vec::new();
-    for entry in expanded.iter() {
-        for version in entry.value() {
-            let files = cache.get_version_files(entry.key(), version).await?;
+    let jobs = build_file_jobs(expanded);
+    let results = stream::iter(jobs)
+        .map(|(index, package, version)| async move {
+            let files = cache.get_version_files(&package, &version).await?;
             let selected = crate::filters::select_files_for_version(
                 &files,
                 params.include_source,
                 params.linux_max_glibc,
             );
-            planned_files.extend(selected);
-        }
+            Ok::<_, ResolveError>((index, selected))
+        })
+        .buffer_unordered(params.metadata_workers)
+        .collect::<Vec<_>>()
+        .await;
+    let mut planned_files = Vec::new();
+    let mut collected = results.into_iter().collect::<Result<Vec<_>, _>>()?;
+    collected.sort_by_key(|(index, _)| *index);
+    for (_, selected) in collected {
+        planned_files.extend(selected);
     }
-
-    let mut seen = std::collections::HashSet::new();
-    planned_files.retain(|file| seen.insert(file.filename.clone()));
+    planned_files.sort_by(|left, right| left.filename.cmp(&right.filename));
+    planned_files.dedup_by(|left, right| left.filename == right.filename);
     Ok(planned_files)
+}
+
+fn build_file_jobs(
+    expanded: &DashMap<String, Vec<Version>>,
+) -> Vec<(usize, String, Version)> {
+    let mut packages: Vec<_> = expanded
+        .iter()
+        .map(|entry| (entry.key().clone(), entry.value().clone()))
+        .collect();
+    packages.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    packages
+        .into_iter()
+        .flat_map(|(package, versions)| {
+            versions
+                .into_iter()
+                .map(move |version| (package.clone(), version))
+        })
+        .enumerate()
+        .map(|(index, (package, version))| (index, package, version))
+        .collect()
 }

@@ -1,8 +1,6 @@
 use std::collections::HashSet;
-use std::str::FromStr;
 
-use pep440_rs::VersionSpecifier;
-use pep508_rs::{Requirement, VerbatimUrl};
+use pep508_rs::{MarkerTree, VerbatimUrl};
 
 use super::types::TargetEnv;
 
@@ -53,34 +51,172 @@ fn marker_uses_unsupported_keys(marker: &pep508_rs::MarkerTree) -> bool {
     }
 }
 
-/// Convert a pep508_rs version specifier to our string format.
-fn stringify_version_spec(spec: &VersionSpecifier) -> String {
-    spec.to_string()
+// PyPI 上仍有少量历史元数据写成 `>=7.*` 这类非法通配比较。
+// 在保留 marker 原文的前提下，把比较段规范化成 pep508_rs 可接受的形式。
+fn normalize_legacy_wildcards(requirement: &str) -> String {
+    let mut normalized = String::with_capacity(requirement.len());
+    let mut index = 0;
+
+    while index < requirement.len() {
+        if let Some((operator, width)) =
+            invalid_wildcard_operator(&requirement[index..])
+        {
+            normalized.push_str(operator);
+            index += width;
+
+            let space_end = skip_ascii_whitespace(requirement, index);
+            normalized.push_str(&requirement[index..space_end]);
+            index = space_end;
+
+            let token_end = find_version_token_end(requirement, index);
+            let token = &requirement[index..token_end];
+            normalized.push_str(token.strip_suffix(".*").unwrap_or(token));
+            index = token_end;
+            continue;
+        }
+
+        let ch = requirement[index..]
+            .chars()
+            .next()
+            .expect("index must point at a valid character boundary");
+        normalized.push(ch);
+        index += ch.len_utf8();
+    }
+
+    normalized
 }
 
-/// Extract version spec string from a requirement.
-fn extract_version_spec<T: pep508_rs::Pep508Url>(
-    req: &Requirement<T>,
-) -> String {
-    match &req.version_or_url {
-        Some(pep508_rs::VersionOrUrl::VersionSpecifier(vs)) => vs
-            .iter()
-            .map(stringify_version_spec)
-            .collect::<Vec<_>>()
-            .join(", "),
-        _ => String::new(),
+fn invalid_wildcard_operator(input: &str) -> Option<(&'static str, usize)> {
+    [(">=", 2), ("<=", 2), ("~=", 2), (">", 1), ("<", 1)]
+        .into_iter()
+        .find(|(operator, _)| {
+            input
+                .strip_prefix(operator)
+                .is_some_and(|rest| rest.contains(".*"))
+        })
+}
+
+fn skip_ascii_whitespace(input: &str, start: usize) -> usize {
+    start
+        + input[start..]
+            .chars()
+            .take_while(|ch| ch.is_ascii_whitespace())
+            .map(char::len_utf8)
+            .sum::<usize>()
+}
+
+fn find_version_token_end(input: &str, start: usize) -> usize {
+    input[start..]
+        .char_indices()
+        .find(|(_, ch)| ch.is_ascii_whitespace() || *ch == ',' || *ch == ')')
+        .map_or(input.len(), |(offset, _)| start + offset)
+}
+
+struct RequirementParts {
+    package_name: String,
+    extras: HashSet<String>,
+    version_spec: String,
+    marker: MarkerTree,
+}
+
+fn parse_requirement_parts(
+    line: &str,
+) -> Result<RequirementParts, MarkerError> {
+    let (requirement, marker) = split_requirement_and_marker(line);
+    let requirement = requirement.trim();
+    if requirement.is_empty() {
+        return Err(MarkerError::ParseError(line.to_string()));
+    }
+    if requirement.contains('@') {
+        return Err(MarkerError::UnsupportedDirectUrl(line.to_string()));
+    }
+
+    let (name, remainder) = split_name_and_rest(requirement);
+    if name.is_empty() {
+        return Err(MarkerError::ParseError(line.to_string()));
+    }
+    let (extras, version_spec) = parse_extras_and_spec(remainder, line)?;
+
+    Ok(RequirementParts {
+        package_name: normalize_name(name),
+        extras,
+        version_spec: normalize_version_spec(version_spec)?,
+        marker: parse_marker(marker)?,
+    })
+}
+
+fn split_requirement_and_marker(line: &str) -> (&str, Option<&str>) {
+    match line.split_once(';') {
+        Some((requirement, marker)) => (requirement, Some(marker)),
+        None => (line, None),
     }
 }
 
-fn build_parsed_dependency<T: pep508_rs::Pep508Url>(
-    req: Requirement<T>,
-) -> ParsedDependency {
-    let version_spec = extract_version_spec(&req);
-    ParsedDependency {
-        package_name: normalize_name(req.name.as_ref()),
-        extras: req.extras.into_iter().map(|e| e.to_string()).collect(),
-        version_spec,
+fn split_name_and_rest(requirement: &str) -> (&str, &str) {
+    let name_end = requirement
+        .char_indices()
+        .find(|(_, ch)| is_name_delimiter(*ch))
+        .map_or(requirement.len(), |(index, _)| index);
+    (&requirement[..name_end], &requirement[name_end..])
+}
+
+fn is_name_delimiter(ch: char) -> bool {
+    ch.is_ascii_whitespace()
+        || matches!(ch, '[' | '(' | '<' | '>' | '=' | '!' | '~' | '@')
+}
+
+fn parse_extras_and_spec<'a>(
+    remainder: &'a str,
+    line: &str,
+) -> Result<(HashSet<String>, &'a str), MarkerError> {
+    let remainder = remainder.trim_start();
+    if !remainder.starts_with('[') {
+        return Ok((HashSet::new(), remainder));
     }
+    let Some(end) = remainder.find(']') else {
+        return Err(MarkerError::ParseError(line.to_string()));
+    };
+    let extras = remainder[1..end]
+        .split(',')
+        .map(str::trim)
+        .filter(|extra| !extra.is_empty())
+        .map(str::to_string)
+        .collect();
+    Ok((extras, remainder[end + 1..].trim_start()))
+}
+
+fn normalize_version_spec(spec: &str) -> Result<String, MarkerError> {
+    let spec = strip_wrapping_parens(spec)?;
+    let spec = normalize_legacy_wildcards(spec.trim());
+    Ok(spec
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(", "))
+}
+
+fn strip_wrapping_parens(spec: &str) -> Result<&str, MarkerError> {
+    let trimmed = spec.trim();
+    if !trimmed.starts_with('(') {
+        return Ok(trimmed);
+    }
+    let Some(stripped) =
+        trimmed.strip_prefix('(').and_then(|s| s.strip_suffix(')'))
+    else {
+        return Err(MarkerError::ParseError(trimmed.to_string()));
+    };
+    Ok(stripped.trim())
+}
+
+fn parse_marker(marker: Option<&str>) -> Result<MarkerTree, MarkerError> {
+    let Some(marker) =
+        marker.map(str::trim).filter(|marker| !marker.is_empty())
+    else {
+        return Ok(MarkerTree::TRUE);
+    };
+    MarkerTree::parse_str::<VerbatimUrl>(marker)
+        .map_err(|error| MarkerError::ParseError(error.to_string()))
 }
 
 fn evaluate_marker(
@@ -115,24 +251,26 @@ pub fn parse_dependency_line(
     active_extras: &HashSet<String>,
     target_env: &TargetEnv,
 ) -> Result<Option<ParsedDependency>, MarkerError> {
-    let req = Requirement::<VerbatimUrl>::from_str(line)
-        .map_err(|e| MarkerError::ParseError(e.to_string()))?;
-
-    // Reject direct URL/path requirements.
-    if let Some(pep508_rs::VersionOrUrl::Url(_)) = &req.version_or_url {
-        return Err(MarkerError::UnsupportedDirectUrl(line.to_string()));
-    }
+    let requirement = parse_requirement_parts(line)?;
 
     // No marker: always applies.
-    if req.marker.is_true() {
-        return Ok(Some(build_parsed_dependency(req)));
+    if requirement.marker.is_true() {
+        return Ok(Some(ParsedDependency {
+            package_name: requirement.package_name,
+            extras: requirement.extras,
+            version_spec: requirement.version_spec,
+        }));
     }
 
-    if !evaluate_marker(&req.marker, target_env, active_extras)? {
+    if !evaluate_marker(&requirement.marker, target_env, active_extras)? {
         return Ok(None);
     }
 
-    Ok(Some(build_parsed_dependency(req)))
+    Ok(Some(ParsedDependency {
+        package_name: requirement.package_name,
+        extras: requirement.extras,
+        version_spec: requirement.version_spec,
+    }))
 }
 
 /// Parse a full `requires_dist` list against the target environment and active

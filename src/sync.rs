@@ -44,28 +44,53 @@ pub async fn do_sync(
     download_python_builds: bool,
 ) -> Result<(reqwest::Client, Vec<FileInfo>), Box<dyn std::error::Error>> {
     let repo = &config.repository_dir;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .build()?;
-
+    let client = build_sync_client()?;
     let plan = create_sync_plan(config, &client, pkgs, no_deps).await?;
-    let planned_count = plan.planned_files.len();
-    let pending = filter_incremental_files(repo, plan.planned_files)?;
-
-    info!(
-        "计划下载 {} 个文件，已过滤 {} 个已有文件",
-        pending.len(),
-        planned_count.saturating_sub(pending.len())
-    );
-
-    let result =
-        download_pkg_files(&client, repo, &pending, config.include_source)
-            .await;
-
+    let pending = prepare_pending_files(repo, plan)?;
+    let result = run_downloads(config, &client, repo, &pending).await;
     record_download_results(repo, &result).await?;
     finalize_sync(&client, repo, download_python_builds).await?;
-
     Ok((client, result.downloaded))
+}
+
+fn build_sync_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .build()
+}
+
+fn prepare_pending_files(
+    repo: &Path,
+    plan: DependencyPlan,
+) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
+    let planned_count = plan.planned_files.len();
+    let pending = filter_incremental_files(repo, plan.planned_files)?;
+    log_pending_files(pending.len(), planned_count);
+    Ok(pending)
+}
+
+fn log_pending_files(pending_count: usize, planned_count: usize) {
+    info!(
+        "计划下载 {} 个文件，已过滤 {} 个已有文件",
+        pending_count,
+        planned_count.saturating_sub(pending_count)
+    );
+}
+
+async fn run_downloads(
+    config: &crate::config::Config,
+    client: &reqwest::Client,
+    repo: &Path,
+    pending: &[FileInfo],
+) -> crate::downloader::DownloadResult {
+    download_pkg_files(
+        client,
+        repo,
+        pending,
+        config.include_source,
+        config.download_workers,
+    )
+    .await
 }
 
 async fn create_sync_plan(
@@ -85,7 +110,8 @@ async fn create_sync_plan(
         allow_prerelease: config.allow_prerelease,
         include_source: config.include_source,
         linux_max_glibc: &config.linux_max_glibc,
-        workers: config.workers,
+        resolve_workers: config.resolve_workers,
+        metadata_workers: config.metadata_workers,
     };
     build_dependency_plan(&params, client).await
 }
@@ -140,7 +166,7 @@ async fn build_top_only_plan(
     let cache = MetadataCache::new(
         client.clone(),
         config.pypi_url.clone(),
-        config.workers,
+        config.metadata_workers,
     );
     let mut planned_files = Vec::new();
     let solved_versions: DashMap<String, Vec<Version>> = DashMap::new();
