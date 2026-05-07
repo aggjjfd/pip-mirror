@@ -162,7 +162,11 @@ def tail_file(path: Path) -> None:
         return
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     for line in lines[-LOG_TAIL_LINES:]:
-        print(line)
+        try:
+            print(line)
+        except UnicodeEncodeError:
+            escaped = line.encode("unicode_escape", errors="backslashreplace").decode("ascii")
+            print(escaped)
 
 
 def start_server(bin_path: Path) -> tuple[subprocess.Popen[str], TextIO, TextIO]:
