@@ -17,6 +17,16 @@ pub struct FileRecord<'a> {
     pub size: Option<u64>,
 }
 
+fn push_if_missing(
+    acc: &mut Vec<crate::downloader::FileInfo>,
+    fi: &crate::downloader::FileInfo,
+    has: bool,
+) {
+    if !has {
+        acc.push(fi.clone());
+    }
+}
+
 impl DownloadStore {
     pub fn open(db_path: &Path) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(db_path)?;
@@ -153,6 +163,18 @@ impl DownloadStore {
             |r| r.get(0),
         )?;
         Ok(count > 0)
+    }
+
+    /// Return files that are not yet in the store.
+    pub fn filter_missing_files(
+        &self,
+        files: &[crate::downloader::FileInfo],
+    ) -> Result<Vec<crate::downloader::FileInfo>, rusqlite::Error> {
+        files.iter().try_fold(Vec::new(), |mut acc, fi| {
+            let has = self.has_file(&fi.package_name, &fi.filename)?;
+            push_if_missing(&mut acc, fi, has);
+            Ok(acc)
+        })
     }
 
     pub fn hash_file(path: &Path) -> Result<String, std::io::Error> {

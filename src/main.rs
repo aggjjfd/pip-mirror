@@ -291,12 +291,13 @@ repository_dir = "./packages"
 incremental_dir = "./incremental"
 pypi_url = "https://pypi.org"
 index_url = "https://mirrors.ustc.edu.cn/pypi/simple"
-include_source = true
+include_source = false
 workers = 4
-max_depth = 3
-max_versions = 5
+top_versions_per_package = 5
+adjacent_versions_per_side = 2
 allow_prerelease = false
-server_host = "0.0.0.0"
+linux_max_glibc = "2.39"
+server_host = "127.0.0.1"
 server_port = 8080
 "#;
 

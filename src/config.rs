@@ -2,6 +2,14 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+const DEFAULT_INCLUDE_SOURCE: bool = false;
+const DEFAULT_WORKERS: usize = 4;
+const DEFAULT_TOP_VERSIONS_PER_PACKAGE: usize = 5;
+const DEFAULT_ADJACENT_VERSIONS_PER_SIDE: usize = 2;
+const DEFAULT_LINUX_MAX_GLIBC: &str = "2.39";
+const DEFAULT_SERVER_PORT: u16 = 8080;
+const DEFAULT_SERVER_HOST: &str = "127.0.0.1";
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -19,14 +27,14 @@ pub struct Config {
     pub include_source: bool,
     #[serde(default = "default_workers")]
     pub workers: usize,
-    #[serde(default = "default_max_depth")]
-    pub max_depth: usize,
-    #[serde(default = "default_max_versions")]
-    pub max_versions: usize,
+    #[serde(default = "default_top_versions_per_package")]
+    pub top_versions_per_package: usize,
+    #[serde(default = "default_adjacent_versions_per_side")]
+    pub adjacent_versions_per_side: usize,
     #[serde(default)]
     pub allow_prerelease: bool,
-    #[serde(default = "default_backfill_scan_limit")]
-    pub backfill_scan_limit: usize,
+    #[serde(default = "default_linux_max_glibc")]
+    pub linux_max_glibc: String,
     #[serde(default = "default_server_port")]
     pub server_port: u16,
     #[serde(default = "default_server_host")]
@@ -46,25 +54,25 @@ fn default_index_url() -> String {
     "https://mirrors.ustc.edu.cn/pypi/simple".into()
 }
 fn default_include_source() -> bool {
-    true
+    DEFAULT_INCLUDE_SOURCE
 }
 fn default_workers() -> usize {
-    4
+    DEFAULT_WORKERS
 }
-fn default_max_depth() -> usize {
-    3
+fn default_top_versions_per_package() -> usize {
+    DEFAULT_TOP_VERSIONS_PER_PACKAGE
 }
-fn default_max_versions() -> usize {
-    5
+fn default_adjacent_versions_per_side() -> usize {
+    DEFAULT_ADJACENT_VERSIONS_PER_SIDE
 }
-fn default_backfill_scan_limit() -> usize {
-    50
+fn default_linux_max_glibc() -> String {
+    DEFAULT_LINUX_MAX_GLIBC.into()
 }
 fn default_server_port() -> u16 {
-    8080
+    DEFAULT_SERVER_PORT
 }
 fn default_server_host() -> String {
-    "0.0.0.0".into()
+    DEFAULT_SERVER_HOST.into()
 }
 
 fn load_explicit(p: &Path) -> Result<Config, Box<dyn std::error::Error>> {
@@ -118,10 +126,10 @@ impl Default for Config {
             index_url: default_index_url(),
             include_source: default_include_source(),
             workers: default_workers(),
-            max_depth: default_max_depth(),
-            max_versions: default_max_versions(),
+            top_versions_per_package: default_top_versions_per_package(),
+            adjacent_versions_per_side: default_adjacent_versions_per_side(),
             allow_prerelease: false,
-            backfill_scan_limit: default_backfill_scan_limit(),
+            linux_max_glibc: default_linux_max_glibc(),
             server_port: default_server_port(),
             server_host: default_server_host(),
         }

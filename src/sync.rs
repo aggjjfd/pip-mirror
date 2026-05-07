@@ -1,17 +1,20 @@
 use std::path::Path;
+use std::time::Duration;
 
 use dashmap::DashMap;
 use pep440_rs::Version;
 use tracing::info;
 
-use crate::downloader::{
-    FileInfo, HttpCtx, collect_version_files, download_pkg_files,
-    fetch_json_api,
-};
+use crate::downloader::{FileInfo, download_pkg_files};
 use crate::indexer::generate_index;
 use crate::python_builds::download_python_builds_batch;
+use crate::resolver::metadata::MetadataCache;
 use crate::resolver::pubgrub::bare_name;
-use crate::resolver::resolve::resolve_dependencies;
+use crate::resolver::resolve::{
+    DependencyPlan, PlanParams, ResolveError, build_dependency_plan,
+    select_top_versions,
+};
+use crate::store::DownloadStore;
 
 pub fn archive_mb(p: &Path) -> f64 {
     std::fs::metadata(p)
@@ -34,12 +37,6 @@ pub fn clean_repo(repo: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-pub struct SyncCtx<'a> {
-    pub http: &'a HttpCtx<'a>,
-    pub repo: &'a Path,
-    pub allow_prerelease: bool,
-}
-
 pub async fn do_sync(
     config: &crate::config::Config,
     pkgs: &[String],
@@ -48,175 +45,141 @@ pub async fn do_sync(
 ) -> Result<(reqwest::Client, Vec<FileInfo>), Box<dyn std::error::Error>> {
     let repo = &config.repository_dir;
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        .timeout(Duration::from_secs(300))
         .build()?;
-    let http = HttpCtx {
-        client: &client,
+
+    let plan = create_sync_plan(config, &client, pkgs, no_deps).await?;
+    let planned_count = plan.planned_files.len();
+    let pending = filter_incremental_files(repo, plan.planned_files)?;
+
+    info!(
+        "计划下载 {} 个文件，已过滤 {} 个已有文件",
+        pending.len(),
+        planned_count.saturating_sub(pending.len())
+    );
+
+    let result =
+        download_pkg_files(&client, repo, &pending, config.include_source)
+            .await;
+
+    record_download_results(repo, &result).await?;
+    finalize_sync(&client, repo, download_python_builds).await?;
+
+    Ok((client, result.downloaded))
+}
+
+async fn create_sync_plan(
+    config: &crate::config::Config,
+    client: &reqwest::Client,
+    pkgs: &[String],
+    no_deps: bool,
+) -> Result<DependencyPlan, ResolveError> {
+    if no_deps {
+        return build_top_only_plan(config, client, pkgs).await;
+    }
+    let params = PlanParams {
+        top_packages: pkgs,
         pypi_url: &config.pypi_url,
+        top_versions_per_package: config.top_versions_per_package,
+        adjacent_versions_per_side: config.adjacent_versions_per_side,
+        allow_prerelease: config.allow_prerelease,
+        include_source: config.include_source,
+        linux_max_glibc: &config.linux_max_glibc,
+        workers: config.workers,
     };
-    let (top_versions, mut downloaded) = sync_top_packages(
-        &SyncCtx {
-            http: &http,
-            repo,
-            allow_prerelease: config.allow_prerelease,
-        },
-        pkgs,
-        config.max_versions,
-    )
-    .await;
-    let dep_files = resolve_and_download_deps(
-        pkgs,
-        config,
-        &http,
-        repo,
-        &top_versions,
-        no_deps,
-    )
-    .await;
-    downloaded.extend(dep_files);
+    build_dependency_plan(&params, client).await
+}
+
+fn filter_incremental_files(
+    repo: &std::path::Path,
+    planned_files: Vec<FileInfo>,
+) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
+    if !repo.join(".store.db").exists() {
+        return Ok(planned_files);
+    }
+    let store = DownloadStore::open(&repo.join(".store.db"))?;
+    Ok(store.filter_missing_files(&planned_files)?)
+}
+
+async fn record_download_results(
+    repo: &std::path::Path,
+    result: &crate::downloader::DownloadResult,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db_path = repo.join(".store.db");
+    let store = DownloadStore::open(&db_path)?;
+    for fi in &result.downloaded {
+        let dest = repo.join(&fi.package_name).join(&fi.filename);
+        store.record_download(fi, &dest).await;
+    }
+    for (fi, err) in &result.failed {
+        tracing::warn!("  [FAIL] {} {}: {}", fi.package_name, fi.filename, err);
+    }
+    Ok(())
+}
+
+async fn finalize_sync(
+    client: &reqwest::Client,
+    repo: &std::path::Path,
+    download_python_builds: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if download_python_builds {
-        download_python_builds_batch(&client, repo).await?;
+        download_python_builds_batch(client, repo).await?;
     }
     let repo_clone = repo.to_path_buf();
     tokio::task::spawn_blocking(move || generate_index(&repo_clone))
         .await
         .map_err(|e| format!("索引生成线程错误: {e}"))?;
-    Ok((client, downloaded))
+    Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn resolve_and_download_deps(
-    pkgs: &[String],
+async fn build_top_only_plan(
     config: &crate::config::Config,
-    http: &HttpCtx<'_>,
-    repo: &Path,
-    top_versions: &DashMap<String, Vec<Version>>,
-    no_deps: bool,
-) -> Vec<FileInfo> {
-    if no_deps || top_versions.is_empty() {
-        return Vec::new();
-    }
-    let params = crate::resolver::resolve::ResolveParams {
-        top_packages: pkgs,
-        top_versions,
-        pypi_url: &config.pypi_url,
-        max_depth: config.max_depth,
-        max_versions: config.max_versions,
-        allow_prerelease: config.allow_prerelease,
-    };
-    let deps = resolve_dependencies(&params, http.client).await;
-    if deps.is_empty() {
-        return Vec::new();
-    }
-    download_dep_versions(http, repo, &deps, config.include_source).await
-}
-
-async fn download_dep_versions(
-    http: &HttpCtx<'_>,
-    repo: &Path,
-    deps: &DashMap<String, Vec<Version>>,
-    include_source: bool,
-) -> Vec<FileInfo> {
-    let dep_list: Vec<String> = deps
-        .iter()
-        .map(|e| {
-            let vers: Vec<_> =
-                e.value().iter().map(|v| v.to_string()).collect();
-            format!("  {}: [{}]", e.key(), vers.join(", "))
-        })
-        .collect();
-    info!("依赖包清单 ({} 个):", dep_list.len());
-    for line in &dep_list {
-        info!("{line}");
-    }
-    let mut downloaded = Vec::new();
-    for entry in deps.iter() {
-        let pkg = entry.key();
-        let vers = entry.value();
-        let vers_set: std::collections::HashSet<String> =
-            vers.iter().map(|v| v.to_string()).collect();
-        let Ok(files) = fetch_json_api(http, pkg).await else {
-            tracing::warn!("  [FAIL] 依赖包 {pkg}: 获取元数据失败");
-            continue;
-        };
-        let selected: Vec<_> = files
-            .into_iter()
-            .filter(|f| vers_set.contains(&f.version))
-            .collect();
-        let selected = collect_version_files(&selected);
-        for fi in &selected {
-            info!("  → {} {} [{}]", fi.package_name, fi.version, fi.filename);
-        }
-        let d =
-            download_pkg_files(http.client, repo, &selected, include_source)
-                .await;
-        let dl_count = d.downloaded.len();
-        downloaded.extend(d.downloaded);
-        for (fi, err) in &d.failed {
-            tracing::warn!(
-                "  [FAIL] {} {}: {err}",
-                fi.package_name,
-                fi.filename
-            );
-        }
-        info!("  [OK] {pkg}: {} 个文件", dl_count);
-    }
-    downloaded
-}
-
-async fn sync_top_packages(
-    ctx: &SyncCtx<'_>,
+    client: &reqwest::Client,
     pkgs: &[String],
-    max_versions: usize,
-) -> (DashMap<String, Vec<Version>>, Vec<FileInfo>) {
-    let top_versions = DashMap::new();
-    let mut downloaded = Vec::new();
+) -> Result<DependencyPlan, ResolveError> {
+    let cache = MetadataCache::new(
+        client.clone(),
+        config.pypi_url.clone(),
+        config.workers,
+    );
+    let mut planned_files = Vec::new();
+    let solved_versions: DashMap<String, Vec<Version>> = DashMap::new();
+
     for pkg in pkgs {
-        let Ok(files) = fetch_json_api(ctx.http, pkg).await else {
-            tracing::warn!("  [FAIL] {pkg}: 获取数据失败");
-            continue;
-        };
-        let selected = crate::downloader::select_latest_versions(
-            &files,
-            max_versions,
-            ctx.allow_prerelease,
+        let package = bare_name(pkg);
+        let selected_versions = select_top_versions(
+            cache.get_all_versions(&package).await?,
+            config.top_versions_per_package,
+            config.allow_prerelease,
         );
-        let selected = collect_version_files(&selected);
-        let mut vers: Vec<Version> = selected
-            .iter()
-            .filter_map(|f| f.version.parse().ok())
-            .collect();
-        vers.sort_by(|a, b| b.cmp(a));
-        vers.dedup();
-        top_versions.insert(bare_name(pkg), vers);
-        info!("  [OK] {pkg}: {} files", selected.len());
-        let d = download_pkg_files(ctx.http.client, ctx.repo, &selected, true)
-            .await;
-        downloaded.extend(d.downloaded);
-        for (fi, err) in &d.failed {
-            tracing::warn!(
-                "  [FAIL] {} {}: {err}",
-                fi.package_name,
-                fi.filename
+
+        solved_versions.insert(package.clone(), selected_versions.clone());
+        for version in selected_versions {
+            let files = cache.get_version_files(&package, &version).await?;
+            let selected = crate::filters::select_files_for_version(
+                &files,
+                config.include_source,
+                &config.linux_max_glibc,
             );
+            planned_files.extend(selected);
         }
     }
-    (top_versions, downloaded)
+
+    let mut seen = std::collections::HashSet::new();
+    planned_files.retain(|fi| seen.insert(fi.filename.clone()));
+
+    Ok(DependencyPlan {
+        planned_files,
+        solved_versions,
+    })
 }
 
 pub async fn finalize_mirror(
-    client: &reqwest::Client,
+    _client: &reqwest::Client,
     repo: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let entries = download_python_builds_batch(client, repo).await?;
     let repo_clone = repo.to_path_buf();
-    let entries_clone = entries.clone();
     tokio::task::spawn_blocking(move || {
-        crate::python_builds::build_python_builds_index(
-            &entries_clone,
-            &repo_clone,
-        )
-        .map_err(|e| format!("构建索引失败: {e}"))?;
         generate_index(&repo_clone);
         crate::packager::pack_mirror_archive(&repo_clone)
             .map_err(|e| format!("打包镜像失败: {e}"))?;

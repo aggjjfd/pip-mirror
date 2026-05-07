@@ -1,146 +1,156 @@
 use std::collections::HashSet;
 use std::process::Command;
 
-use dashmap::DashMap;
 use pep440_rs::Version;
-use pip_mirror::downloader::HttpCtx;
-use pip_mirror::filters;
-use pip_mirror::resolver::pubgrub::bare_name;
-use pip_mirror::resolver::resolve::ResolveParams;
+use pip_mirror::resolver::eligibility::{SolveContext, version_matches_target};
+use pip_mirror::resolver::metadata::MetadataCache;
+use pip_mirror::resolver::pubgrub::{bare_name, collect_pkg_extras};
+use pip_mirror::resolver::resolve::{PlanParams, build_dependency_plan};
+use pip_mirror::resolver::solve::solve_one_target;
+use pip_mirror::resolver::types::TargetEnv;
 
-/// Run the resolver for one package and return version-windows map.
-async fn resolve_one(
-    pkg_name: &str,
-    client: &reqwest::Client,
-    pypi_url: &str,
-) -> DashMap<String, Vec<Version>> {
-    let all_versions = pip_mirror::resolver::metadata::get_all_versions(
-        &HttpCtx { client, pypi_url },
-        pkg_name,
-        false,
-    )
-    .await
-    .unwrap();
-    let top_5: Vec<Version> = all_versions.iter().take(5).cloned().collect();
+const PYPI_URL: &str = "https://pypi.org";
+const LINUX_MAX_GLIBC: &str = "2.39";
+const TEST_WORKERS: usize = 4;
 
-    let top_versions: DashMap<String, Vec<Version>> = DashMap::new();
-    top_versions.insert(bare_name(pkg_name), top_5);
-
-    let params = ResolveParams {
-        top_packages: &[pkg_name.to_string()],
-        top_versions: &top_versions,
-        pypi_url,
-        max_depth: 7,
-        max_versions: 5,
-        allow_prerelease: false,
-    };
-
-    pip_mirror::resolver::resolve::resolve_dependencies(&params, client).await
+fn py312_linux_target() -> TargetEnv {
+    TargetEnv {
+        python_version: "3.12".to_string(),
+        python_full_version: "3.12.0".to_string(),
+        sys_platform: "linux".to_string(),
+        platform_machine: "x86_64".to_string(),
+        platform_system: "Linux".to_string(),
+        os_name: "posix".to_string(),
+        implementation_name: "cpython".to_string(),
+        platform_python_implementation: "CPython".to_string(),
+        implementation_version: "3.12.0".to_string(),
+    }
 }
 
-/// Run `uv pip install --dry-run <pkg>` and return the set of resolved dependency names.
-fn uv_resolve(pkg: &str) -> HashSet<String> {
-    // uv resolves for the host Python version and platform.
-    // Our resolver includes all platform deps, so our set is a superset.
-    // NOTE: uv writes its dry-run output to stderr.
+fn uv_platform(target: &TargetEnv) -> &'static str {
+    match (
+        target.sys_platform.as_str(),
+        target.platform_machine.as_str(),
+    ) {
+        ("linux", "x86_64") => "x86_64-manylinux_2_39",
+        ("win32", "x86") => "i686-pc-windows-msvc",
+        ("win32", "AMD64") => "x86_64-pc-windows-msvc",
+        other => panic!("unsupported uv target mapping: {other:?}"),
+    }
+}
+
+fn uv_resolve_exact(requirement: &str, target: &TargetEnv) -> HashSet<String> {
+    let target_dir = std::env::temp_dir()
+        .join(format!("pip-mirror-uv-dry-run-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&target_dir);
+    std::fs::create_dir_all(&target_dir).unwrap();
     let output = Command::new("uv")
-        .args(["pip", "install", "--dry-run", pkg])
+        .args([
+            "pip",
+            "install",
+            "--dry-run",
+            "--target",
+            target_dir.to_str().unwrap(),
+            "--only-binary",
+            ":all:",
+            "--prerelease",
+            "disallow",
+            "--python-version",
+            &target.python_version,
+            "--python-platform",
+            uv_platform(target),
+            requirement,
+        ])
         .output()
         .expect("uv must be installed");
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("uv resolve failed for {pkg}:\n{stderr}");
+        panic!("uv resolve failed for {requirement}:\n{stderr}");
     }
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     stderr
         .lines()
-        .filter_map(|line| line.trim().strip_prefix('+').map(|s| s.trim()))
+        .filter_map(|line| line.trim().strip_prefix('+').map(str::trim))
         .filter_map(|line| {
-            // Extract package name before ==
-            line.split_once("==")
-                .map(|(name, _)| filters::normalize_package_name(name))
+            line.split_once("==").map(|(name, _)| bare_name(name))
         })
         .collect()
 }
 
-/// Compare our resolver's output against uv's resolution for one package.
-fn compare_with_uv(
-    pkg: &str,
-    ours: &DashMap<String, Vec<Version>>,
-    uv_pkgs: &HashSet<String>,
-) {
-    let top_bare = bare_name(pkg);
-    // Our resolver excludes the top package; uv includes it.
-    let uv_set: HashSet<_> = uv_pkgs
-        .iter()
-        .filter(|n| *n != &top_bare)
+async fn solve_exact_target(
+    package_ref: &str,
+    target: &TargetEnv,
+) -> (Version, HashSet<String>) {
+    let client = reqwest::Client::new();
+    let cache = MetadataCache::new(client, PYPI_URL.to_string(), TEST_WORKERS);
+    let package = bare_name(package_ref);
+    let extras = collect_pkg_extras(&[package_ref.to_string()])
+        .remove(&package)
+        .unwrap_or_default();
+    let ctx = SolveContext {
+        cache: &cache,
+        target,
+        allow_prerelease: false,
+        include_source: false,
+        linux_max_glibc: LINUX_MAX_GLIBC,
+    };
+    let root_version =
+        select_first_installable_version(&cache, &ctx, &package).await;
+    let result = solve_one_target(&ctx, &package, &root_version, &extras)
+        .await
+        .expect("solver should succeed");
+
+    let packages = result
+        .solved_versions
+        .keys()
+        .filter(|name| *name != &package)
         .cloned()
         .collect();
-    let our_set: HashSet<_> = ours.iter().map(|e| e.key().clone()).collect();
+    (root_version, packages)
+}
 
-    let missing: Vec<_> = uv_set.difference(&our_set).collect();
-    let extra: Vec<_> = our_set.difference(&uv_set).collect();
-
-    if !missing.is_empty() {
-        println!("  !! MISSING (uv has, we don't): {:?}", missing);
+async fn select_first_installable_version(
+    cache: &MetadataCache,
+    ctx: &SolveContext<'_>,
+    package: &str,
+) -> Version {
+    for version in cache.get_all_versions(package).await.unwrap() {
+        if version.any_prerelease() {
+            continue;
+        }
+        if version_matches_target(ctx, package, &version)
+            .await
+            .unwrap()
+        {
+            return version;
+        }
     }
-    if !extra.is_empty() {
-        println!("  !! EXTRA (we have, uv doesn't): {:?}", extra);
-    }
-
-    // We expect our resolver to be a SUPERSET of uv's
-    // (uv resolves for one platform; we include all platform deps)
-    // Allow up to 2 missing for deep transitive deps that our
-    // BFS window/max_depth might not capture.
-    assert!(
-        missing.len() <= 2,
-        "{pkg}: uv found {n} packages not in our resolver output: {missing:?}",
-        n = missing.len(),
-        missing = missing
-    );
-    if !missing.is_empty() {
-        println!("  (allowed missing: {missing:?})");
-    }
+    panic!("no stable installable version found for {package}");
 }
 
 #[tokio::test]
 #[ignore = "needs network, run manually with --ignored"]
-async fn test_resolve_matches_uv_lock() {
+async fn test_solve_one_target_matches_uv_for_requests_linux_py312() {
     pip_mirror::logging::init(false);
-    let client = reqwest::Client::new();
-    let pypi_url = "https://pypi.org";
-    let pkg = "openai";
+    let target = py312_linux_target();
+    let (root_version, our_packages) =
+        solve_exact_target("requests", &target).await;
+    let requirement = format!("requests=={root_version}");
+    let uv_packages = uv_resolve_exact(&requirement, &target);
+    let uv_deps: HashSet<_> = uv_packages
+        .into_iter()
+        .filter(|name| name != "requests")
+        .collect();
 
-    println!("\n=== Testing {pkg} ===");
-    let result = resolve_one(pkg, &client, pypi_url).await;
-    println!("Resolved {} dependency packages:", result.len());
-    for entry in result.iter() {
-        println!(
-            "  {}: {}",
-            entry.key(),
-            entry
-                .value()
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-    assert!(!result.is_empty(), "no deps resolved for {pkg}");
-
-    let uv_pkgs = uv_resolve(pkg);
-    println!("uv resolved {} packages (including {pkg})", uv_pkgs.len());
-    compare_with_uv(pkg, &result, &uv_pkgs);
-    println!("  ✓ matches uv");
+    assert_eq!(our_packages, uv_deps);
 }
 
 #[tokio::test]
 #[ignore = "needs network, run manually with --ignored"]
-async fn test_resolve_all_e2e_packages() {
+async fn test_build_dependency_plan_e2e_smoke() {
     pip_mirror::logging::init(false);
     let client = reqwest::Client::new();
-    let pypi_url = "https://pypi.org";
-
     let e2e_packages = [
         "openai",
         "gradio",
@@ -150,18 +160,23 @@ async fn test_resolve_all_e2e_packages() {
         "playwright",
     ];
 
-    for pkg in e2e_packages {
-        println!("\n=== Testing {pkg} ===");
-        let result = resolve_one(pkg, &client, pypi_url).await;
-        println!("  -> {} dependency packages", result.len());
-
-        let uv_pkgs = uv_resolve(&bare_name(pkg));
-        println!(
-            "  uv -> {} packages (including {})",
-            uv_pkgs.len(),
-            bare_name(pkg)
+    for package in e2e_packages {
+        let params = PlanParams {
+            top_packages: &[package.to_string()],
+            pypi_url: PYPI_URL,
+            top_versions_per_package: 1,
+            adjacent_versions_per_side: 0,
+            allow_prerelease: false,
+            include_source: false,
+            linux_max_glibc: LINUX_MAX_GLIBC,
+            workers: TEST_WORKERS,
+        };
+        let plan = build_dependency_plan(&params, &client)
+            .await
+            .expect("build plan should succeed");
+        assert!(
+            !plan.planned_files.is_empty(),
+            "planned files should not be empty for {package}"
         );
-        compare_with_uv(pkg, &result, &uv_pkgs);
-        println!("  ✓");
     }
 }

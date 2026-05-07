@@ -1,5 +1,9 @@
+pub mod eligibility;
+pub mod error;
+pub mod markers;
 pub mod metadata;
+pub mod plan;
 pub mod pubgrub;
 pub mod resolve;
+pub mod solve;
 pub mod types;
-pub mod window;
