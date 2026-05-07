@@ -196,7 +196,7 @@ jobs:
           set -euo pipefail
           export UV_PYTHON_DOWNLOADS_JSON_URL="http://${MIRROR_HOST}:${MIRROR_PORT}/python-builds/index.json"
           export UV_PYTHON_INSTALL_DIR=/tmp/uv-pythons
-          export UV_PYTHON_PREFERENCE=managed-only
+          export UV_PYTHON_PREFERENCE=only-managed
           uv python install 3.12
           ls /tmp/uv-pythons
           PYBIN=$(uv python find 3.12)
@@ -480,7 +480,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $env:UV_PYTHON_DOWNLOADS_JSON_URL = "http://$($env:MIRROR_HOST):$($env:MIRROR_PORT)/python-builds/index.json"
           $env:UV_PYTHON_INSTALL_DIR = 'C:\uv-pythons'
-          $env:UV_PYTHON_PREFERENCE = 'managed-only'
+          $env:UV_PYTHON_PREFERENCE = 'only-managed'
           uv python install 3.12
           $pybin = (uv python find 3.12).Trim()
           Write-Host "uv python find 3.12 -> $pybin"
