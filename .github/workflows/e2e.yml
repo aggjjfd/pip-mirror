@@ -116,9 +116,23 @@ jobs:
           ls -lh mirror.tar.gz mirror.sha256
           sha256sum -c mirror.sha256
           # 验证外网机仓库结构
-          test -d /tmp/wan/packages/simple/requests
-          test -f /tmp/wan/packages/.store.db
-          test -f /tmp/wan/packages/python-builds/index.json
+          if [ ! -d /tmp/wan/packages/simple/requests ]; then
+            echo "BUG: /tmp/wan/packages/simple/requests 缺失"
+            ls -la /tmp/wan/packages || true
+            ls -la /tmp/wan/packages/simple || true
+            exit 1
+          fi
+          if [ ! -f /tmp/wan/packages/.store.db ]; then
+            echo "BUG: /tmp/wan/packages/.store.db 缺失"
+            ls -la /tmp/wan/packages || true
+            exit 1
+          fi
+          if [ ! -f /tmp/wan/packages/python-builds/index.json ]; then
+            echo "BUG: /tmp/wan/packages/python-builds/index.json 缺失"
+            ls -la /tmp/wan/packages || true
+            ls -la /tmp/wan/packages/python-builds || true
+            exit 1
+          fi
           echo "外网机仓库尺寸:"
           du -sh /tmp/wan/packages
 

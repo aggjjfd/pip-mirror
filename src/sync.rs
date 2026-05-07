@@ -7,7 +7,9 @@ use tracing::info;
 
 use crate::downloader::{FileInfo, download_pkg_files};
 use crate::indexer::generate_index;
-use crate::python_builds::download_python_builds_batch;
+use crate::python_builds::{
+    PythonBuildEntry, build_python_builds_index, download_python_builds_batch,
+};
 use crate::resolver::metadata::MetadataCache;
 use crate::resolver::pubgrub::bare_name;
 use crate::resolver::resolve::{
@@ -148,13 +150,41 @@ async fn finalize_sync(
     repo: &std::path::Path,
     download_python_builds: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if download_python_builds {
-        download_python_builds_batch(client, repo).await?;
+    let python_build_entries =
+        maybe_download_python_builds(client, repo, download_python_builds)
+            .await?;
+    rebuild_indexes(repo, python_build_entries).await?;
+    Ok(())
+}
+
+async fn maybe_download_python_builds(
+    client: &reqwest::Client,
+    repo: &Path,
+    enabled: bool,
+) -> Result<Option<Vec<PythonBuildEntry>>, Box<dyn std::error::Error>> {
+    if !enabled {
+        return Ok(None);
     }
+    let entries = download_python_builds_batch(client, repo).await?;
+    info!("已下载 Python 解释器，开始生成 python-builds/index.json");
+    Ok(Some(entries))
+}
+
+async fn rebuild_indexes(
+    repo: &Path,
+    python_build_entries: Option<Vec<PythonBuildEntry>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let repo_clone = repo.to_path_buf();
-    tokio::task::spawn_blocking(move || generate_index(&repo_clone))
-        .await
-        .map_err(|e| format!("索引生成线程错误: {e}"))?;
+    tokio::task::spawn_blocking(move || {
+        if let Some(entries) = python_build_entries {
+            build_python_builds_index(&entries, &repo_clone)
+                .map_err(|e| format!("生成 python-builds index 失败: {e}"))?;
+        }
+        generate_index(&repo_clone);
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("索引生成线程错误: {e}"))??;
     Ok(())
 }
 
