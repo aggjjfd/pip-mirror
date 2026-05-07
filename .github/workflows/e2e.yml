@@ -416,79 +416,84 @@ jobs:
           server_port = 18080
           '@ | Out-File -Encoding utf8 -FilePath stage.toml
 
-      - name: 'Mode 3 — start serve in background (Windows)'
+      - name: 'Mode 3 — serve + Windows 客户端验证（同一步执行避免后台进程跨步丢失）'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # 清除 RUNNER_TRACKING_ID 防止 GitHub Actions 在步骤边界杀掉后台进程
-          $env:RUNNER_TRACKING_ID = $null
+
+          function Invoke-Checked {
+            param(
+              [string]$FilePath,
+              [string[]]$Args
+            )
+            & $FilePath @Args
+            if ($LASTEXITCODE -ne 0) {
+              throw "Command failed ($LASTEXITCODE): $FilePath $($Args -join ' ')"
+            }
+          }
+
           $bin = "$(Get-Location)\target\release\pip-mirror.exe"
-          $proc = Start-Process -PassThru -WindowStyle Hidden `
-            -FilePath $bin -ArgumentList 'serve','-c','stage.toml' `
-            -RedirectStandardOutput server.log -RedirectStandardError server.err
-          $proc.Id | Out-File -Encoding ascii server.pid
-          $up = $false
-          for ($i = 0; $i -lt 60; $i++) {
-            try {
-              Invoke-WebRequest -UseBasicParsing `
-                -Uri "http://$($env:MIRROR_HOST):$($env:MIRROR_PORT)/simple/requests/" `
-                -TimeoutSec 5 | Out-Null
-              Write-Host "server up after $i s"
-              $up = $true
-              break
-            } catch { Start-Sleep -Seconds 1 }
-          }
-          if (-not $up) {
-            Write-Host '----- server.log -----'
-            if (Test-Path server.log) { Get-Content server.log }
-            Write-Host '----- server.err -----'
-            if (Test-Path server.err) { Get-Content server.err }
-            throw 'server did not come up within 60 s'
-          }
+          $proc = $null
+          try {
+            $proc = Start-Process -PassThru -WindowStyle Hidden `
+              -FilePath $bin -ArgumentList 'serve','-c','stage.toml' `
+              -RedirectStandardOutput server.log -RedirectStandardError server.err
+            $proc.Id | Out-File -Encoding ascii server.pid
 
-      - name: 'Client — uv pip install requests via mirror (Windows)'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          uv venv C:\client
-          $env:VIRTUAL_ENV = 'C:\client'
-          uv pip install --index-url "http://$($env:MIRROR_HOST):$($env:MIRROR_PORT)/simple" requests
-          & C:\client\Scripts\python.exe -c "import requests; print('client requests', requests.__version__)"
+            $up = $false
+            for ($i = 0; $i -lt 60; $i++) {
+              try {
+                Invoke-WebRequest -UseBasicParsing `
+                  -Uri "http://$($env:MIRROR_HOST):$($env:MIRROR_PORT)/simple/requests/" `
+                  -TimeoutSec 5 | Out-Null
+                Write-Host "server up after $i s"
+                $up = $true
+                break
+              } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $up) {
+              throw 'server did not come up within 60 s'
+            }
 
-      - name: 'Assert installed wheel really has Windows Tag (charset_normalizer)'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $env:VIRTUAL_ENV = 'C:\client'
-          $info = Get-ChildItem C:\client\Lib\site-packages -Directory `
-            | Where-Object { $_.Name -like 'charset_normalizer-*.dist-info' } | Select-Object -First 1
-          if (-not $info) { throw 'charset_normalizer dist-info not found in C:\client' }
-          $wheelMeta = Join-Path $info.FullName 'WHEEL'
-          if (-not (Test-Path $wheelMeta)) { throw "WHEEL meta not found at $wheelMeta" }
-          $tagLines = Get-Content $wheelMeta | Where-Object { $_ -match '^Tag:.*(win_amd64|win32)' }
-          if (-not $tagLines) {
-            Write-Host '----- WHEEL contents -----'
-            Get-Content $wheelMeta
-            throw 'installed charset_normalizer is NOT a Windows wheel — backfill missed?'
-          }
-          Write-Host "OK: charset_normalizer installed wheel tag(s):"
-          $tagLines | ForEach-Object { Write-Host "  $_" }
+            Invoke-Checked uv @('venv', 'C:\client')
+            $env:VIRTUAL_ENV = 'C:\client'
+            Invoke-Checked uv @('pip', 'install', '--index-url', "http://$($env:MIRROR_HOST):$($env:MIRROR_PORT)/simple", 'requests')
+            Invoke-Checked 'C:\client\Scripts\python.exe' @('-c', "import requests; print('client requests', requests.__version__)")
 
-      - name: 'Client — uv python install 3.12 via mirror python-builds index (Windows)'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $env:UV_PYTHON_DOWNLOADS_JSON_URL = "http://$($env:MIRROR_HOST):$($env:MIRROR_PORT)/python-builds/index.json"
-          $env:UV_PYTHON_INSTALL_DIR = 'C:\uv-pythons'
-          $env:UV_PYTHON_PREFERENCE = 'only-managed'
-          uv python install 3.12
-          $pybin = (uv python find 3.12).Trim()
-          Write-Host "uv python find 3.12 -> $pybin"
-          & "$pybin" --version
-          $hits = & sqlite3 'C:\stage\packages\.access_log.db' "SELECT COUNT(*) FROM access_log WHERE path LIKE '/python-builds/%';"
-          Write-Host "python-builds hits in mirror access_log: $hits"
-          if ([int]$hits -lt 1) {
-            throw 'access_log has zero /python-builds/ hits — uv may have bypassed mirror'
+            $info = Get-ChildItem C:\client\Lib\site-packages -Directory `
+              | Where-Object { $_.Name -like 'charset_normalizer-*.dist-info' } | Select-Object -First 1
+            if (-not $info) { throw 'charset_normalizer dist-info not found in C:\client' }
+            $wheelMeta = Join-Path $info.FullName 'WHEEL'
+            if (-not (Test-Path $wheelMeta)) { throw "WHEEL meta not found at $wheelMeta" }
+            $tagLines = Get-Content $wheelMeta | Where-Object { $_ -match '^Tag:.*(win_amd64|win32)' }
+            if (-not $tagLines) {
+              Write-Host '----- WHEEL contents -----'
+              Get-Content $wheelMeta
+              throw 'installed charset_normalizer is NOT a Windows wheel — backfill missed?'
+            }
+            Write-Host "OK: charset_normalizer installed wheel tag(s):"
+            $tagLines | ForEach-Object { Write-Host "  $_" }
+
+            $env:UV_PYTHON_DOWNLOADS_JSON_URL = "http://$($env:MIRROR_HOST):$($env:MIRROR_PORT)/python-builds/index.json"
+            $env:UV_PYTHON_INSTALL_DIR = 'C:\uv-pythons'
+            $env:UV_PYTHON_PREFERENCE = 'only-managed'
+            Invoke-Checked uv @('python', 'install', '3.12')
+            $pybin = (uv python find 3.12).Trim()
+            Write-Host "uv python find 3.12 -> $pybin"
+            Invoke-Checked $pybin @('--version')
+            $hits = & sqlite3 'C:\stage\packages\.access_log.db' "SELECT COUNT(*) FROM access_log WHERE path LIKE '/python-builds/%';"
+            Write-Host "python-builds hits in mirror access_log: $hits"
+            if ([int]$hits -lt 1) {
+              throw 'access_log has zero /python-builds/ hits — uv may have bypassed mirror'
+            }
+          } finally {
+            if ($proc -and -not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+            Write-Host '===== tail server.log ====='
+            if (Test-Path server.log) { Get-Content server.log -Tail 100 }
+            Write-Host '===== tail server.err ====='
+            if (Test-Path server.err) { Get-Content server.err -Tail 100 }
           }
 
       - name: 'Stop serve (Windows)'
