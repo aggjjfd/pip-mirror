@@ -153,11 +153,12 @@ impl MetadataCache {
             self.pypi_url.trim_end_matches('/'),
             pkg
         );
-        let resp = self.client.get(&url).send().await.map_err(|_e| {
+        let resp = self.client.get(&url).send().await.map_err(|e| {
             MetadataError::Http {
                 package: pkg.to_string(),
                 version: None,
                 status: 0,
+                source: e.to_string(),
             }
         })?;
 
@@ -167,6 +168,7 @@ impl MetadataCache {
                 package: pkg.to_string(),
                 version: None,
                 status,
+                source: "HTTP error response".to_string(),
             });
         }
 
@@ -212,11 +214,12 @@ impl MetadataCache {
             pkg,
             ver_str
         );
-        let resp = self.client.get(&url).send().await.map_err(|_e| {
+        let resp = self.client.get(&url).send().await.map_err(|e| {
             MetadataError::Http {
                 package: pkg.to_string(),
                 version: Some(ver_str.clone()),
                 status: 0,
+                source: e.to_string(),
             }
         })?;
 
@@ -226,6 +229,7 @@ impl MetadataCache {
                 package: pkg.to_string(),
                 version: Some(ver_str.clone()),
                 status,
+                source: "HTTP error response".to_string(),
             });
         }
 
@@ -305,11 +309,12 @@ impl MetadataCache {
             pkg,
             ver_str
         );
-        let resp = self.client.get(&url).send().await.map_err(|_e| {
+        let resp = self.client.get(&url).send().await.map_err(|e| {
             MetadataError::Http {
                 package: pkg.to_string(),
                 version: Some(ver_str.clone()),
                 status: 0,
+                source: e.to_string(),
             }
         })?;
         let status = resp.status().as_u16();
@@ -318,6 +323,7 @@ impl MetadataCache {
                 package: pkg.to_string(),
                 version: Some(ver_str.clone()),
                 status,
+                source: "HTTP error response".to_string(),
             });
         }
         let json: serde_json::Value =

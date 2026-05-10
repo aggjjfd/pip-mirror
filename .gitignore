@@ -13,6 +13,7 @@ env/
 packages/
 incremental/
 mirror.tar.gz
+mirror.tar.zst
 mirror.sha256
 state.json
 
@@ -38,3 +39,8 @@ Thumbs.db
 
 /target
 .claude/worktrees/
+
+pip-mirror
+
+# Local config override
+pip-mirror.toml

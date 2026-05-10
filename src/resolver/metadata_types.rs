@@ -24,6 +24,7 @@ pub enum MetadataError {
         package: String,
         version: Option<String>,
         status: u16,
+        source: String,
     },
     Json {
         package: String,
@@ -41,6 +42,24 @@ pub enum MetadataError {
     },
 }
 
+fn fmt_http_err(
+    f: &mut std::fmt::Formatter<'_>,
+    package: &str,
+    version: &Option<String>,
+    status: u16,
+    source: &str,
+) -> std::fmt::Result {
+    let ver = version
+        .as_ref()
+        .map(|v| format!("@{}", v))
+        .unwrap_or_default();
+    if status == 0 {
+        write!(f, "请求 {}{} 失败: {}", package, ver, source)
+    } else {
+        write!(f, "HTTP {} for {}{}", status, package, ver)
+    }
+}
+
 impl std::fmt::Display for MetadataError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -48,16 +67,8 @@ impl std::fmt::Display for MetadataError {
                 package,
                 version,
                 status,
-            } => write!(
-                f,
-                "HTTP {} for {}{}",
-                status,
-                package,
-                version
-                    .as_ref()
-                    .map(|v| format!("@{}", v))
-                    .unwrap_or_default()
-            ),
+                source,
+            } => fmt_http_err(f, package, version, *status, source),
             MetadataError::Json {
                 package,
                 version,

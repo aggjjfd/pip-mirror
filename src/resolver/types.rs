@@ -1,12 +1,26 @@
 use std::fmt;
 
-pub const SUPPORTED_PYTHON_MINORS: &[&str] =
-    &["3.8", "3.9", "3.10", "3.11", "3.12"];
-
-pub const SUPPORTED_RESOLUTION_TARGETS: &[(&str, &str, &str, &str)] = &[
-    ("linux", "Linux", "x86_64", "posix"),
-    ("win32", "Windows", "x86", "nt"),
-    ("win32", "Windows", "AMD64", "nt"),
+/// All resolution targets, listed explicitly as (python_version, sys_platform,
+/// platform_system, platform_machine, os_name).
+///
+/// Python 3.8 is the only version that keeps win32 x86; all later versions drop it.
+pub const SUPPORTED_RESOLUTION_TARGETS: &[(&str, &str, &str, &str, &str)] = &[
+    // Python 3.8
+    ("3.8", "linux", "Linux", "x86_64", "posix"),
+    ("3.8", "win32", "Windows", "x86", "nt"),
+    ("3.8", "win32", "Windows", "AMD64", "nt"),
+    // Python 3.9
+    ("3.9", "linux", "Linux", "x86_64", "posix"),
+    ("3.9", "win32", "Windows", "AMD64", "nt"),
+    // Python 3.10
+    ("3.10", "linux", "Linux", "x86_64", "posix"),
+    ("3.10", "win32", "Windows", "AMD64", "nt"),
+    // Python 3.11
+    ("3.11", "linux", "Linux", "x86_64", "posix"),
+    ("3.11", "win32", "Windows", "AMD64", "nt"),
+    // Python 3.12
+    ("3.12", "linux", "Linux", "x86_64", "posix"),
+    ("3.12", "win32", "Windows", "AMD64", "nt"),
 ];
 
 pub const CPYTHON_IMPLEMENTATION_NAME: &str = "cpython";
@@ -40,28 +54,24 @@ impl fmt::Display for TargetEnv {
 impl TargetEnv {
     /// Generate all resolution targets from constants.
     pub fn all_resolution_targets() -> Vec<TargetEnv> {
-        SUPPORTED_PYTHON_MINORS
-            .iter()
-            .flat_map(|pv| Self::build_targets_for_python_version(pv))
-            .collect()
-    }
-
-    /// Build all target environments for a single Python version.
-    fn build_targets_for_python_version(pv: &str) -> Vec<TargetEnv> {
-        let full = format!("{pv}{DEFAULT_IMPLEMENTATION_VERSION_SUFFIX}");
         SUPPORTED_RESOLUTION_TARGETS
             .iter()
-            .map(|(sys, sys_name, machine, os)| TargetEnv {
-                python_version: pv.to_string(),
-                python_full_version: full.clone(),
-                sys_platform: sys.to_string(),
-                platform_machine: machine.to_string(),
-                platform_system: sys_name.to_string(),
-                os_name: os.to_string(),
-                implementation_name: CPYTHON_IMPLEMENTATION_NAME.to_string(),
-                platform_python_implementation: CPYTHON_IMPLEMENTATION_LABEL
-                    .to_string(),
-                implementation_version: full.clone(),
+            .map(|(pv, sys, sys_name, machine, os)| {
+                let full =
+                    format!("{pv}{DEFAULT_IMPLEMENTATION_VERSION_SUFFIX}");
+                TargetEnv {
+                    python_version: pv.to_string(),
+                    python_full_version: full.clone(),
+                    sys_platform: sys.to_string(),
+                    platform_machine: machine.to_string(),
+                    platform_system: sys_name.to_string(),
+                    os_name: os.to_string(),
+                    implementation_name: CPYTHON_IMPLEMENTATION_NAME
+                        .to_string(),
+                    platform_python_implementation:
+                        CPYTHON_IMPLEMENTATION_LABEL.to_string(),
+                    implementation_version: full.clone(),
+                }
             })
             .collect()
     }

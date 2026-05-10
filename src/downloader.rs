@@ -275,6 +275,7 @@ async fn try_prefetched_write(
         if let Some(s) = store {
             s.record_download(fi, dest).await;
         }
+        return DownloadOutcome::Downloaded(fi.clone());
     }
     DownloadOutcome::Failed(fi.clone(), msg)
 }

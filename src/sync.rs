@@ -152,6 +152,26 @@ fn filter_incremental_files(
     Ok(store.filter_missing_files(&planned_files)?)
 }
 
+async fn record_skipped_files(
+    store: &DownloadStore,
+    repo: &std::path::Path,
+    skipped: &[crate::downloader::FileInfo],
+) {
+    for fi in skipped {
+        let dest = repo
+            .join("simple")
+            .join(&fi.package_name)
+            .join(&fi.filename);
+        if dest.exists()
+            && !store
+                .has_file(&fi.package_name, &fi.filename)
+                .unwrap_or(true)
+        {
+            store.record_download(fi, &dest).await;
+        }
+    }
+}
+
 async fn record_download_results(
     repo: &std::path::Path,
     result: &crate::downloader::DownloadResult,
@@ -159,9 +179,13 @@ async fn record_download_results(
     let db_path = repo.join(".store.db");
     let store = DownloadStore::open(&db_path)?;
     for fi in &result.downloaded {
-        let dest = repo.join(&fi.package_name).join(&fi.filename);
+        let dest = repo
+            .join("simple")
+            .join(&fi.package_name)
+            .join(&fi.filename);
         store.record_download(fi, &dest).await;
     }
+    record_skipped_files(&store, repo, &result.skipped).await;
     for (fi, err) in &result.failed {
         tracing::warn!("  [FAIL] {} {}: {}", fi.package_name, fi.filename, err);
     }

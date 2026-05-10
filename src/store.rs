@@ -95,7 +95,7 @@ impl DownloadStore {
     ) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO downloaded_files (filename, package_name, version, sha256, size)
+            "INSERT OR IGNORE INTO downloaded_files (filename, package_name, version, sha256, size)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![rec.filename, rec.package_name, rec.version, rec.sha256, rec.size],
         )?;
