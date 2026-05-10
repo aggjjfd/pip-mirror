@@ -37,3 +37,4 @@ Thumbs.db
 # Added by cargo
 
 /target
+.claude/worktrees/
