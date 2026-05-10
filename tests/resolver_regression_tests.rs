@@ -136,7 +136,7 @@ fn test_installability_respects_target_platform() {
 }
 
 #[test]
-fn test_installability_rejects_newer_glibc_without_sdist() {
+fn test_installability_accepts_sdist_fallback_when_enabled() {
     let files = vec![file("demo-1.0.0-py3-none-manylinux_2_40_x86_64.whl")];
     assert!(!version_is_installable_for_target(
         &files,
@@ -144,12 +144,22 @@ fn test_installability_rejects_newer_glibc_without_sdist() {
         false,
         "2.39",
     ));
-    let with_sdist = vec![
+    let with_non_pure_sdist = vec![
         file("demo-1.0.0-py3-none-manylinux_2_40_x86_64.whl"),
         file("demo-1.0.0.tar.gz"),
     ];
     assert!(version_is_installable_for_target(
-        &with_sdist,
+        &with_non_pure_sdist,
+        &linux_target(),
+        true,
+        "2.39",
+    ));
+    let with_wheel_evidence_sdist = vec![
+        file("demo-1.0.0-py2-none-any.whl"),
+        file("demo-1.0.0.tar.gz"),
+    ];
+    assert!(version_is_installable_for_target(
+        &with_wheel_evidence_sdist,
         &linux_target(),
         true,
         "2.39",

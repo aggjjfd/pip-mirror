@@ -213,3 +213,20 @@ fn test_select_files_skips_future_python_wheels() {
             .contains(&"pyarrow-24.0.0-cp314-cp314-manylinux_2_28_x86_64.whl")
     );
 }
+
+#[test]
+fn test_select_files_fallback_sdist_requires_only_source_distribution() {
+    let targets = vec![linux_target("3.12")];
+    let files = vec![
+        file_info("demo-1.0.0-cp312-cp312-win_amd64.whl"),
+        file_info("demo-1.0.0.tar.gz"),
+    ];
+    let selected =
+        filters::select_files_for_version(&files, &targets, true, "2.39");
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].filename, "demo-1.0.0.tar.gz");
+
+    let selected_without_source =
+        filters::select_files_for_version(&files, &targets, false, "2.39");
+    assert!(selected_without_source.is_empty());
+}

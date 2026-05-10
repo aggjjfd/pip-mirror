@@ -96,6 +96,31 @@ fn test_collect_version_files_filters_platform() {
 }
 
 #[test]
+fn test_collect_version_files_skips_sdist_when_same_version_has_wheel() {
+    let files = vec![
+        downloader::FileInfo {
+            filename: "pkg-1.0-cp312-cp312-win_amd64.whl".to_string(),
+            url: "https://example.com/win.whl".to_string(),
+            sha256: Some("a".repeat(64)),
+            size: Some(100),
+            package_name: "pkg".to_string(),
+            version: "1.0.0".to_string(),
+        },
+        downloader::FileInfo {
+            filename: "pkg-1.0.tar.gz".to_string(),
+            url: "https://example.com/sdist.tar.gz".to_string(),
+            sha256: Some("b".repeat(64)),
+            size: Some(100),
+            package_name: "pkg".to_string(),
+            version: "1.0.0".to_string(),
+        },
+    ];
+    let result = downloader::collect_version_files(&files);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].filename, "pkg-1.0-cp312-cp312-win_amd64.whl");
+}
+
+#[test]
 fn test_version_has_target() {
     let files = vec![
         downloader::FileInfo {
