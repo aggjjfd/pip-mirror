@@ -3,8 +3,6 @@ use std::collections::HashSet;
 use crate::downloader::FileInfo;
 use crate::resolver::types::TargetEnv;
 
-// ── platform rejection ──
-
 static REJECTED_SUBSTRINGS: &[&str] = &[
     "aarch64",
     "arm64",
@@ -21,12 +19,6 @@ static REJECTED_SUBSTRINGS: &[&str] = &[
     "riscv64",
     "wasm32",
 ];
-
-fn sub_tag_rejected(sub: &str) -> bool {
-    REJECTED_SUBSTRINGS.iter().any(|r| sub.contains(r))
-}
-
-// ── glibc version parsing ──
 
 /// Parse a manylinux tag into its (major, minor) glibc version.
 ///
@@ -58,13 +50,8 @@ fn parse_manylinux_glibc(tag: &str) -> Option<(u32, u32)> {
 }
 
 fn parse_glibc_version(s: &str) -> Option<(u32, u32)> {
-    let parts: Vec<&str> = s.split('.').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    let major: u32 = parts[0].parse().ok()?;
-    let minor: u32 = parts[1].parse().ok()?;
-    Some((major, minor))
+    let (major, minor) = s.split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
 const DEFAULT_MAX_GLIBC: (u32, u32) = (2, 39);
@@ -88,7 +75,10 @@ fn is_accepted_wheel_impl(filename: &str, max_glibc: (u32, u32)) -> bool {
     };
 
     // Reject if any tag contains a banned substring.
-    if sub_tags.iter().any(|t| sub_tag_rejected(t)) {
+    if sub_tags
+        .iter()
+        .any(|t| REJECTED_SUBSTRINGS.iter().any(|r| t.contains(r)))
+    {
         return false;
     }
 
@@ -112,8 +102,6 @@ pub fn is_accepted_wheel_with_glibc(filename: &str, max_glibc: &str) -> bool {
     let glibc = parse_glibc_version(max_glibc).unwrap_or(DEFAULT_MAX_GLIBC);
     is_accepted_wheel_impl(filename, glibc)
 }
-
-// ── wheel platform parsing ──
 
 /// Parse the platform tag(s) from a wheel filename.
 /// Returns `None` if the file is not a `.whl`.
@@ -250,6 +238,13 @@ pub fn is_source_distribution(filename: &str) -> bool {
         || filename.ends_with(".tar.xz")
 }
 
+pub fn sdist_fallback_allowed(
+    files: &[FileInfo],
+    include_source: bool,
+) -> bool {
+    include_source && files.iter().any(|f| is_source_distribution(&f.filename))
+}
+
 fn target_platform_key(target: &TargetEnv) -> Option<&'static str> {
     match (
         target.sys_platform.as_str(),
@@ -289,7 +284,10 @@ fn wheel_matches_target(
     let Some(sub_tags) = parse_wheel_platform(filename) else {
         return false;
     };
-    if sub_tags.iter().any(|tag| sub_tag_rejected(tag)) {
+    if sub_tags
+        .iter()
+        .any(|tag| REJECTED_SUBSTRINGS.iter().any(|r| tag.contains(r)))
+    {
         return false;
     }
     sub_tags
@@ -328,21 +326,14 @@ pub fn version_is_installable_for_target(
     include_source: bool,
     max_glibc: &str,
 ) -> bool {
-    if files.iter().any(|file| {
+    files.iter().any(|file| {
         file.filename.ends_with(".whl")
             && wheel_is_installable_for_target(
                 &file.filename,
                 target,
                 max_glibc,
             )
-    }) {
-        return true;
-    }
-
-    include_source
-        && files
-            .iter()
-            .any(|file| is_source_distribution(&file.filename))
+    }) || sdist_fallback_allowed(files, include_source)
 }
 
 // ── file selection helpers ──
@@ -386,13 +377,15 @@ pub fn select_files_for_version(
         return kept_wheels;
     }
 
-    if include_source {
-        files
-            .iter()
-            .filter(|fi| is_source_distribution(&fi.filename))
-            .cloned()
-            .collect()
-    } else {
-        Vec::new()
+    if !include_source {
+        return Vec::new();
     }
+    if sdist_fallback_allowed(files, include_source) {
+        return files
+            .iter()
+            .filter(|f| is_source_distribution(&f.filename))
+            .cloned()
+            .collect();
+    }
+    Vec::new()
 }

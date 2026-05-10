@@ -1,8 +1,10 @@
+pub(crate) mod build_requires;
 pub(crate) mod discovery;
 pub mod eligibility;
 pub mod error;
 pub mod markers;
 pub mod metadata;
+pub mod metadata_types;
 pub mod plan;
 pub mod pubgrub;
 pub mod resolve;

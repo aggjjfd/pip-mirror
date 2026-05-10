@@ -1,7 +1,7 @@
 use pep440_rs::Version;
 
 use super::markers::MarkerError;
-use super::metadata::MetadataError;
+use super::metadata_types::MetadataError;
 
 #[derive(Debug, Clone)]
 pub enum ResolveError {

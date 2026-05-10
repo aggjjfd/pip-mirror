@@ -7,19 +7,27 @@ use super::{
     DownloadOutcome, DownloadResult, FileInfo, should_skip, try_download,
 };
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_download_pipeline(
     client: &reqwest::Client,
     repo: &Path,
     files: &[FileInfo],
+    prefetched_files: &crate::downloader::PrefetchedFiles,
     include_source: bool,
     download_workers: usize,
 ) -> DownloadResult {
     let mut result = DownloadResult::default();
     let store = open_download_store(repo);
     let pending = collect_pending_downloads(files, include_source, &mut result);
-    let outcomes =
-        run_download_tasks(client, repo, &store, pending, download_workers)
-            .await;
+    let outcomes = run_download_tasks(
+        client,
+        repo,
+        &store,
+        prefetched_files,
+        pending,
+        download_workers,
+    )
+    .await;
     merge_download_outcomes(&mut result, outcomes);
     sort_download_result(&mut result);
     result
@@ -49,17 +57,21 @@ fn collect_pending_downloads(
     pending
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_download_tasks(
     client: &reqwest::Client,
     repo: &Path,
     store: &Option<Arc<crate::store::DownloadStore>>,
+    prefetched_files: &crate::downloader::PrefetchedFiles,
     pending: Vec<FileInfo>,
     download_workers: usize,
 ) -> Vec<DownloadOutcome> {
     stream::iter(pending)
         .map(|fi| {
             let store = store.clone();
-            async move { try_download(client, &store, &fi, repo).await }
+            async move {
+                try_download(client, &store, prefetched_files, &fi, repo).await
+            }
         })
         .buffer_unordered(download_workers)
         .collect::<Vec<_>>()

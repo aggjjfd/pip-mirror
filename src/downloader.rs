@@ -2,11 +2,12 @@ mod pipeline;
 
 use crate::filters::{
     is_accepted_wheel, is_source_distribution, platform_to_target,
+    sdist_fallback_allowed,
 };
 use dashmap::DashMap;
 use reqwest::Client;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -34,6 +35,8 @@ pub struct DownloadResult {
     pub failed: Vec<(FileInfo, String)>,
     pub warnings: Vec<String>,
 }
+
+pub type PrefetchedFiles = HashMap<(String, String), Vec<u8>>;
 
 fn collect_release_files(
     releases: &serde_json::Value,
@@ -149,6 +152,7 @@ pub fn select_latest_versions(
 /// Collect all accepted wheels and sdists for a version.
 /// If a version has any accepted wheel, only wheels are kept (sdist skipped).
 /// If a version has no wheel, sdist is kept as fallback.
+#[allow(clippy::excessive_nesting)]
 pub fn collect_version_files(files: &[FileInfo]) -> Vec<FileInfo> {
     let mut whl_versions = HashSet::new();
     let mut result = Vec::with_capacity(files.len());
@@ -158,12 +162,13 @@ pub fn collect_version_files(files: &[FileInfo]) -> Vec<FileInfo> {
             result.push(fi.clone());
         }
     }
-    for fi in files {
-        if !fi.filename.ends_with(".whl")
-            && is_source_distribution(&fi.filename)
-            && !whl_versions.contains(&fi.version)
-        {
-            result.push(fi.clone());
+    if sdist_fallback_allowed(files, true) {
+        for fi in files {
+            let is_sdist = is_source_distribution(&fi.filename);
+            let no_wheel = !whl_versions.contains(&fi.version);
+            if is_sdist && no_wheel {
+                result.push(fi.clone());
+            }
         }
     }
     result
@@ -246,41 +251,45 @@ pub async fn download_file(
     }
     write_atomic(dest, &bytes).await
 }
-
 enum DownloadOutcome {
     Skipped(FileInfo),
     Downloaded(FileInfo),
     Failed(FileInfo, String),
 }
 
-async fn try_download(
-    client: &reqwest::Client,
-    store: &Option<Arc<crate::store::DownloadStore>>,
+async fn try_prefetched_write(
     fi: &FileInfo,
-    repo: &std::path::Path,
+    dest: &Path,
+    bytes: &[u8],
+    store: &Option<Arc<crate::store::DownloadStore>>,
 ) -> DownloadOutcome {
-    let dest = repo
-        .join("simple")
-        .join(&fi.package_name)
-        .join(&fi.filename);
-    if dest.exists() {
-        return DownloadOutcome::Skipped(fi.clone());
-    }
-    // 外网机清包场景：db 有记录但磁盘无文件，跳过重新下载
-    if store.as_ref().is_some_and(|s| {
-        s.has_file(&fi.package_name, &fi.filename).unwrap_or(false)
-    }) {
-        tracing::debug!(
-            "db 有记录且磁盘无文件，跳过（清包场景）: {}",
-            dest.display()
+    if !bytes_match_sha256(fi, bytes) {
+        return DownloadOutcome::Failed(
+            fi.clone(),
+            "预下载文件 hash 校验失败".to_string(),
         );
-        return DownloadOutcome::Skipped(fi.clone());
     }
-    let (ok, msg) = download_file(client, fi, &dest).await;
+    let (ok, msg) = write_atomic(dest, bytes).await;
+    if ok {
+        tracing::info!("复用预下载文件: {}", fi.filename);
+        if let Some(s) = store {
+            s.record_download(fi, dest).await;
+        }
+    }
+    DownloadOutcome::Failed(fi.clone(), msg)
+}
+
+async fn try_network_download(
+    client: &reqwest::Client,
+    fi: &FileInfo,
+    dest: &Path,
+    store: &Option<Arc<crate::store::DownloadStore>>,
+) -> DownloadOutcome {
+    let (ok, msg) = download_file(client, fi, dest).await;
     if ok {
         tracing::info!("下载完成: {}", fi.filename);
         if let Some(s) = store {
-            s.record_download(fi, &dest).await;
+            s.record_download(fi, dest).await;
         }
         DownloadOutcome::Downloaded(fi.clone())
     } else {
@@ -288,11 +297,43 @@ async fn try_download(
     }
 }
 
+async fn try_download(
+    client: &reqwest::Client,
+    store: &Option<Arc<crate::store::DownloadStore>>,
+    prefetched_files: &PrefetchedFiles,
+    fi: &FileInfo,
+    repo: &std::path::Path,
+) -> DownloadOutcome {
+    let dest = repo
+        .join("simple")
+        .join(&fi.package_name)
+        .join(&fi.filename);
+    if dest.exists()
+        || store.as_ref().is_some_and(|s| {
+            s.has_file(&fi.package_name, &fi.filename).unwrap_or(false)
+        })
+    {
+        return DownloadOutcome::Skipped(fi.clone());
+    }
+    let key = (fi.package_name.clone(), fi.filename.clone());
+    if let Some(bytes) = prefetched_files.get(&key) {
+        return try_prefetched_write(fi, &dest, bytes, store).await;
+    }
+    try_network_download(client, fi, &dest, store).await
+}
+
+fn bytes_match_sha256(fi: &FileInfo, bytes: &[u8]) -> bool {
+    fi.sha256.as_ref().is_none_or(|expected| {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let actual = format!("{:x}", hasher.finalize());
+        actual.eq_ignore_ascii_case(expected)
+    })
+}
 fn should_skip(fi: &FileInfo, include_source: bool) -> bool {
     (!include_source && is_source_distribution(&fi.filename))
         || (fi.filename.ends_with(".whl") && !is_accepted_wheel(&fi.filename))
 }
-
 pub async fn download_pkg_files(
     client: &reqwest::Client,
     repo: &std::path::Path,
@@ -300,10 +341,31 @@ pub async fn download_pkg_files(
     include_source: bool,
     download_workers: usize,
 ) -> DownloadResult {
+    let prefetched_files = PrefetchedFiles::new();
+    download_pkg_files_with_prefetched(
+        client,
+        repo,
+        files,
+        &prefetched_files,
+        include_source,
+        download_workers,
+    )
+    .await
+}
+#[allow(clippy::too_many_arguments)]
+pub async fn download_pkg_files_with_prefetched(
+    client: &reqwest::Client,
+    repo: &std::path::Path,
+    files: &[FileInfo],
+    prefetched_files: &PrefetchedFiles,
+    include_source: bool,
+    download_workers: usize,
+) -> DownloadResult {
     pipeline::run_download_pipeline(
         client,
         repo,
         files,
+        prefetched_files,
         include_source,
         download_workers,
     )

@@ -5,7 +5,9 @@ use dashmap::DashMap;
 use pep440_rs::Version;
 use tracing::info;
 
-use crate::downloader::{FileInfo, download_pkg_files};
+use crate::downloader::{
+    FileInfo, PrefetchedFiles, download_pkg_files_with_prefetched,
+};
 use crate::indexer::generate_index;
 use crate::python_builds::{
     PythonBuildEntry, build_python_builds_index, download_python_builds_batch,
@@ -48,8 +50,9 @@ pub async fn do_sync(
     let repo = &config.repository_dir;
     let client = build_sync_client()?;
     let plan = create_sync_plan(config, &client, pkgs, no_deps).await?;
-    let pending = prepare_pending_files(repo, plan)?;
-    let result = run_downloads(config, &client, repo, &pending).await;
+    let (pending, prefetched) = prepare_pending_files(repo, plan)?;
+    let result =
+        run_downloads(config, &client, repo, &pending, &prefetched).await;
     record_download_results(repo, &result).await?;
     finalize_sync(&client, repo, download_python_builds).await?;
     Ok((client, result.downloaded))
@@ -64,11 +67,15 @@ fn build_sync_client() -> Result<reqwest::Client, reqwest::Error> {
 fn prepare_pending_files(
     repo: &Path,
     plan: DependencyPlan,
-) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
+) -> Result<(Vec<FileInfo>, PrefetchedFiles), Box<dyn std::error::Error>> {
     let planned_count = plan.planned_files.len();
     let pending = filter_incremental_files(repo, plan.planned_files)?;
+    let prefetched = filter_prefetched_for_pending(
+        pending.as_slice(),
+        plan.prefetched_files,
+    );
     log_pending_files(pending.len(), planned_count);
-    Ok(pending)
+    Ok((pending, prefetched))
 }
 
 fn log_pending_files(pending_count: usize, planned_count: usize) {
@@ -84,15 +91,31 @@ async fn run_downloads(
     client: &reqwest::Client,
     repo: &Path,
     pending: &[FileInfo],
+    prefetched: &PrefetchedFiles,
 ) -> crate::downloader::DownloadResult {
-    download_pkg_files(
+    download_pkg_files_with_prefetched(
         client,
         repo,
         pending,
+        prefetched,
         config.include_source,
         config.download_workers,
     )
     .await
+}
+
+fn filter_prefetched_for_pending(
+    pending: &[FileInfo],
+    prefetched_files: PrefetchedFiles,
+) -> PrefetchedFiles {
+    let mut result = PrefetchedFiles::new();
+    for file in pending {
+        let key = (file.package_name.clone(), file.filename.clone());
+        if let Some(bytes) = prefetched_files.get(&key) {
+            result.insert(key, bytes.clone());
+        }
+    }
+    result
 }
 
 async fn create_sync_plan(
@@ -228,6 +251,7 @@ async fn build_top_only_plan(
 
     Ok(DependencyPlan {
         planned_files,
+        prefetched_files: PrefetchedFiles::new(),
         solved_versions,
     })
 }

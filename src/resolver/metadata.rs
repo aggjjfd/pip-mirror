@@ -1,124 +1,12 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashmap::DashMap;
 use pep440_rs::Version;
 
+use super::metadata_types::{
+    MetadataError, PackageIndex, VersionMetadata, collect_files_by_version,
+};
 use crate::downloader::FileInfo;
-
-/// Package-level index: all versions and their files.
-#[derive(Debug, Clone)]
-pub struct PackageIndex {
-    pub versions: Vec<Version>,
-    pub files_by_version: HashMap<Version, Vec<FileInfo>>,
-}
-
-/// Version-level metadata: requires_dist and requires_python.
-#[derive(Debug, Clone)]
-pub struct VersionMetadata {
-    pub requires_dist: Vec<String>,
-    pub requires_python: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub enum MetadataError {
-    Http {
-        package: String,
-        version: Option<String>,
-        status: u16,
-    },
-    Json {
-        package: String,
-        version: Option<String>,
-        msg: String,
-    },
-    MissingField {
-        package: String,
-        field: String,
-    },
-}
-
-impl std::fmt::Display for MetadataError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MetadataError::Http {
-                package,
-                version,
-                status,
-            } => write!(
-                f,
-                "HTTP {} for {}{}",
-                status,
-                package,
-                version
-                    .as_ref()
-                    .map(|v| format!("@{}", v))
-                    .unwrap_or_default()
-            ),
-            MetadataError::Json {
-                package,
-                version,
-                msg,
-            } => write!(
-                f,
-                "JSON error for {}{}: {}",
-                package,
-                version
-                    .as_ref()
-                    .map(|v| format!("@{}", v))
-                    .unwrap_or_default(),
-                msg
-            ),
-            MetadataError::MissingField { package, field } => {
-                write!(
-                    f,
-                    "Missing field '{}' in response for {}",
-                    field, package
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for MetadataError {}
-
-fn parse_file_info(
-    f: &serde_json::Value,
-    pkg: &str,
-    version_str: &str,
-) -> Option<FileInfo> {
-    Some(FileInfo {
-        filename: f["filename"].as_str()?.to_string(),
-        url: f["url"].as_str()?.to_string(),
-        sha256: f
-            .get("digests")
-            .and_then(|d| d.get("sha256"))
-            .and_then(|s| s.as_str())
-            .map(String::from),
-        size: f["size"].as_u64(),
-        package_name: pkg.to_string(),
-        version: version_str.to_string(),
-    })
-}
-
-fn collect_files_by_version(
-    releases: &serde_json::Map<String, serde_json::Value>,
-    pkg: &str,
-) -> HashMap<Version, Vec<FileInfo>> {
-    let mut result = HashMap::new();
-    for (version_str, file_list) in releases {
-        if let Ok(ver) = version_str.parse::<Version>() {
-            let files: Vec<FileInfo> = file_list
-                .as_array()
-                .unwrap_or(&vec![])
-                .iter()
-                .filter_map(|f| parse_file_info(f, pkg, version_str))
-                .collect();
-            result.insert(ver, files);
-        }
-    }
-    result
-}
 
 type InFlight<T> =
     Arc<tokio::sync::Mutex<Option<Result<Arc<T>, MetadataError>>>>;
@@ -130,6 +18,10 @@ pub struct MetadataCache {
     sem: tokio::sync::Semaphore,
     package_index: DashMap<String, InFlight<PackageIndex>>,
     version_metadata: DashMap<(String, Version), InFlight<VersionMetadata>>,
+    build_requires: DashMap<
+        (String, Version),
+        InFlight<super::build_requires::BuildRequiresProbe>,
+    >,
 }
 
 impl MetadataCache {
@@ -144,6 +36,7 @@ impl MetadataCache {
             sem: tokio::sync::Semaphore::new(metadata_workers),
             package_index: DashMap::new(),
             version_metadata: DashMap::new(),
+            build_requires: DashMap::new(),
         }
     }
 
@@ -368,6 +261,80 @@ impl MetadataCache {
         Ok(VersionMetadata {
             requires_dist,
             requires_python,
+        })
+    }
+
+    pub(crate) async fn get_build_requires_probe(
+        &self,
+        pkg: &str,
+        ver: &Version,
+    ) -> Result<Arc<super::build_requires::BuildRequiresProbe>, MetadataError>
+    {
+        let normalized = crate::filters::normalize_package_name(pkg);
+        let key = (normalized.clone(), ver.clone());
+        let shared = self
+            .build_requires
+            .entry(key)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None)))
+            .clone();
+
+        if let Some(ref result) = *shared.lock().await {
+            return result.clone();
+        }
+        let mut guard = shared.lock().await;
+        if let Some(ref result) = *guard {
+            return result.clone();
+        }
+
+        let result = self.fetch_build_requires_probe(&normalized, ver).await;
+        let arc_result = result.map(Arc::new);
+        *guard = Some(arc_result.clone());
+        arc_result
+    }
+
+    async fn fetch_build_requires_probe(
+        &self,
+        pkg: &str,
+        ver: &Version,
+    ) -> Result<super::build_requires::BuildRequiresProbe, MetadataError> {
+        let _permit = self.sem.acquire().await.expect("semaphore not closed");
+        let ver_str = ver.to_string();
+        let url = format!(
+            "{}/pypi/{}/{}/json",
+            self.pypi_url.trim_end_matches('/'),
+            pkg,
+            ver_str
+        );
+        let resp = self.client.get(&url).send().await.map_err(|_e| {
+            MetadataError::Http {
+                package: pkg.to_string(),
+                version: Some(ver_str.clone()),
+                status: 0,
+            }
+        })?;
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            return Err(MetadataError::Http {
+                package: pkg.to_string(),
+                version: Some(ver_str.clone()),
+                status,
+            });
+        }
+        let json: serde_json::Value =
+            resp.json().await.map_err(|e| MetadataError::Json {
+                package: pkg.to_string(),
+                version: Some(ver_str.clone()),
+                msg: e.to_string(),
+            })?;
+        super::build_requires::probe_build_requires_from_version_json(
+            &self.client,
+            &json,
+        )
+        .await
+        .map_err(|detail| MetadataError::SdistBuildRequires {
+            package: pkg.to_string(),
+            version: ver_str,
+            detail,
         })
     }
 }

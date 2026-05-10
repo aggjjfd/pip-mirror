@@ -29,6 +29,7 @@ pub struct PlanParams<'a> {
 
 pub struct DependencyPlan {
     pub planned_files: Vec<FileInfo>,
+    pub prefetched_files: HashMap<(String, String), Vec<u8>>,
     pub solved_versions: DashMap<String, Vec<Version>>,
 }
 
@@ -58,6 +59,13 @@ pub async fn build_dependency_plan(
     merge_top_versions(&expanded, &top_versions);
     let planned_files =
         collect_planned_files(params, &cache, &expanded).await?;
+    let prefetched_files = super::build_requires::collect_prefetched_sdists(
+        &cache,
+        &planned_files,
+        params.include_source,
+        params.metadata_workers,
+    )
+    .await?;
 
     info!(
         "依赖规划完成: {} 个解，{} 个文件",
@@ -66,6 +74,7 @@ pub async fn build_dependency_plan(
     );
     Ok(DependencyPlan {
         planned_files,
+        prefetched_files,
         solved_versions: expanded,
     })
 }
@@ -118,25 +127,7 @@ async fn solve_all_targets(
 ) -> Result<Vec<super::solve::SolveResult>, ResolveError> {
     let jobs = build_solve_jobs(top_versions, pkg_extras, targets);
     let results = stream::iter(jobs)
-        .map(|job| async move {
-            let ctx = build_solve_context(params, cache, &job.target);
-            if !version_matches_target(&ctx, &job.package, &job.version).await?
-            {
-                return Ok::<_, ResolveError>((job.index, None));
-            }
-            info!(
-                "开始求解: {}@{} -> {}",
-                job.package, job.version, job.target
-            );
-            let solved =
-                solve_one_target(&ctx, &job.package, &job.version, &job.extras)
-                    .await?;
-            info!(
-                "求解完成: {}@{} -> {}",
-                job.package, job.version, job.target
-            );
-            Ok((job.index, Some(solved)))
-        })
+        .map(|job| async move { run_solve_job(params, cache, &job).await })
         .buffer_unordered(params.resolve_workers)
         .collect::<Vec<_>>()
         .await;
@@ -146,6 +137,39 @@ async fn solve_all_targets(
         .into_iter()
         .filter_map(|(_, result)| result)
         .collect())
+}
+
+async fn run_solve_job(
+    params: &PlanParams<'_>,
+    cache: &MetadataCache,
+    job: &SolveJob,
+) -> Result<(usize, Option<super::solve::SolveResult>), ResolveError> {
+    let ctx = build_solve_context(params, cache, &job.target);
+    if !version_matches_target(&ctx, &job.package, &job.version).await? {
+        return Ok((job.index, None));
+    }
+    info!(
+        "开始求解: {}@{} -> {}",
+        job.package, job.version, job.target
+    );
+    let result =
+        solve_one_target(&ctx, &job.package, &job.version, &job.extras).await;
+    if let Err(ResolveError::NoSolution { detail, .. }) = &result {
+        tracing::warn!(
+            "  ! 求解跳过: {}@{} -> {} 无可用依赖解: {}",
+            job.package,
+            job.version,
+            job.target,
+            detail
+        );
+        return Ok((job.index, None));
+    }
+    let solved = result?;
+    info!(
+        "求解完成: {}@{} -> {}",
+        job.package, job.version, job.target
+    );
+    Ok((job.index, Some(solved)))
 }
 
 struct SolveJob {
