@@ -383,7 +383,11 @@ jobs:
       - name: 'Build pip-mirror (Windows Rust)'
         run: |
           rustup default stable
-          cargo build --release
+          rustup target add x86_64-pc-windows-msvc
+          cargo build --release --target x86_64-pc-windows-msvc
+          # Python script expects the binary under target/release/
+          New-Item -ItemType Directory -Force -Path target/release | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/pip-mirror.exe target/release/pip-mirror.exe
 
       - name: 'Download mirror.tar.gz from linux job'
         uses: actions/download-artifact@v4
