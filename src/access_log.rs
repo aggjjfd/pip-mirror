@@ -2,17 +2,24 @@ use std::sync::Mutex;
 
 use rusqlite::Connection;
 use std::path::Path;
+use type_state_builder::TypeStateBuilder;
 
 pub struct AccessLogger {
     conn: Mutex<Connection>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, TypeStateBuilder)]
+#[builder(impl_into)]
 pub struct AccessRecord {
+    #[builder(required)]
     pub timestamp: String,
+    #[builder(required)]
     pub client_ip: String,
+    #[builder(required)]
     pub method: String,
+    #[builder(required)]
     pub path: String,
+    #[builder(required)]
     pub status_code: u16,
     pub user_agent: Option<String>,
     pub bytes_sent: Option<u64>,

@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use type_state_builder::TypeStateBuilder;
 
 pub struct HttpCtx<'a> {
     pub client: &'a Client,
@@ -17,13 +18,18 @@ pub struct HttpCtx<'a> {
 }
 
 /// File metadata as returned by PyPI JSON API.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, TypeStateBuilder)]
+#[builder(impl_into)]
 pub struct FileInfo {
+    #[builder(required)]
     pub filename: String,
+    #[builder(required)]
     pub url: String,
     pub sha256: Option<String>,
     pub size: Option<u64>,
+    #[builder(required)]
     pub package_name: String,
+    #[builder(required)]
     pub version: String,
 }
 
@@ -47,18 +53,21 @@ fn collect_release_files(
         releases.as_object().unwrap_or(&serde_json::Map::new())
     {
         for f in file_list.as_array().unwrap_or(&vec![]) {
-            files.push(FileInfo {
-                filename: f["filename"].as_str().unwrap_or("").to_string(),
-                url: f["url"].as_str().unwrap_or("").to_string(),
-                sha256: f
-                    .get("digests")
-                    .and_then(|d| d.get("sha256"))
-                    .and_then(|s| s.as_str())
-                    .map(String::from),
-                size: f["size"].as_u64(),
-                package_name: pkg.to_string(),
-                version: version.clone(),
-            });
+            files.push(
+                FileInfo::builder()
+                    .filename(f["filename"].as_str().unwrap_or("").to_string())
+                    .url(f["url"].as_str().unwrap_or("").to_string())
+                    .package_name(pkg.to_string())
+                    .version(version.clone())
+                    .sha256(
+                        f.get("digests")
+                            .and_then(|d| d.get("sha256"))
+                            .and_then(|s| s.as_str())
+                            .map(String::from),
+                    )
+                    .size(f["size"].as_u64())
+                    .build(),
+            );
         }
     }
     files

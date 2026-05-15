@@ -110,18 +110,21 @@ pub(crate) fn parse_file_info(
     pkg: &str,
     version_str: &str,
 ) -> Option<FileInfo> {
-    Some(FileInfo {
-        filename: f["filename"].as_str()?.to_string(),
-        url: f["url"].as_str()?.to_string(),
-        sha256: f
-            .get("digests")
-            .and_then(|d| d.get("sha256"))
-            .and_then(|s| s.as_str())
-            .map(String::from),
-        size: f["size"].as_u64(),
-        package_name: pkg.to_string(),
-        version: version_str.to_string(),
-    })
+    Some(
+        FileInfo::builder()
+            .filename(f["filename"].as_str()?.to_string())
+            .url(f["url"].as_str()?.to_string())
+            .package_name(pkg.to_string())
+            .version(version_str.to_string())
+            .sha256(
+                f.get("digests")
+                    .and_then(|d| d.get("sha256"))
+                    .and_then(|s| s.as_str())
+                    .map(String::from),
+            )
+            .size(f["size"].as_u64())
+            .build(),
+    )
 }
 
 pub(crate) fn collect_files_by_version(

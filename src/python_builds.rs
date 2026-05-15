@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 use tracing::info;
+use type_state_builder::TypeStateBuilder;
 
 const UV_METADATA_URL: &str = "https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json";
 
@@ -18,12 +19,17 @@ const PLATFORM_TRIPLETS: &[(&str, &str, &str)] =
 /// v3 = AVX2 (Haswell / Broadwell+).
 const ACCEPTED_ARCH_VARIANTS: &[&str] = &["v1", "v3"];
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, TypeStateBuilder)]
+#[builder(impl_into)]
 pub struct PythonBuildEntry {
+    #[builder(required)]
     pub key: String,
+    #[builder(required)]
     pub url: String,
     pub sha256: Option<String>,
+    #[builder(required)]
     pub filename: String,
+    #[builder(default = "serde_json::Value::Null")]
     pub raw: serde_json::Value,
 }
 
@@ -49,24 +55,24 @@ pub async fn fetch_python_builds(
     let latest = group_by_platform(&target_entries);
     info!("去重后最新 build: {}", latest.len());
 
-    fn build_entry(key: String, entry: serde_json::Value) -> PythonBuildEntry {
-        let url = entry["url"].as_str().unwrap_or("").to_string();
-        let filename = url
-            .rfind('/')
-            .map(|p| url[p + 1..].replace("%2B", "+").to_string())
-            .unwrap_or_default();
-        let sha = entry["sha256"].as_str().map(String::from);
-        PythonBuildEntry {
-            key,
-            url,
-            sha256: sha,
-            filename,
-            raw: entry,
-        }
-    }
-
-    let entries: Vec<PythonBuildEntry> =
-        latest.into_iter().map(|(k, e)| build_entry(k, e)).collect();
+    let entries: Vec<PythonBuildEntry> = latest
+        .into_iter()
+        .map(|(key, entry)| {
+            let url = entry["url"].as_str().unwrap_or("").to_string();
+            let filename = url
+                .rfind('/')
+                .map(|p| url[p + 1..].replace("%2B", "+").to_string())
+                .unwrap_or_default();
+            let sha256 = entry["sha256"].as_str().map(String::from);
+            PythonBuildEntry::builder()
+                .key(key)
+                .url(url)
+                .filename(filename)
+                .sha256(sha256)
+                .raw(entry)
+                .build()
+        })
+        .collect();
     Ok(entries)
 }
 
@@ -301,4 +307,44 @@ pub fn build_python_builds_index(
         serde_json::to_string_pretty(&meta)?,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_python_build_entry_builder() {
+        let e = PythonBuildEntry::builder()
+            .key("k".to_string())
+            .url("u".to_string())
+            .filename("f".to_string())
+            .sha256(Some("s".to_string()))
+            .raw(serde_json::json!({"url":"u","sha256":"s"}))
+            .build();
+        assert_eq!(e.key, "k");
+        assert_eq!(e.sha256, Some("s".to_string()));
+
+        let url = "https://e/p%2B3.tar.gz";
+        let p = PythonBuildEntry::builder()
+            .key("e".to_string())
+            .url(url.to_string())
+            .filename(
+                url.rfind('/')
+                    .map(|p| url[p + 1..].replace("%2B", "+").to_string())
+                    .unwrap_or_default(),
+            )
+            .raw(serde_json::json!({"url":url}))
+            .build();
+        assert_eq!(p.filename, "p+3.tar.gz");
+
+        let x = PythonBuildEntry::builder()
+            .key("x".to_string())
+            .url("".to_string())
+            .filename("".to_string())
+            .raw(serde_json::json!({}))
+            .build();
+        assert_eq!(x.url, "");
+        assert_eq!(x.sha256, None);
+    }
 }

@@ -201,29 +201,32 @@ async fn serve_python_builds_file(
                 .header("Content-Type", mime)
                 .body(Body::from_stream(file_body(file)))
                 .unwrap();
-            (200, resp)
+            (200_u16, resp)
         }
         Err(_) => {
             let resp = (StatusCode::NOT_FOUND, "Not Found").into_response();
-            (404, resp)
+            (404_u16, resp)
         }
     };
     state
         .access_logger
-        .log(&crate::access_log::AccessRecord {
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            client_ip: header_str(
-                &req,
-                "X-Forwarded-For".parse().unwrap_or(header::FORWARDED),
-            )
-            .unwrap_or_else(|| "unknown".to_string()),
-            method: "GET".to_string(),
-            path: format!("/python-builds/{}", tail),
-            status_code: status,
-            user_agent: header_str(&req, header::USER_AGENT),
-            bytes_sent: None,
-            referer: header_str(&req, header::REFERER),
-        })
+        .log(
+            &crate::access_log::AccessRecord::builder()
+                .timestamp(chrono::Utc::now().to_rfc3339())
+                .client_ip(
+                    header_str(
+                        &req,
+                        "X-Forwarded-For".parse().unwrap_or(header::FORWARDED),
+                    )
+                    .unwrap_or_else(|| "unknown".to_string()),
+                )
+                .method("GET")
+                .path(format!("/python-builds/{}", tail))
+                .status_code(status)
+                .user_agent(header_str(&req, header::USER_AGENT))
+                .referer(header_str(&req, header::REFERER))
+                .build(),
+        )
         .ok();
     resp
 }

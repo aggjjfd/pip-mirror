@@ -1,5 +1,7 @@
 use std::fmt;
 
+use type_state_builder::TypeStateBuilder;
+
 /// All resolution targets, listed explicitly as (python_version, sys_platform,
 /// platform_system, platform_machine, os_name).
 ///
@@ -28,17 +30,27 @@ pub const CPYTHON_IMPLEMENTATION_LABEL: &str = "CPython";
 pub const DEFAULT_IMPLEMENTATION_VERSION_SUFFIX: &str = ".0";
 
 /// Target environment: (Python version, platform).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, TypeStateBuilder)]
+#[builder(impl_into)]
 pub struct TargetEnv {
-    pub python_version: String,                 // "3.12"
-    pub python_full_version: String,            // "3.12.0"
-    pub sys_platform: String,                   // "linux" / "win32"
-    pub platform_machine: String,               // "x86_64" / "AMD64" / "x86"
-    pub platform_system: String,                // "Linux" / "Windows"
-    pub os_name: String,                        // "posix" / "nt"
-    pub implementation_name: String,            // "cpython"
+    #[builder(required)]
+    pub python_version: String, // "3.12"
+    #[builder(required)]
+    pub python_full_version: String, // "3.12.0"
+    #[builder(required)]
+    pub sys_platform: String, // "linux" / "win32"
+    #[builder(required)]
+    pub platform_machine: String, // "x86_64" / "AMD64" / "x86"
+    #[builder(required)]
+    pub platform_system: String, // "Linux" / "Windows"
+    #[builder(required)]
+    pub os_name: String, // "posix" / "nt"
+    #[builder(required)]
+    pub implementation_name: String, // "cpython"
+    #[builder(required)]
     pub platform_python_implementation: String, // "CPython"
-    pub implementation_version: String,         // "3.12.0"
+    #[builder(required)]
+    pub implementation_version: String, // "3.12.0"
 }
 
 impl fmt::Display for TargetEnv {
@@ -59,19 +71,21 @@ impl TargetEnv {
             .map(|(pv, sys, sys_name, machine, os)| {
                 let full =
                     format!("{pv}{DEFAULT_IMPLEMENTATION_VERSION_SUFFIX}");
-                TargetEnv {
-                    python_version: pv.to_string(),
-                    python_full_version: full.clone(),
-                    sys_platform: sys.to_string(),
-                    platform_machine: machine.to_string(),
-                    platform_system: sys_name.to_string(),
-                    os_name: os.to_string(),
-                    implementation_name: CPYTHON_IMPLEMENTATION_NAME
-                        .to_string(),
-                    platform_python_implementation:
+                TargetEnv::builder()
+                    .python_version(pv.to_string())
+                    .python_full_version(full.clone())
+                    .sys_platform(sys.to_string())
+                    .platform_machine(machine.to_string())
+                    .platform_system(sys_name.to_string())
+                    .os_name(os.to_string())
+                    .implementation_name(
+                        CPYTHON_IMPLEMENTATION_NAME.to_string(),
+                    )
+                    .platform_python_implementation(
                         CPYTHON_IMPLEMENTATION_LABEL.to_string(),
-                    implementation_version: full.clone(),
-                }
+                    )
+                    .implementation_version(full.clone())
+                    .build()
             })
             .collect()
     }
