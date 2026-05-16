@@ -7,6 +7,7 @@ use pep440_rs::Version;
 use tracing::info;
 
 use crate::downloader::FileInfo;
+use type_state_builder::TypeStateBuilder;
 
 use super::eligibility::{
     ParsedDepsCacheKey, SolveContext, version_matches_target,
@@ -48,6 +49,17 @@ struct SolveCacheKey {
 
 type SolveResultCache = DashMap<SolveCacheKey, SolveResult>;
 
+#[derive(TypeStateBuilder)]
+#[builder(impl_into)]
+struct SolveCaches<'a> {
+    #[builder(required)]
+    meta: &'a MetadataCache,
+    #[builder(required)]
+    solve: &'a SolveResultCache,
+    #[builder(required)]
+    parsed: &'a DashMap<ParsedDepsCacheKey, Vec<super::markers::ParsedDependency>>,
+}
+
 pub async fn build_dependency_plan(
     params: &PlanParams<'_>,
     client: &reqwest::Client,
@@ -66,16 +78,14 @@ pub async fn build_dependency_plan(
     };
     let solve_cache = Arc::new(SolveResultCache::new());
     let parsed_deps_cache = Arc::new(DashMap::new());
-    let all_solutions = solve_all_targets(
-        params,
-        &cache,
-        &top_versions,
-        &pkg_extras,
-        &targets,
-        &solve_cache,
-        &parsed_deps_cache,
-    )
-    .await?;
+    let caches = SolveCaches::builder()
+        .meta(&cache)
+        .solve(&*solve_cache)
+        .parsed(&*parsed_deps_cache)
+        .build();
+    let all_solutions =
+        solve_all_targets(params, &caches, &top_versions, &pkg_extras, &targets)
+            .await?;
     let expanded = expand_solved_versions(
         &all_solutions,
         &cache,
@@ -148,22 +158,16 @@ async fn collect_top_versions(
 
 async fn solve_all_targets(
     params: &PlanParams<'_>,
-    cache: &MetadataCache,
+    caches: &SolveCaches<'_>,
     top_versions: &HashMap<String, Vec<Version>>,
     pkg_extras: &HashMap<String, std::collections::HashSet<String>>,
     targets: &[TargetEnv],
-    solve_cache: &SolveResultCache,
-    parsed_deps_cache: &DashMap<
-        ParsedDepsCacheKey,
-        Vec<super::markers::ParsedDependency>,
-    >,
 ) -> Result<Vec<super::solve::SolveResult>, ResolveError> {
     let jobs = build_solve_jobs(top_versions, pkg_extras, targets);
-    let jobs = prefilter_solve_jobs(params, cache, jobs).await?;
+    let jobs = prefilter_solve_jobs(params, caches.meta, jobs).await?;
     let results = stream::iter(jobs)
         .map(|job| async move {
-            run_solve_job(params, cache, &job, solve_cache, parsed_deps_cache)
-                .await
+            run_solve_job(params, caches, &job).await
         })
         .buffer_unordered(params.resolve_workers)
         .collect::<Vec<_>>()
@@ -178,13 +182,8 @@ async fn solve_all_targets(
 
 async fn run_solve_job(
     params: &PlanParams<'_>,
-    cache: &MetadataCache,
+    caches: &SolveCaches<'_>,
     job: &SolveJob,
-    solve_cache: &SolveResultCache,
-    parsed_deps_cache: &DashMap<
-        ParsedDepsCacheKey,
-        Vec<super::markers::ParsedDependency>,
-    >,
 ) -> Result<(usize, Option<super::solve::SolveResult>), ResolveError> {
     let mut extras_vec: Vec<String> = job.extras.iter().cloned().collect();
     extras_vec.sort();
@@ -195,7 +194,7 @@ async fn run_solve_job(
         extras: extras_vec,
     };
 
-    if let Some(cached) = solve_cache.get(&cache_key) {
+    if let Some(cached) = caches.solve.get(&cache_key) {
         info!(
             "求解命中缓存: {}@{} -> {}",
             job.package, job.version, job.target
@@ -205,9 +204,9 @@ async fn run_solve_job(
 
     let ctx = build_solve_context(
         params,
-        cache,
+        caches.meta,
         &job.target,
-        Some(parsed_deps_cache),
+        Some(caches.parsed),
     );
     if !version_matches_target(&ctx, &job.package, &job.version).await? {
         return Ok((job.index, None));
@@ -233,7 +232,7 @@ async fn run_solve_job(
         "求解完成: {}@{} -> {}",
         job.package, job.version, job.target
     );
-    solve_cache.insert(cache_key, solved.clone());
+    caches.solve.insert(cache_key, solved.clone());
     Ok((job.index, Some(solved)))
 }
 

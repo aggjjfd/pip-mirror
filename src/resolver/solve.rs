@@ -85,10 +85,10 @@ pub(crate) async fn parse_version_dependencies(
         extras: extras_vec,
     };
 
-    if let Some(cache) = ctx.parsed_deps_cache {
-        if let Some(cached) = cache.get(&key) {
-            return Ok(cached.clone());
-        }
+    if let Some(cache) = ctx.parsed_deps_cache
+        && let Some(cached) = cache.get(&key)
+    {
+        return Ok(cached.clone());
     }
 
     let requires_dist = ctx.cache.get_requires_dist(package, version).await?;

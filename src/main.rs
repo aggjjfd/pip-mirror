@@ -23,6 +23,9 @@ enum Command {
         packages: Option<Vec<String>>,
         #[arg(long)]
         no_deps: bool,
+        /// 仅解析依赖，不下载文件
+        #[arg(long)]
+        dry_run: bool,
     },
     /// 全量同步: 清空仓库 → 重拉 → 产 mirror.tar.gz + mirror.sha256
     SyncFull {
@@ -32,6 +35,9 @@ enum Command {
         packages: Option<Vec<String>>,
         #[arg(long)]
         no_deps: bool,
+        /// 仅解析依赖，不下载文件
+        #[arg(long)]
+        dry_run: bool,
     },
     /// 启动 HTTP 服务 (PEP 503/691)
     Serve {
@@ -70,15 +76,17 @@ async fn cmd_sync_d(
     c: Option<PathBuf>,
     p: Option<Vec<String>>,
     nd: bool,
+    dr: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    cmd_sync(c.as_deref(), p, nd).await
+    cmd_sync(c.as_deref(), p, nd, dr).await
 }
 async fn cmd_sync_full_d(
     c: Option<PathBuf>,
     p: Option<Vec<String>>,
     nd: bool,
+    dr: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    cmd_sync_full(c.as_deref(), p, nd).await
+    cmd_sync_full(c.as_deref(), p, nd, dr).await
 }
 async fn cmd_serve_d(
     c: Option<PathBuf>,
@@ -93,9 +101,10 @@ async fn try_sync(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
         config,
         packages,
         no_deps,
+        dry_run,
     } = cmd
     {
-        return cmd_sync_d(config, packages, no_deps).await;
+        return cmd_sync_d(config, packages, no_deps, dry_run).await;
     }
     try_sync_full(cmd).await
 }
@@ -104,9 +113,10 @@ async fn try_sync_full(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
         config,
         packages,
         no_deps,
+        dry_run,
     } = cmd
     {
-        return cmd_sync_full_d(config, packages, no_deps).await;
+        return cmd_sync_full_d(config, packages, no_deps, dry_run).await;
     }
     try_serve(cmd).await
 }
@@ -167,13 +177,19 @@ async fn cmd_sync(
     config_path: Option<&std::path::Path>,
     packages: Option<Vec<String>>,
     no_deps: bool,
+    dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = pip_mirror::config::Config::load(config_path)?;
     let pkgs = packages.unwrap_or_else(|| config.packages.clone());
     info!("增量同步: {} 个包", pkgs.len());
-    std::fs::create_dir_all(&config.repository_dir)?;
+    if !dry_run {
+        std::fs::create_dir_all(&config.repository_dir)?;
+    }
     let (_client, downloaded) =
-        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true).await?;
+        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true, dry_run).await?;
+    if dry_run {
+        return Ok(());
+    }
     std::fs::create_dir_all(&config.incremental_dir)?;
     if let Some(a) = pip_mirror::packager::build_incremental_package_async(
         &config.repository_dir,
@@ -191,13 +207,19 @@ async fn cmd_sync_full(
     config_path: Option<&std::path::Path>,
     packages: Option<Vec<String>>,
     no_deps: bool,
+    dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = pip_mirror::config::Config::load(config_path)?;
     let pkgs = packages.unwrap_or_else(|| config.packages.clone());
     info!("全量同步: {} 个包", pkgs.len());
-    pip_mirror::sync::clean_repo(&config.repository_dir)?;
+    if !dry_run {
+        pip_mirror::sync::clean_repo(&config.repository_dir)?;
+    }
     let (client, _downloaded) =
-        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true).await?;
+        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true, dry_run).await?;
+    if dry_run {
+        return Ok(());
+    }
     pip_mirror::sync::finalize_mirror(&client, &config.repository_dir).await
 }
 

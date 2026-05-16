@@ -46,10 +46,24 @@ pub async fn do_sync(
     pkgs: &[String],
     no_deps: bool,
     download_python_builds: bool,
+    dry_run: bool,
 ) -> Result<(reqwest::Client, Vec<FileInfo>), Box<dyn std::error::Error>> {
     let repo = &config.repository_dir;
     let client = build_sync_client()?;
     let plan = create_sync_plan(config, &client, pkgs, no_deps).await?;
+
+    if dry_run {
+        let (pending, _prefetched) = prepare_pending_files(repo, plan)?;
+        info!("Dry-run 依赖解析完成，待下载文件清单（{} 个）:", pending.len());
+        for fi in &pending {
+            info!(
+                "  {}  {}  {}",
+                fi.package_name, fi.version, fi.filename
+            );
+        }
+        return Ok((client, Vec::new()));
+    }
+
     let (pending, prefetched) = prepare_pending_files(repo, plan)?;
     let result =
         run_downloads(config, &client, repo, &pending, &prefetched).await;
