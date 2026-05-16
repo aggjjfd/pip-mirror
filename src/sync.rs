@@ -41,6 +41,16 @@ pub fn clean_repo(repo: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn log_dry_run(pending: &[FileInfo]) {
+    info!(
+        "Dry-run 依赖解析完成，待下载文件清单（{} 个）:",
+        pending.len()
+    );
+    for fi in pending {
+        info!("  {}  {}  {}", fi.package_name, fi.version, fi.filename);
+    }
+}
+
 pub async fn do_sync(
     config: &crate::config::Config,
     pkgs: &[String],
@@ -51,20 +61,11 @@ pub async fn do_sync(
     let repo = &config.repository_dir;
     let client = build_sync_client()?;
     let plan = create_sync_plan(config, &client, pkgs, no_deps).await?;
-
+    let (pending, prefetched) = prepare_pending_files(repo, plan)?;
     if dry_run {
-        let (pending, _prefetched) = prepare_pending_files(repo, plan)?;
-        info!("Dry-run 依赖解析完成，待下载文件清单（{} 个）:", pending.len());
-        for fi in &pending {
-            info!(
-                "  {}  {}  {}",
-                fi.package_name, fi.version, fi.filename
-            );
-        }
+        log_dry_run(&pending);
         return Ok((client, Vec::new()));
     }
-
-    let (pending, prefetched) = prepare_pending_files(repo, plan)?;
     let result =
         run_downloads(config, &client, repo, &pending, &prefetched).await;
     record_download_results(repo, &result).await?;

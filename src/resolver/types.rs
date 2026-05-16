@@ -92,41 +92,52 @@ impl TargetEnv {
             .collect()
     }
 
+    fn map_platform(
+        os_lower: &str,
+        arch_lower: &str,
+    ) -> Option<(&'static str, &'static str, &'static str, &'static str)> {
+        match (os_lower, arch_lower) {
+            ("linux", "x64" | "x86_64" | "amd64") => {
+                Some(("linux", "Linux", "x86_64", "posix"))
+            }
+            ("win32" | "windows", "x86") => {
+                Some(("win32", "Windows", "x86", "nt"))
+            }
+            ("win32" | "windows", "x64" | "x86_64" | "amd64") => {
+                Some(("win32", "Windows", "AMD64", "nt"))
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_python_version(spec: &TargetSpec) -> Option<(String, String)> {
+        let dot_count = spec.python.matches('.').count();
+        let pv = match dot_count {
+            1 => spec.python.clone(),
+            2 => {
+                let parts: Vec<&str> = spec.python.split('.').collect();
+                format!("{}.{}", parts[0], parts[1])
+            }
+            _ => return None,
+        };
+        let full = if dot_count == 1 {
+            format!("{pv}{DEFAULT_IMPLEMENTATION_VERSION_SUFFIX}")
+        } else {
+            spec.python.clone()
+        };
+        Some((pv, full))
+    }
+
     /// Convert user-friendly TargetSpec into TargetEnv.
     /// Returns None if the os/arch combination is not supported.
     fn from_spec(spec: &TargetSpec) -> Option<TargetEnv> {
-        let os_lower = spec.os.to_lowercase();
-        let arch_lower = spec.arch.to_lowercase();
         let (sys_platform, platform_system, platform_machine, os_name) =
-            match (os_lower.as_str(), arch_lower.as_str()) {
-                ("linux", "x64" | "x86_64" | "amd64") => {
-                    ("linux", "Linux", "x86_64", "posix")
-                }
-                ("win32" | "windows", "x86") => {
-                    ("win32", "Windows", "x86", "nt")
-                }
-                ("win32" | "windows", "x64" | "x86_64" | "amd64") => {
-                    ("win32", "Windows", "AMD64", "nt")
-                }
-                _ => return None,
-            };
-
-        let dot_count = spec.python.matches('.').count();
-        let python_version = if dot_count == 1 {
-            spec.python.clone()
-        } else if dot_count == 2 {
-            let parts: Vec<&str> = spec.python.split('.').collect();
-            format!("{}.{}", parts[0], parts[1])
-        } else {
-            return None;
-        };
-
-        let python_full_version = if dot_count == 1 {
-            format!("{python_version}{DEFAULT_IMPLEMENTATION_VERSION_SUFFIX}")
-        } else {
-            spec.python.clone()
-        };
-
+            Self::map_platform(
+                &spec.os.to_lowercase(),
+                &spec.arch.to_lowercase(),
+            )?;
+        let (python_version, python_full_version) =
+            Self::parse_python_version(spec)?;
         Some(
             TargetEnv::builder()
                 .python_version(python_version)

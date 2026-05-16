@@ -173,23 +173,10 @@ fn log_incremental_archive(archive: &std::path::Path) {
     );
 }
 
-async fn cmd_sync(
-    config_path: Option<&std::path::Path>,
-    packages: Option<Vec<String>>,
-    no_deps: bool,
-    dry_run: bool,
+async fn do_incremental_pack(
+    config: &pip_mirror::config::Config,
+    downloaded: Vec<pip_mirror::downloader::FileInfo>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let config = pip_mirror::config::Config::load(config_path)?;
-    let pkgs = packages.unwrap_or_else(|| config.packages.clone());
-    info!("增量同步: {} 个包", pkgs.len());
-    if !dry_run {
-        std::fs::create_dir_all(&config.repository_dir)?;
-    }
-    let (_client, downloaded) =
-        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true, dry_run).await?;
-    if dry_run {
-        return Ok(());
-    }
     std::fs::create_dir_all(&config.incremental_dir)?;
     if let Some(a) = pip_mirror::packager::build_incremental_package_async(
         &config.repository_dir,
@@ -203,6 +190,25 @@ async fn cmd_sync(
     Ok(())
 }
 
+async fn cmd_sync(
+    config_path: Option<&std::path::Path>,
+    packages: Option<Vec<String>>,
+    no_deps: bool,
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = pip_mirror::config::Config::load(config_path)?;
+    let pkgs = packages.unwrap_or_else(|| config.packages.clone());
+    info!("增量同步: {} 个包", pkgs.len());
+    std::fs::create_dir_all(&config.repository_dir)?;
+    let (_client, downloaded) =
+        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true, dry_run)
+            .await?;
+    if !dry_run {
+        do_incremental_pack(&config, downloaded).await?;
+    }
+    Ok(())
+}
+
 async fn cmd_sync_full(
     config_path: Option<&std::path::Path>,
     packages: Option<Vec<String>>,
@@ -212,14 +218,15 @@ async fn cmd_sync_full(
     let config = pip_mirror::config::Config::load(config_path)?;
     let pkgs = packages.unwrap_or_else(|| config.packages.clone());
     info!("全量同步: {} 个包", pkgs.len());
-    if !dry_run {
-        pip_mirror::sync::clean_repo(&config.repository_dir)?;
-    }
-    let (client, _downloaded) =
-        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true, dry_run).await?;
     if dry_run {
+        let (_client, _downloaded) =
+            pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true, true)
+                .await?;
         return Ok(());
     }
+    pip_mirror::sync::clean_repo(&config.repository_dir)?;
+    let (client, _downloaded) =
+        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true, false).await?;
     pip_mirror::sync::finalize_mirror(&client, &config.repository_dir).await
 }
 

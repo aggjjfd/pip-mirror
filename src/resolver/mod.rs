@@ -9,6 +9,7 @@ pub mod plan;
 pub mod pubgrub;
 pub mod resolve;
 pub mod solve;
+pub(crate) mod solve_cache;
 pub mod types;
 
 // PyPI 上仍有少量历史元数据写成 `>=7.*` 这类非法通配比较。
