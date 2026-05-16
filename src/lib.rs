@@ -4,6 +4,7 @@ pub mod downloader;
 pub mod filters;
 pub mod index_page;
 pub mod indexer;
+pub mod installer;
 pub mod logging;
 pub mod packager;
 pub mod python_builds;

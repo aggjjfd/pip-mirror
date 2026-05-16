@@ -236,6 +236,31 @@
       opacity: 1;
     }
 
+    .tool-links {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+    }
+    .tool-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 0.4rem;
+      font-size: 0.85rem;
+      color: var(--accent);
+      text-decoration: none;
+      transition: all 0.15s;
+      width: fit-content;
+    }
+    .tool-link:hover {
+      border-color: var(--accent);
+      background: #eef4fc;
+    }
+
     .target-table {
       width: 100%;
       border-collapse: collapse;
@@ -278,6 +303,22 @@
       <h2>支持环境</h2>
       <p class="note">本镜像预下载了以下目标环境的 wheel 包：</p>
       <!--TARGETS_PLACEHOLDER-->
+    </div>
+
+    <div class="section">
+      <h2>工具下载</h2>
+      <p class="note">uv 是推荐的 Python 包管理器，支持 pip install 和 python 解释器安装。</p>
+      <div class="tool-links">
+        <a class="tool-link" href="/installers/uv-installer.sh" download>
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          uv-installer.sh（Linux/macOS）
+        </a>
+        <a class="tool-link" href="/installers/uv-installer.ps1" download>
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          uv-installer.ps1（Windows）
+        </a>
+      </div>
+      <p class="note" style="margin-top:0.75rem">安装后直接可用，无需额外配置镜像地址。</p>
     </div>
 
     <div class="section">

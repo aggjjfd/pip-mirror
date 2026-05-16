@@ -16,17 +16,22 @@ use crate::access_log::AccessLogger;
 use crate::config::TargetSpec;
 
 #[derive(Clone)]
-struct AppState {
-    repo_dir: Arc<PathBuf>,
+pub struct AppState {
+    pub repo_dir: Arc<PathBuf>,
     #[allow(dead_code)]
-    access_logger: Arc<AccessLogger>,
-    targets: Arc<Vec<TargetSpec>>,
+    pub access_logger: Arc<AccessLogger>,
+    pub targets: Arc<Vec<TargetSpec>>,
 }
 
 fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(serve_index))
         .route("/fonts/{name}", get(serve_font))
+        .route("/installers/{name}", get(crate::installer::serve_installer))
+        .route(
+            "/uv-releases/{*tail}",
+            get(crate::installer::serve_uv_release),
+        )
         .route("/simple/{*tail}", get(serve_simple))
         .route("/python-builds/index.json", get(serve_python_builds_index))
         .route("/python-builds/{*tail}", get(serve_python_builds_file))
@@ -138,7 +143,7 @@ fn try_serve_json(body: Vec<u8>) -> Response {
         .unwrap()
 }
 
-fn file_body(
+pub fn file_body(
     file: tokio::fs::File,
 ) -> impl futures::Stream<Item = Result<axum::body::Bytes, std::io::Error>> {
     futures::stream::try_unfold(file, |mut file| async move {
