@@ -69,20 +69,21 @@ const TARGET_WIN_AMD64: &str = "win_amd64";
 ///
 /// A wheel is rejected if any tag contains a rejected substring
 /// (e.g. musllinux, aarch64, macosx).
-fn is_accepted_wheel_impl(filename: &str, max_glibc: (u32, u32)) -> bool {
-    let Some(sub_tags) = parse_wheel_platform(filename) else {
-        return false;
-    };
-
-    // Reject if any tag contains a banned substring.
+fn parse_and_filter_tags(filename: &str) -> Option<Vec<&str>> {
+    let sub_tags = parse_wheel_platform(filename)?;
     if sub_tags
         .iter()
-        .any(|t| REJECTED_SUBSTRINGS.iter().any(|r| t.contains(r)))
+        .any(|tag| REJECTED_SUBSTRINGS.iter().any(|r| tag.contains(r)))
     {
-        return false;
+        return None;
     }
+    Some(sub_tags)
+}
 
-    // Accept if any tag is explicitly allowed.
+fn is_accepted_wheel_impl(filename: &str, max_glibc: (u32, u32)) -> bool {
+    let Some(sub_tags) = parse_and_filter_tags(filename) else {
+        return false;
+    };
     sub_tags.iter().any(|tag| {
         matches!(*tag, "any" | "win32" | "win_amd64" | "linux_x86_64")
             || (tag.contains("manylinux")
@@ -105,97 +106,8 @@ pub fn is_accepted_wheel_with_glibc(filename: &str, max_glibc: &str) -> bool {
 
 /// Parse the platform tag(s) from a wheel filename.
 /// Returns `None` if the file is not a `.whl`.
-pub fn parse_wheel_platform(filename: &str) -> Option<Vec<&str>> {
-    parse_wheel_tags(filename).map(|(_, _, platform_tags)| platform_tags)
-}
-
-fn parse_wheel_tags(
-    filename: &str,
-) -> Option<(Vec<&str>, Vec<&str>, Vec<&str>)> {
-    if !filename.ends_with(".whl") {
-        return None;
-    }
-    let stem = &filename[..filename.len() - 4];
-    let parts: Vec<&str> = stem.split('-').collect();
-    if parts.len() < 5 {
-        return None;
-    }
-    let py_tags = parts[parts.len() - 3].split('.').collect();
-    let abi_tags = parts[parts.len() - 2].split('.').collect();
-    let platform_tags = parts[parts.len() - 1].split('.').collect();
-    Some((py_tags, abi_tags, platform_tags))
-}
-
-fn parse_minor_from_tag(tag: &str, prefix: &str) -> Option<u32> {
-    let raw = tag.strip_prefix(prefix)?;
-    let digits: String =
-        raw.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.len() < 2 {
-        return None;
-    }
-    let major = digits[0..1].parse::<u32>().ok()?;
-    let minor = digits[1..].parse::<u32>().ok()?;
-    (major == 3).then_some(minor)
-}
-
-fn target_python_minor(target: &TargetEnv) -> Option<u32> {
-    let mut parts = target.python_version().split('.');
-    let major = parts.next()?.parse::<u32>().ok()?;
-    let minor = parts.next()?.parse::<u32>().ok()?;
-    (major == 3).then_some(minor)
-}
-
-fn py_tag_minor(py_tag: &str) -> Option<u32> {
-    parse_minor_from_tag(py_tag, "cp")
-        .or_else(|| parse_minor_from_tag(py_tag, "py"))
-}
-
-fn py_tag_matches_target(py_tag: &str, target_minor: u32) -> bool {
-    if py_tag == "py3" {
-        return true;
-    }
-    py_tag_minor(py_tag).is_some_and(|minor| minor == target_minor)
-}
-
-fn abi3_pair_matches(py_tag: &str, target_minor: u32) -> bool {
-    if py_tag == "py3" {
-        return true;
-    }
-    py_tag_minor(py_tag).is_some_and(|minor| target_minor >= minor)
-}
-
-fn tag_pair_matches_target(
-    py_tag: &str,
-    abi_tag: &str,
-    target_minor: u32,
-) -> bool {
-    if abi_tag.ends_with('t') {
-        return false;
-    }
-    if abi_tag == "abi3" {
-        return abi3_pair_matches(py_tag, target_minor);
-    }
-    if abi_tag == "none" {
-        return py_tag_matches_target(py_tag, target_minor);
-    }
-    parse_minor_from_tag(abi_tag, "cp").is_some_and(|minor| {
-        minor == target_minor && py_tag_matches_target(py_tag, target_minor)
-    })
-}
-
-fn python_abi_matches_target(filename: &str, target: &TargetEnv) -> bool {
-    let Some((py_tags, abi_tags, _)) = parse_wheel_tags(filename) else {
-        return false;
-    };
-    let Some(target_minor) = target_python_minor(target) else {
-        return false;
-    };
-    py_tags.iter().any(|py_tag| {
-        abi_tags.iter().any(|abi_tag| {
-            tag_pair_matches_target(py_tag, abi_tag, target_minor)
-        })
-    })
-}
+mod wheel_abi;
+pub use wheel_abi::{parse_wheel_platform, python_abi_matches_target};
 
 /// Map a wheel platform sub-tag → set of target platform names.
 fn map_sub_tag(sub: &str, covered: &mut HashSet<&'static str>) {
@@ -278,28 +190,37 @@ fn wheel_matches_target(
     target_key: &str,
     max_glibc: (u32, u32),
 ) -> bool {
-    let Some(sub_tags) = parse_wheel_platform(filename) else {
+    let Some(sub_tags) = parse_and_filter_tags(filename) else {
         return false;
     };
-    if sub_tags
-        .iter()
-        .any(|tag| REJECTED_SUBSTRINGS.iter().any(|r| tag.contains(r)))
-    {
-        return false;
-    }
     sub_tags
         .iter()
         .any(|tag| tag_matches_target(tag, target_key, max_glibc))
 }
 
+fn push_normalized(result: &mut String, ch: char, prev_was_sep: &mut bool) {
+    let lc = ch.to_ascii_lowercase();
+    if lc == '_' || lc == '.' || lc == '-' {
+        if !*prev_was_sep {
+            *prev_was_sep = true;
+        }
+        return;
+    }
+    if *prev_was_sep && !result.is_empty() {
+        result.push('-');
+    }
+    result.push(lc);
+    *prev_was_sep = false;
+}
+
 pub fn normalize_package_name(name: &str) -> String {
     let bare = name.split_once('[').map_or(name, |(n, _)| n);
-    bare.to_lowercase()
-        .replace(['_', '.'], "-")
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
+    let mut result = String::with_capacity(bare.len());
+    let mut prev_was_sep = true;
+    for ch in bare.chars() {
+        push_normalized(&mut result, ch, &mut prev_was_sep);
+    }
+    result
 }
 
 pub fn wheel_is_installable_for_target(

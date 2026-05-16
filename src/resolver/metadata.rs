@@ -11,6 +11,32 @@ use crate::downloader::FileInfo;
 type InFlight<T> =
     Arc<tokio::sync::Mutex<Option<Result<Arc<T>, MetadataError>>>>;
 
+async fn get_or_fetch<T, Fut, F>(
+    shared: &InFlight<T>,
+    fetch: F,
+) -> Result<Arc<T>, MetadataError>
+where
+    Fut: std::future::Future<Output = Result<T, MetadataError>>,
+    F: FnOnce() -> Fut,
+{
+    {
+        let guard = shared.lock().await;
+        if let Some(ref result) = *guard {
+            return result.clone();
+        }
+    }
+
+    let mut guard = shared.lock().await;
+    if let Some(ref result) = *guard {
+        return result.clone();
+    }
+
+    let result = fetch().await;
+    let arc_result = result.map(Arc::new);
+    *guard = Some(arc_result.clone());
+    arc_result
+}
+
 /// Shared cache for package and version metadata, with in-flight deduplication.
 pub struct MetadataCache {
     client: reqwest::Client,
@@ -80,7 +106,6 @@ impl MetadataCache {
     }
 
     /// Return full PackageIndex for a package.
-    #[allow(clippy::excessive_nesting)]
     pub async fn get_package_index(
         &self,
         pkg: &str,
@@ -91,27 +116,10 @@ impl MetadataCache {
             .entry(normalized.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None)))
             .clone();
-
-        {
-            let guard = shared.lock().await;
-            if let Some(ref result) = *guard {
-                return result.clone();
-            }
-        }
-
-        let mut guard = shared.lock().await;
-        if let Some(ref result) = *guard {
-            return result.clone();
-        }
-
-        let result = self.fetch_package_index(&normalized).await;
-        let arc_result = result.map(Arc::new);
-        *guard = Some(arc_result.clone());
-        arc_result
+        get_or_fetch(&shared, || self.fetch_package_index(&normalized)).await
     }
 
     /// Return VersionMetadata for a specific package@version.
-    #[allow(clippy::excessive_nesting)]
     pub async fn get_version_metadata(
         &self,
         pkg: &str,
@@ -124,39 +132,21 @@ impl MetadataCache {
             .entry(key)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None)))
             .clone();
-
-        {
-            let guard = shared.lock().await;
-            if let Some(ref result) = *guard {
-                return result.clone();
-            }
-        }
-
-        let mut guard = shared.lock().await;
-        if let Some(ref result) = *guard {
-            return result.clone();
-        }
-
-        let result = self.fetch_version_metadata(&normalized, ver).await;
-        let arc_result = result.map(Arc::new);
-        *guard = Some(arc_result.clone());
-        arc_result
+        get_or_fetch(&shared, || self.fetch_version_metadata(&normalized, ver))
+            .await
     }
 
-    async fn fetch_package_index(
+    async fn fetch_json(
         &self,
-        pkg: &str,
-    ) -> Result<PackageIndex, MetadataError> {
+        url: &str,
+        package: &str,
+        version: Option<&str>,
+    ) -> Result<serde_json::Value, MetadataError> {
         let _permit = self.sem.acquire().await.expect("semaphore not closed");
-        let url = format!(
-            "{}/pypi/{}/json",
-            self.pypi_url.trim_end_matches('/'),
-            pkg
-        );
-        let resp = self.client.get(&url).send().await.map_err(|e| {
+        let resp = self.client.get(url).send().await.map_err(|e| {
             MetadataError::Http {
-                package: pkg.to_string(),
-                version: None,
+                package: package.to_string(),
+                version: version.map(String::from),
                 status: 0,
                 source: e.to_string(),
             }
@@ -165,19 +155,30 @@ impl MetadataCache {
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             return Err(MetadataError::Http {
-                package: pkg.to_string(),
-                version: None,
+                package: package.to_string(),
+                version: version.map(String::from),
                 status,
                 source: "HTTP error response".to_string(),
             });
         }
 
-        let json: serde_json::Value =
-            resp.json().await.map_err(|e| MetadataError::Json {
-                package: pkg.to_string(),
-                version: None,
-                msg: e.to_string(),
-            })?;
+        resp.json().await.map_err(|e| MetadataError::Json {
+            package: package.to_string(),
+            version: version.map(String::from),
+            msg: e.to_string(),
+        })
+    }
+
+    async fn fetch_package_index(
+        &self,
+        pkg: &str,
+    ) -> Result<PackageIndex, MetadataError> {
+        let url = format!(
+            "{}/pypi/{}/json",
+            self.pypi_url.trim_end_matches('/'),
+            pkg
+        );
+        let json = self.fetch_json(&url, pkg, None).await?;
 
         let releases = json
             .get("releases")
@@ -206,7 +207,6 @@ impl MetadataCache {
         pkg: &str,
         ver: &Version,
     ) -> Result<VersionMetadata, MetadataError> {
-        let _permit = self.sem.acquire().await.expect("semaphore not closed");
         let ver_str = ver.to_string();
         let url = format!(
             "{}/pypi/{}/{}/json",
@@ -214,31 +214,7 @@ impl MetadataCache {
             pkg,
             ver_str
         );
-        let resp = self.client.get(&url).send().await.map_err(|e| {
-            MetadataError::Http {
-                package: pkg.to_string(),
-                version: Some(ver_str.clone()),
-                status: 0,
-                source: e.to_string(),
-            }
-        })?;
-
-        let status = resp.status().as_u16();
-        if !resp.status().is_success() {
-            return Err(MetadataError::Http {
-                package: pkg.to_string(),
-                version: Some(ver_str.clone()),
-                status,
-                source: "HTTP error response".to_string(),
-            });
-        }
-
-        let json: serde_json::Value =
-            resp.json().await.map_err(|e| MetadataError::Json {
-                package: pkg.to_string(),
-                version: Some(ver_str.clone()),
-                msg: e.to_string(),
-            })?;
+        let json = self.fetch_json(&url, pkg, Some(&ver_str)).await?;
 
         let info =
             json.get("info")
@@ -281,19 +257,10 @@ impl MetadataCache {
             .entry(key)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None)))
             .clone();
-
-        if let Some(ref result) = *shared.lock().await {
-            return result.clone();
-        }
-        let mut guard = shared.lock().await;
-        if let Some(ref result) = *guard {
-            return result.clone();
-        }
-
-        let result = self.fetch_build_requires_probe(&normalized, ver).await;
-        let arc_result = result.map(Arc::new);
-        *guard = Some(arc_result.clone());
-        arc_result
+        get_or_fetch(&shared, || {
+            self.fetch_build_requires_probe(&normalized, ver)
+        })
+        .await
     }
 
     async fn fetch_build_requires_probe(
@@ -301,7 +268,6 @@ impl MetadataCache {
         pkg: &str,
         ver: &Version,
     ) -> Result<super::build_requires::BuildRequiresProbe, MetadataError> {
-        let _permit = self.sem.acquire().await.expect("semaphore not closed");
         let ver_str = ver.to_string();
         let url = format!(
             "{}/pypi/{}/{}/json",
@@ -309,29 +275,7 @@ impl MetadataCache {
             pkg,
             ver_str
         );
-        let resp = self.client.get(&url).send().await.map_err(|e| {
-            MetadataError::Http {
-                package: pkg.to_string(),
-                version: Some(ver_str.clone()),
-                status: 0,
-                source: e.to_string(),
-            }
-        })?;
-        let status = resp.status().as_u16();
-        if !resp.status().is_success() {
-            return Err(MetadataError::Http {
-                package: pkg.to_string(),
-                version: Some(ver_str.clone()),
-                status,
-                source: "HTTP error response".to_string(),
-            });
-        }
-        let json: serde_json::Value =
-            resp.json().await.map_err(|e| MetadataError::Json {
-                package: pkg.to_string(),
-                version: Some(ver_str.clone()),
-                msg: e.to_string(),
-            })?;
+        let json = self.fetch_json(&url, pkg, Some(&ver_str)).await?;
         super::build_requires::probe_build_requires_from_version_json(
             &self.client,
             &json,

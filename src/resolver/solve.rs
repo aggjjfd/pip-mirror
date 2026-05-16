@@ -4,22 +4,96 @@ use pubgrub::{
     Reporter as _, SelectedDependencies,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
+use type_state_builder::TypeStateBuilder;
 
-use super::discovery::{DiscoveredClosure, discover_closure};
+use super::discovery::DiscoveryEngine;
 use super::eligibility::{ParsedDepsCacheKey, SolveContext};
 use super::error::ResolveError;
 use super::markers::{ParsedDependency, parse_requires_dist};
 use super::pubgrub::spec_to_range;
+use super::{ActiveExtrasMap, package_extras};
 
 const ROOT_PACKAGE: &str = "__root__";
 
-pub type ActiveExtrasMap = HashMap<String, HashSet<String>>;
 pub type SolvedVersions = HashMap<String, Version>;
 
 #[derive(Clone)]
 pub struct SolveResult {
     pub solved_versions: SolvedVersions,
     pub active_extras: ActiveExtrasMap,
+}
+
+#[derive(TypeStateBuilder)]
+#[builder(impl_into)]
+struct SolveFixpointParams<'a> {
+    #[builder(required)]
+    ctx: &'a SolveContext<'a>,
+    #[builder(required)]
+    root_pkg: &'a str,
+    #[builder(required)]
+    root_ver: &'a Version,
+    #[builder(required)]
+    root_extras: &'a HashSet<String>,
+}
+
+fn reprocess_changed_packages(
+    engine: &mut DiscoveryEngine,
+    active_extras: &ActiveExtrasMap,
+    next_active_extras: &ActiveExtrasMap,
+    solved_versions: &SolvedVersions,
+) {
+    for (pkg, new_extras) in next_active_extras {
+        let old_extras = active_extras.get(pkg);
+        if old_extras != Some(new_extras)
+            && let Some(version) = solved_versions.get(pkg)
+        {
+            engine.reprocess(pkg, version);
+        }
+    }
+}
+
+async fn run_iteration(
+    p: &SolveFixpointParams<'_>,
+    engine: &DiscoveryEngine,
+) -> Result<(SolvedVersions, ActiveExtrasMap), ResolveError> {
+    let solved_versions =
+        solve_discovered_graph(p.ctx, p.root_pkg, p.root_ver, engine)?;
+    let next_active_extras = collect_solution_extras(
+        p.ctx,
+        p.root_pkg,
+        p.root_extras,
+        &solved_versions,
+    )
+    .await?;
+    Ok((solved_versions, next_active_extras))
+}
+
+async fn solve_fixpoint(
+    p: &SolveFixpointParams<'_>,
+    engine: &mut DiscoveryEngine,
+    active_extras: &mut ActiveExtrasMap,
+) -> Result<SolveResult, ResolveError> {
+    loop {
+        let (solved_versions, next_active_extras) =
+            run_iteration(p, engine).await?;
+
+        if next_active_extras == *active_extras {
+            return Ok(SolveResult {
+                solved_versions,
+                active_extras: next_active_extras,
+            });
+        }
+
+        reprocess_changed_packages(
+            engine,
+            active_extras,
+            &next_active_extras,
+            &solved_versions,
+        );
+
+        *active_extras = next_active_extras;
+        engine.run(p.ctx, active_extras).await?;
+    }
 }
 
 pub async fn solve_one_target(
@@ -31,27 +105,17 @@ pub async fn solve_one_target(
     let root_pkg = crate::filters::normalize_package_name(root_pkg);
     let mut active_extras = initial_active_extras(&root_pkg, root_extras);
 
-    loop {
-        let closure =
-            discover_closure(ctx, &root_pkg, root_ver, &active_extras).await?;
-        let solved_versions =
-            solve_discovered_graph(ctx, &root_pkg, root_ver, &closure)?;
-        let next_active_extras = collect_solution_extras(
-            ctx,
-            &root_pkg,
-            root_extras,
-            &solved_versions,
-        )
-        .await?;
+    let mut engine =
+        DiscoveryEngine::with_root(root_pkg.clone(), root_ver.clone());
+    engine.run(ctx, &active_extras).await?;
 
-        if next_active_extras == active_extras {
-            return Ok(SolveResult {
-                solved_versions,
-                active_extras: next_active_extras,
-            });
-        }
-        active_extras = next_active_extras;
-    }
+    let params = SolveFixpointParams::builder()
+        .ctx(ctx)
+        .root_pkg(&*root_pkg)
+        .root_ver(root_ver)
+        .root_extras(root_extras)
+        .build();
+    solve_fixpoint(&params, &mut engine, &mut active_extras).await
 }
 
 fn initial_active_extras(
@@ -61,13 +125,6 @@ fn initial_active_extras(
     let mut active_extras = ActiveExtrasMap::new();
     active_extras.insert(root_pkg.to_string(), root_extras.clone());
     active_extras
-}
-
-pub(crate) fn package_extras(
-    active_extras: &ActiveExtrasMap,
-    package: &str,
-) -> HashSet<String> {
-    active_extras.get(package).cloned().unwrap_or_default()
 }
 
 pub(crate) async fn parse_version_dependencies(
@@ -105,7 +162,7 @@ fn solve_discovered_graph(
     ctx: &SolveContext<'_>,
     root_pkg: &str,
     root_ver: &Version,
-    closure: &DiscoveredClosure,
+    engine: &DiscoveryEngine,
 ) -> Result<SolvedVersions, ResolveError> {
     let mut provider = OfflineDependencyProvider::new();
     provider.add_dependencies(
@@ -114,8 +171,8 @@ fn solve_discovered_graph(
         vec![(root_pkg.to_string(), Range::singleton(root_ver.clone()))],
     );
 
-    for (package, version) in &closure.discovered_versions {
-        let deps = closure
+    for (package, version) in &engine.discovered_versions {
+        let deps = engine
             .dependencies
             .get(&(package.clone(), version.clone()))
             .cloned()

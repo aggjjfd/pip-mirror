@@ -275,13 +275,22 @@ async fn download_one_build(
 pub async fn download_python_builds_batch(
     client: &Client,
     repo: &Path,
+    workers: usize,
 ) -> Result<Vec<PythonBuildEntry>, Box<dyn std::error::Error>> {
     let entries = fetch_python_builds(client).await?;
     let dir = repo.join("python-builds");
     std::fs::create_dir_all(&dir)?;
-    for entry in &entries {
-        download_one_build(client, entry, &dir).await;
-    }
+    use futures::{StreamExt, stream};
+    stream::iter(&entries)
+        .map(|entry| {
+            let dir = dir.clone();
+            async move {
+                download_one_build(client, entry, &dir).await;
+            }
+        })
+        .buffer_unordered(workers)
+        .collect::<Vec<_>>()
+        .await;
     Ok(entries)
 }
 

@@ -97,14 +97,11 @@ pub fn generate_index(repository_dir: &Path) {
 }
 
 fn generate_index_html(package_names: &[String]) -> String {
-    let mut links = String::new();
-    for name in package_names {
-        links.push_str(&format!(
-            r#"    <a href="{name}/">{name}</a><br/>{}"#,
-            "\n"
-        ));
-    }
-    INDEX_HTML_TEMPLATE.replace("{links}", &links)
+    let links: Vec<String> = package_names
+        .iter()
+        .map(|name| format!(r#"    <a href="{name}/">{name}</a><br/>"#))
+        .collect();
+    INDEX_HTML_TEMPLATE.replace("{links}", &links.join("\n"))
 }
 
 fn generate_index_json(package_names: &[String]) -> String {
@@ -126,27 +123,39 @@ struct PkgCtx<'a> {
     metadata_hashes: &'a DashMap<String, String>,
 }
 
-fn generate_package_html(ctx: &PkgCtx<'_>) -> String {
-    let mut links = String::new();
-    for f in ctx.files {
-        let mut attrs = format!(r#"href="{f}""#);
-        if let Some(sha) = ctx.hashes.get(f) {
-            attrs.push_str(&format!(r#" data-sha256="{}""#, sha.value()));
-        }
-        if f.ends_with(".whl")
-            && let Some(meta) = ctx.metadata_hashes.get(f)
-        {
-            attrs.push_str(&format!(
-                r#" data-core-metadata="sha256={}" data-dist-info-metadata="sha256={}""#,
-                meta.value(),
-                meta.value()
-            ));
-        }
-        links.push_str(&format!(r#"    <a {attrs}>{f}</a><br/>{}"#, "\n"));
+fn build_link_attrs(
+    f: &str,
+    hashes: &DashMap<String, String>,
+    meta: &DashMap<String, String>,
+) -> String {
+    let mut attrs = format!(r#"href="{f}""#);
+    if let Some(sha) = hashes.get(f) {
+        attrs.push_str(&format!(r#" data-sha256="{}""#, sha.value()));
     }
+    if f.ends_with(".whl")
+        && let Some(m) = meta.get(f)
+    {
+        attrs.push_str(&format!(
+            r#" data-core-metadata="sha256={}" data-dist-info-metadata="sha256={}""#,
+            m.value(),
+            m.value()
+        ));
+    }
+    attrs
+}
+
+fn generate_package_html(ctx: &PkgCtx<'_>) -> String {
+    let links: Vec<String> = ctx
+        .files
+        .iter()
+        .map(|f| {
+            let attrs = build_link_attrs(f, ctx.hashes, ctx.metadata_hashes);
+            format!(r#"    <a {attrs}>{f}</a><br/>"#)
+        })
+        .collect();
     PACKAGE_HTML_TEMPLATE
         .replace("{package_name}", ctx.package_name)
-        .replace("{links}", &links)
+        .replace("{links}", &links.join("\n"))
 }
 
 fn generate_package_json(ctx: &PkgCtx<'_>) -> String {

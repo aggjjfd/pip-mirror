@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use futures::{StreamExt, stream};
@@ -19,7 +20,7 @@ use super::types::TargetEnv;
 pub(crate) struct SolveCacheKey {
     pub(crate) package: String,
     pub(crate) version: Version,
-    pub(crate) target: TargetEnv,
+    pub(crate) target: Arc<TargetEnv>,
     pub(crate) extras: Vec<String>,
 }
 
@@ -39,7 +40,7 @@ pub(crate) struct SolveCaches<'a> {
 pub(crate) fn solve_cache_key(
     package: &str,
     version: &Version,
-    target: &TargetEnv,
+    target: Arc<TargetEnv>,
     extras: &HashSet<String>,
 ) -> SolveCacheKey {
     let mut extras_vec: Vec<String> = extras.iter().cloned().collect();
@@ -47,7 +48,7 @@ pub(crate) fn solve_cache_key(
     SolveCacheKey {
         package: package.to_string(),
         version: version.clone(),
-        target: target.clone(),
+        target,
         extras: extras_vec,
     }
 }
@@ -61,7 +62,7 @@ async fn do_actual_solve(
     let ctx = build_solve_context(
         params,
         caches.meta,
-        &job.target,
+        job.target.as_ref(),
         Some(caches.parsed),
     );
     if !version_matches_target(&ctx, &job.package, &job.version).await? {
@@ -72,7 +73,8 @@ async fn do_actual_solve(
         job.package, job.version, job.target
     );
     let result =
-        solve_one_target(&ctx, &job.package, &job.version, &job.extras).await;
+        solve_one_target(&ctx, &job.package, &job.version, job.extras.as_ref())
+            .await;
     if let Err(ResolveError::NoSolution { detail, .. }) = &result {
         tracing::warn!(
             "  ! 求解跳过: {}@{} -> {} 无可用依赖解: {}",
@@ -97,8 +99,12 @@ pub(crate) async fn run_solve_job(
     caches: &SolveCaches<'_>,
     job: &SolveJob,
 ) -> Result<(usize, Option<SolveResult>), ResolveError> {
-    let cache_key =
-        solve_cache_key(&job.package, &job.version, &job.target, &job.extras);
+    let cache_key = solve_cache_key(
+        &job.package,
+        &job.version,
+        Arc::clone(&job.target),
+        job.extras.as_ref(),
+    );
     if let Some(cached) = caches.solve.get(&cache_key) {
         info!(
             "求解命中缓存: {}@{} -> {}",
@@ -116,7 +122,8 @@ pub(crate) async fn prefilter_solve_jobs(
 ) -> Result<Vec<SolveJob>, ResolveError> {
     let results = stream::iter(jobs)
         .map(|job| async move {
-            let ctx = build_solve_context(params, cache, &job.target, None);
+            let ctx =
+                build_solve_context(params, cache, job.target.as_ref(), None);
             let compatible =
                 version_matches_target(&ctx, &job.package, &job.version)
                     .await?;

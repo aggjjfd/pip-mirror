@@ -8,54 +8,78 @@ use super::eligibility::{SolveContext, candidate_versions_for_package};
 use super::error::ResolveError;
 use super::markers::ParsedDependency;
 use super::pubgrub::spec_to_range;
-use super::solve::{
-    ActiveExtrasMap, package_extras, parse_version_dependencies,
-};
+use super::solve::parse_version_dependencies;
+use super::{ActiveExtrasMap, package_extras};
 
 type DependencyKey = (String, Version);
 
-pub(crate) struct DiscoveredClosure {
+pub(crate) struct DiscoveryEngine {
     pub(crate) dependencies: HashMap<DependencyKey, Vec<ParsedDependency>>,
     pub(crate) discovered_versions: HashSet<DependencyKey>,
+    scheduled_versions: HashSet<DependencyKey>,
+    seen_constraints: HashMap<String, Range<Version>>,
+    frontier: VecDeque<DependencyKey>,
 }
 
-pub(crate) async fn discover_closure(
-    ctx: &SolveContext<'_>,
-    root_pkg: &str,
-    root_ver: &Version,
-    active_extras: &ActiveExtrasMap,
-) -> Result<DiscoveredClosure, ResolveError> {
-    let mut dependencies = HashMap::new();
-    let mut discovered_versions = HashSet::new();
-    let mut scheduled_versions =
-        HashSet::from([(root_pkg.to_string(), root_ver.clone())]);
-    let mut seen_constraints: HashMap<String, Range<Version>> = HashMap::new();
-    let mut frontier =
-        VecDeque::from([(root_pkg.to_string(), root_ver.clone())]);
-
-    while !frontier.is_empty() {
-        let batch = drain_frontier(&mut frontier, &mut discovered_versions);
-        let parsed_nodes =
-            fetch_dependency_batch(ctx, &batch, active_extras).await?;
-        let changed_packages = merge_dependency_ranges(
-            parsed_nodes,
-            &mut dependencies,
-            &mut seen_constraints,
-        );
-        expand_changed_packages(
-            ctx,
-            changed_packages,
-            &seen_constraints,
-            &mut scheduled_versions,
-            &mut frontier,
-        )
-        .await?;
+impl DiscoveryEngine {
+    pub(crate) fn with_root(root_pkg: String, root_ver: Version) -> Self {
+        let mut scheduled = HashSet::new();
+        let mut frontier = VecDeque::new();
+        let key = (root_pkg, root_ver);
+        scheduled.insert(key.clone());
+        frontier.push_back(key);
+        Self {
+            dependencies: HashMap::new(),
+            discovered_versions: HashSet::new(),
+            scheduled_versions: scheduled,
+            seen_constraints: HashMap::new(),
+            frontier,
+        }
     }
 
-    Ok(DiscoveredClosure {
-        dependencies,
-        discovered_versions,
-    })
+    pub(crate) async fn run(
+        &mut self,
+        ctx: &SolveContext<'_>,
+        active_extras: &ActiveExtrasMap,
+    ) -> Result<(), ResolveError> {
+        while !self.frontier.is_empty() {
+            let batch = self.drain_frontier();
+            let parsed_nodes =
+                fetch_dependency_batch(ctx, &batch, active_extras).await?;
+            let changed_packages = merge_dependency_ranges(
+                parsed_nodes,
+                &mut self.dependencies,
+                &mut self.seen_constraints,
+            );
+            expand_changed_packages(
+                ctx,
+                changed_packages,
+                &self.seen_constraints,
+                &mut self.scheduled_versions,
+                &mut self.frontier,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    fn drain_frontier(&mut self) -> Vec<DependencyKey> {
+        let batch: Vec<_> = self.frontier.drain(..).collect();
+        self.discovered_versions.extend(batch.iter().cloned());
+        batch
+    }
+
+    pub(crate) fn reprocess(&mut self, package: &str, version: &Version) {
+        let key = (package.to_string(), version.clone());
+        self.dependencies.remove(&key);
+        if self.discovered_versions.remove(&key) {
+            self.scheduled_versions.remove(&key);
+        }
+        if self.scheduled_versions.insert(key.clone()) {
+            self.frontier.push_back(key);
+        }
+        self.seen_constraints.remove(package);
+    }
 }
 
 fn enqueue_if_new(
@@ -66,15 +90,6 @@ fn enqueue_if_new(
     if scheduled.insert(key.clone()) {
         queue.push_back(key);
     }
-}
-
-fn drain_frontier(
-    frontier: &mut VecDeque<DependencyKey>,
-    discovered_versions: &mut HashSet<DependencyKey>,
-) -> Vec<DependencyKey> {
-    let batch: Vec<_> = frontier.drain(..).collect();
-    discovered_versions.extend(batch.iter().cloned());
-    batch
 }
 
 async fn fetch_dependency_batch(

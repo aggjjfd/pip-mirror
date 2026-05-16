@@ -163,10 +163,29 @@ async fn solve_all_targets(
 
 pub(crate) struct SolveJob {
     pub(crate) index: usize,
-    pub(crate) package: String,
+    pub(crate) package: Arc<str>,
     pub(crate) version: Version,
-    pub(crate) extras: HashSet<String>,
-    pub(crate) target: TargetEnv,
+    pub(crate) extras: Arc<HashSet<String>>,
+    pub(crate) target: Arc<TargetEnv>,
+}
+
+fn push_jobs_for_version(
+    jobs: &mut Vec<SolveJob>,
+    pkg: &str,
+    version: &Version,
+    extras: &Arc<HashSet<String>>,
+    targets: &[Arc<TargetEnv>],
+) {
+    let pkg_arc: Arc<str> = Arc::from(pkg);
+    for target in targets {
+        jobs.push(SolveJob {
+            index: jobs.len(),
+            package: Arc::clone(&pkg_arc),
+            version: version.clone(),
+            extras: Arc::clone(extras),
+            target: Arc::clone(target),
+        });
+    }
 }
 
 fn build_solve_jobs(
@@ -174,29 +193,25 @@ fn build_solve_jobs(
     pkg_extras: &HashMap<String, HashSet<String>>,
     targets: &[TargetEnv],
 ) -> Vec<SolveJob> {
+    let targets_arc: Vec<Arc<TargetEnv>> =
+        targets.iter().cloned().map(Arc::new).collect();
     let mut packages: Vec<_> = top_versions.iter().collect();
     packages.sort_by_key(|(p, _)| *p);
-    packages
-        .into_iter()
-        .flat_map(|(pkg, versions)| {
-            let extras = pkg_extras.get(pkg).cloned().unwrap_or_default();
-            versions.iter().cloned().flat_map(move |version| {
-                let extras = extras.clone();
-                targets.iter().cloned().map(move |target| SolveJob {
-                    index: 0,
-                    package: pkg.clone(),
-                    version: version.clone(),
-                    extras: extras.clone(),
-                    target,
-                })
-            })
-        })
-        .enumerate()
-        .map(|(i, mut j)| {
-            j.index = i;
-            j
-        })
-        .collect()
+
+    let mut jobs = Vec::new();
+    for (pkg, versions) in packages {
+        let extras = Arc::new(pkg_extras.get(pkg).cloned().unwrap_or_default());
+        for version in versions {
+            push_jobs_for_version(
+                &mut jobs,
+                pkg,
+                version,
+                &extras,
+                &targets_arc,
+            );
+        }
+    }
+    jobs
 }
 
 pub(crate) fn build_solve_context<'a>(

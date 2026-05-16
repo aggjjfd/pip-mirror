@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use pep440_rs::Version;
 
@@ -8,11 +9,11 @@ use crate::resolver::types::TargetEnv;
 
 #[test]
 fn test_solve_cache_key_hash_and_eq() {
-    let target = TargetEnv::all_resolution_targets()[0].clone();
+    let target = Arc::new(TargetEnv::all_resolution_targets()[0].clone());
     let key1 = SolveCacheKey {
         package: "demo".to_string(),
         version: Version::new([1, 0, 0]),
-        target: target.clone(),
+        target: Arc::clone(&target),
         extras: vec!["feature".to_string()],
     };
     let key2 = SolveCacheKey {

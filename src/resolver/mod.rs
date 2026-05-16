@@ -12,6 +12,17 @@ pub mod solve;
 pub(crate) mod solve_cache;
 pub mod types;
 
+use std::collections::{HashMap, HashSet};
+
+pub(crate) type ActiveExtrasMap = HashMap<String, HashSet<String>>;
+
+pub(crate) fn package_extras(
+    active_extras: &ActiveExtrasMap,
+    package: &str,
+) -> HashSet<String> {
+    active_extras.get(package).cloned().unwrap_or_default()
+}
+
 // PyPI 上仍有少量历史元数据写成 `>=7.*` 这类非法通配比较。
 // 在保留原文的前提下，把比较段规范化成 pep440/pep508 可接受的形式。
 pub(crate) fn normalize_legacy_wildcards(requirement: &str) -> String {

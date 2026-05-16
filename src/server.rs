@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use axum::{
     Router,
@@ -15,12 +17,17 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::access_log::AccessLogger;
 use crate::config::TargetSpec;
 
+mod python_builds;
+pub use python_builds::rewrite_relative_urls;
+
 #[derive(Clone)]
 pub struct AppState {
     pub repo_dir: Arc<PathBuf>,
     #[allow(dead_code)]
     pub access_logger: Arc<AccessLogger>,
     pub targets: Arc<Vec<TargetSpec>>,
+    pub python_builds_cache:
+        Arc<tokio::sync::RwLock<HashMap<String, (String, SystemTime)>>>,
 }
 
 fn build_router(state: AppState) -> Router {
@@ -33,8 +40,14 @@ fn build_router(state: AppState) -> Router {
             get(crate::installer::serve_uv_release),
         )
         .route("/simple/{*tail}", get(serve_simple))
-        .route("/python-builds/index.json", get(serve_python_builds_index))
-        .route("/python-builds/{*tail}", get(serve_python_builds_file))
+        .route(
+            "/python-builds/index.json",
+            get(python_builds::serve_python_builds_index),
+        )
+        .route(
+            "/python-builds/{*tail}",
+            get(python_builds::serve_python_builds_file),
+        )
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -89,6 +102,7 @@ fn make_state(repo_dir: PathBuf, targets: Vec<TargetSpec>) -> AppState {
         repo_dir: Arc::new(repo_dir),
         access_logger,
         targets: Arc::new(targets),
+        python_builds_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
     }
 }
 
@@ -143,7 +157,7 @@ fn try_serve_json(body: Vec<u8>) -> Response {
         .unwrap()
 }
 
-pub fn file_body(
+pub(crate) fn file_body(
     file: tokio::fs::File,
 ) -> impl futures::Stream<Item = Result<axum::body::Bytes, std::io::Error>> {
     futures::stream::try_unfold(file, |mut file| async move {
@@ -237,21 +251,7 @@ async fn serve_simple(
     }
 }
 
-pub fn rewrite_relative_urls(data: &mut serde_json::Value, base: &str) {
-    let Some(obj) = data.as_object_mut() else {
-        return;
-    };
-    for entry in obj.values_mut() {
-        let Some(url) = entry.get("url").and_then(|u| u.as_str()) else {
-            continue;
-        };
-        if url.starts_with('/') {
-            entry["url"] = serde_json::Value::String(format!("{base}{url}"));
-        }
-    }
-}
-
-fn header_str(
+pub(crate) fn header_str(
     req: &axum::extract::Request,
     name: header::HeaderName,
 ) -> Option<String> {
@@ -261,81 +261,24 @@ fn header_str(
         .map(String::from)
 }
 
-async fn serve_python_builds_file(
-    State(state): State<AppState>,
-    axum::extract::Path(tail): axum::extract::Path<String>,
-    req: axum::extract::Request,
-) -> Response {
-    let path = state.repo_dir.join("python-builds").join(&tail);
-    let (status, resp) = match tokio::fs::File::open(&path).await {
-        Ok(file) => {
-            let mime = if tail.ends_with(".json") {
-                "application/json"
-            } else {
-                "application/octet-stream"
-            };
-            let resp = Response::builder()
-                .status(200)
-                .header("Content-Type", mime)
-                .body(Body::from_stream(file_body(file)))
-                .unwrap();
-            (200_u16, resp)
-        }
-        Err(_) => {
-            let resp = (StatusCode::NOT_FOUND, "Not Found").into_response();
-            (404_u16, resp)
-        }
-    };
-    state
-        .access_logger
-        .log(
-            &crate::access_log::AccessRecord::builder()
-                .timestamp(chrono::Utc::now().to_rfc3339())
-                .client_ip(
-                    header_str(
-                        &req,
-                        "X-Forwarded-For".parse().unwrap_or(header::FORWARDED),
-                    )
-                    .unwrap_or_else(|| "unknown".to_string()),
-                )
-                .method("GET")
-                .path(format!("/python-builds/{}", tail))
-                .status_code(status)
-                .user_agent(header_str(&req, header::USER_AGENT))
-                .referer(header_str(&req, header::REFERER))
-                .build(),
+pub(crate) fn build_access_record(
+    req: &axum::extract::Request,
+    path: &str,
+    status: u16,
+) -> crate::access_log::AccessRecord {
+    crate::access_log::AccessRecord::builder()
+        .timestamp(chrono::Utc::now().to_rfc3339())
+        .client_ip(
+            header_str(
+                req,
+                "X-Forwarded-For".parse().unwrap_or(header::FORWARDED),
+            )
+            .unwrap_or_else(|| "unknown".to_string()),
         )
-        .ok();
-    resp
-}
-
-async fn serve_python_builds_index(
-    State(state): State<AppState>,
-    req: axum::extract::Request,
-) -> Response {
-    let host = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost");
-    let path = state.repo_dir.join("python-builds").join("index.json");
-    let body = match tokio::fs::read_to_string(&path).await {
-        Ok(s) => s,
-        Err(_) => return (StatusCode::NOT_FOUND, "not found").into_response(),
-    };
-    let mut data = match serde_json::from_str::<serde_json::Value>(&body) {
-        Ok(v) => v,
-        Err(e) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed: {e}"))
-                .into_response();
-        }
-    };
-    rewrite_relative_urls(&mut data, &format!("http://{host}"));
-    Response::builder()
-        .status(200)
-        .header("Content-Type", "application/json")
-        .body(axum::body::Body::from(
-            serde_json::to_string_pretty(&data).unwrap(),
-        ))
-        .unwrap()
+        .method("GET")
+        .path(path.to_string())
+        .status_code(status)
+        .user_agent(header_str(req, header::USER_AGENT))
+        .referer(header_str(req, header::REFERER))
+        .build()
 }

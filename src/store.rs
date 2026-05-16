@@ -102,6 +102,23 @@ impl DownloadStore {
         Ok(())
     }
 
+    pub fn add_files_batch(
+        &self,
+        records: &[FileRecord<'_>],
+    ) -> Result<(), rusqlite::Error> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        for rec in records {
+            tx.execute(
+                "INSERT OR IGNORE INTO downloaded_files (filename, package_name, version, sha256, size)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![rec.filename, rec.package_name, rec.version, rec.sha256, rec.size],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn set_metadata_sha256(
         &self,
         package_name: &str,
@@ -170,11 +187,17 @@ impl DownloadStore {
         &self,
         files: &[crate::downloader::FileInfo],
     ) -> Result<Vec<crate::downloader::FileInfo>, rusqlite::Error> {
-        files.iter().try_fold(Vec::new(), |mut acc, fi| {
-            let has = self.has_file(&fi.package_name, &fi.filename)?;
-            push_if_missing(&mut acc, fi, has);
-            Ok(acc)
-        })
+        let conn = self.conn.lock().unwrap();
+        let mut result = Vec::new();
+        for fi in files {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM downloaded_files WHERE package_name = ?1 AND filename = ?2",
+                rusqlite::params![&fi.package_name, &fi.filename],
+                |r| r.get(0),
+            )?;
+            push_if_missing(&mut result, fi, count > 0);
+        }
+        Ok(result)
     }
 
     pub fn hash_file(path: &Path) -> Result<String, std::io::Error> {
@@ -184,7 +207,7 @@ impl DownloadStore {
         Ok(format!("{:x}", hasher.finalize()))
     }
 
-    fn handle_hash_result(
+    pub(crate) fn handle_hash_result(
         hr: Result<Result<String, std::io::Error>, tokio::task::JoinError>,
     ) -> String {
         match hr {

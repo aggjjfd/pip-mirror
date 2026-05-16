@@ -12,11 +12,6 @@ use std::path::Path;
 use std::sync::Arc;
 use type_state_builder::TypeStateBuilder;
 
-pub struct HttpCtx<'a> {
-    pub client: &'a Client,
-    pub pypi_url: &'a str,
-}
-
 /// File metadata as returned by PyPI JSON API.
 #[derive(Debug, Clone, TypeStateBuilder)]
 #[builder(impl_into)]
@@ -43,55 +38,6 @@ pub struct DownloadResult {
 }
 
 pub type PrefetchedFiles = HashMap<(String, String), Vec<u8>>;
-
-fn collect_release_files(
-    releases: &serde_json::Value,
-    pkg: &str,
-) -> Vec<FileInfo> {
-    let mut files = Vec::new();
-    for (version, file_list) in
-        releases.as_object().unwrap_or(&serde_json::Map::new())
-    {
-        for f in file_list.as_array().unwrap_or(&vec![]) {
-            files.push(
-                FileInfo::builder()
-                    .filename(f["filename"].as_str().unwrap_or("").to_string())
-                    .url(f["url"].as_str().unwrap_or("").to_string())
-                    .package_name(pkg.to_string())
-                    .version(version.clone())
-                    .sha256(
-                        f.get("digests")
-                            .and_then(|d| d.get("sha256"))
-                            .and_then(|s| s.as_str())
-                            .map(String::from),
-                    )
-                    .size(f["size"].as_u64())
-                    .build(),
-            );
-        }
-    }
-    files
-}
-
-pub async fn fetch_json_api(
-    http: &HttpCtx<'_>,
-    pkg: &str,
-) -> Result<Vec<FileInfo>, reqwest::Error> {
-    // 一次性 PEP 503 normalize + 剥 extras,
-    // 之后 simple/<pkg>/ 目录、.store.db、tar 路径全部走这个名字
-    let normalized = super::filters::normalize_package_name(pkg);
-    let url = format!(
-        "{}/pypi/{}/json",
-        http.pypi_url.trim_end_matches('/'),
-        normalized
-    );
-    let resp: serde_json::Value =
-        http.client.get(&url).send().await?.json().await?;
-    Ok(resp
-        .get("releases")
-        .map(|r| collect_release_files(r, &normalized))
-        .unwrap_or_default())
-}
 
 fn filter_stable_versions(files: &[FileInfo]) -> Vec<FileInfo> {
     let stable: Vec<_> = files
@@ -161,8 +107,7 @@ pub fn select_latest_versions(
 /// Collect all accepted wheels and sdists for a version.
 /// If a version has any accepted wheel, only wheels are kept (sdist skipped).
 /// If a version has no wheel, sdist is kept as fallback.
-#[allow(clippy::excessive_nesting)]
-pub fn collect_version_files(files: &[FileInfo]) -> Vec<FileInfo> {
+fn collect_wheels(files: &[FileInfo]) -> (Vec<FileInfo>, HashSet<String>) {
     let mut whl_versions = HashSet::new();
     let mut result = Vec::with_capacity(files.len());
     for fi in files {
@@ -171,14 +116,28 @@ pub fn collect_version_files(files: &[FileInfo]) -> Vec<FileInfo> {
             result.push(fi.clone());
         }
     }
-    if sdist_fallback_allowed(files, true) {
-        for fi in files {
-            let is_sdist = is_source_distribution(&fi.filename);
-            let no_wheel = !whl_versions.contains(&fi.version);
-            if is_sdist && no_wheel {
-                result.push(fi.clone());
-            }
+    (result, whl_versions)
+}
+
+fn collect_sdists(
+    files: &[FileInfo],
+    whl_versions: &HashSet<String>,
+) -> Vec<FileInfo> {
+    let mut result = Vec::new();
+    for fi in files {
+        let is_sdist = is_source_distribution(&fi.filename);
+        let no_wheel = !whl_versions.contains(&fi.version);
+        if is_sdist && no_wheel {
+            result.push(fi.clone());
         }
+    }
+    result
+}
+
+pub fn collect_version_files(files: &[FileInfo]) -> Vec<FileInfo> {
+    let (mut result, whl_versions) = collect_wheels(files);
+    if sdist_fallback_allowed(files, true) {
+        result.extend(collect_sdists(files, &whl_versions));
     }
     result
 }
@@ -251,10 +210,11 @@ pub async fn download_file(
     let Ok(bytes) = resp.bytes().await else {
         return (false, "读取失败".into());
     };
-    if fi.sha256.as_ref().is_some_and(|e| {
+    if fi.sha256.as_ref().is_some_and(|expected| {
         let mut h = Sha256::new();
         h.update(&bytes);
-        format!("{:x}", h.finalize()).to_lowercase() != e.to_lowercase()
+        let actual = format!("{:x}", h.finalize());
+        !actual.eq_ignore_ascii_case(expected)
     }) {
         return (false, "hash 校验失败".into());
     }
