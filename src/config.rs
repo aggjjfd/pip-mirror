@@ -12,6 +12,18 @@ const DEFAULT_LINUX_MAX_GLIBC: &str = "2.39";
 const DEFAULT_SERVER_PORT: u16 = 8080;
 const DEFAULT_SERVER_HOST: &str = "127.0.0.1";
 
+/// 用户配置的一个解析目标。
+/// python: Python 版本号，如 "3.10" 或 "3.10.0"
+/// os:     操作系统，支持 "linux" / "windows"
+/// arch:   架构，支持 "x64" / "x86"
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetSpec {
+    pub python: String,
+    pub os: String,
+    pub arch: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -45,6 +57,8 @@ pub struct Config {
     pub server_port: u16,
     #[serde(default = "default_server_host")]
     pub server_host: String,
+    #[serde(default = "default_targets")]
+    pub targets: Vec<TargetSpec>,
 }
 
 fn default_repository_dir() -> PathBuf {
@@ -85,6 +99,71 @@ fn default_server_port() -> u16 {
 }
 fn default_server_host() -> String {
     DEFAULT_SERVER_HOST.into()
+}
+
+fn default_targets() -> Vec<TargetSpec> {
+    vec![
+        // Python 3.8
+        TargetSpec {
+            python: "3.8".into(),
+            os: "linux".into(),
+            arch: "x64".into(),
+        },
+        TargetSpec {
+            python: "3.8".into(),
+            os: "windows".into(),
+            arch: "x86".into(),
+        },
+        TargetSpec {
+            python: "3.8".into(),
+            os: "windows".into(),
+            arch: "x64".into(),
+        },
+        // Python 3.9
+        TargetSpec {
+            python: "3.9".into(),
+            os: "linux".into(),
+            arch: "x64".into(),
+        },
+        TargetSpec {
+            python: "3.9".into(),
+            os: "windows".into(),
+            arch: "x64".into(),
+        },
+        // Python 3.10
+        TargetSpec {
+            python: "3.10".into(),
+            os: "linux".into(),
+            arch: "x64".into(),
+        },
+        TargetSpec {
+            python: "3.10".into(),
+            os: "windows".into(),
+            arch: "x64".into(),
+        },
+        // Python 3.11
+        TargetSpec {
+            python: "3.11".into(),
+            os: "linux".into(),
+            arch: "x64".into(),
+        },
+        TargetSpec {
+            python: "3.11".into(),
+            os: "windows".into(),
+            arch: "x64".into(),
+        },
+        // Python 3.12
+        TargetSpec {
+            python: "3.12".into(),
+            os: "linux".into(),
+            arch: "x64".into(),
+        },
+        TargetSpec {
+            python: "3.12".into(),
+            os: "windows".into(),
+            arch: "x64".into(),
+        },
+    ]
 }
 
 fn load_explicit(p: &Path) -> Result<Config, Box<dyn std::error::Error>> {
@@ -146,6 +225,7 @@ impl Default for Config {
             linux_max_glibc: default_linux_max_glibc(),
             server_port: default_server_port(),
             server_host: default_server_host(),
+            targets: default_targets(),
         }
     }
 }

@@ -10,13 +10,15 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
+use dashmap::DashMap;
 use futures::future::join_all;
 use pep440_rs::Version;
 use pip_mirror::downloader::FileInfo;
 use pip_mirror::filters::version_is_installable_for_target;
-use pip_mirror::resolver::eligibility::SolveContext;
+use pip_mirror::resolver::eligibility::{ParsedDepsCacheKey, SolveContext};
 use pip_mirror::resolver::markers::parse_requires_dist;
 use pip_mirror::resolver::metadata::MetadataCache;
+use pip_mirror::resolver::resolve::{PlanParams, build_dependency_plan};
 use pip_mirror::resolver::solve::solve_one_target;
 use pip_mirror::resolver::types::TargetEnv;
 use serde_json::{Value, json};
@@ -169,6 +171,7 @@ fn test_installability_accepts_sdist_fallback_when_enabled() {
 #[derive(Clone)]
 struct FixtureState {
     package_hits: Arc<AtomicUsize>,
+    version_hits: Arc<AtomicUsize>,
     package_json: Arc<HashMap<String, Value>>,
     version_json: Arc<HashMap<(String, String), Value>>,
 }
@@ -190,6 +193,7 @@ async fn version_handler(
     State(state): State<FixtureState>,
     Path((package, version)): Path<(String, String)>,
 ) -> Result<Json<Value>, StatusCode> {
+    state.version_hits.fetch_add(1, Ordering::SeqCst);
     state
         .version_json
         .get(&(package, version))
@@ -249,8 +253,10 @@ fn fixture_cache(base_url: &str) -> MetadataCache {
 #[tokio::test]
 async fn test_metadata_cache_dedupes_inflight_package_requests() {
     let package_hits = Arc::new(AtomicUsize::new(0));
+    let version_hits = Arc::new(AtomicUsize::new(0));
     let state = FixtureState {
         package_hits: package_hits.clone(),
+        version_hits: version_hits.clone(),
         package_json: Arc::new(HashMap::from([(
             "demo".to_string(),
             package_response("demo", &["1.0.0"]),
@@ -273,6 +279,7 @@ async fn test_metadata_cache_dedupes_inflight_package_requests() {
 async fn test_solve_one_target_reaches_fixpoint_after_extra_propagation() {
     let state = FixtureState {
         package_hits: Arc::new(AtomicUsize::new(0)),
+        version_hits: Arc::new(AtomicUsize::new(0)),
         package_json: Arc::new(HashMap::from([
             (
                 "demo-root".to_string(),
@@ -312,6 +319,7 @@ async fn test_solve_one_target_reaches_fixpoint_after_extra_propagation() {
         include_source: false,
         linux_max_glibc: "2.39",
         metadata_workers: 8,
+        parsed_deps_cache: None,
     };
 
     let result = solve_one_target(
@@ -331,5 +339,162 @@ async fn test_solve_one_target_reaches_fixpoint_after_extra_propagation() {
             .active_extras
             .get("demo-mid")
             .is_some_and(|extras| extras.contains("feature"))
+    );
+}
+
+#[tokio::test]
+async fn test_parsed_deps_cache_filled_during_solve() {
+    let state = FixtureState {
+        package_hits: Arc::new(AtomicUsize::new(0)),
+        version_hits: Arc::new(AtomicUsize::new(0)),
+        package_json: Arc::new(HashMap::from([
+            (
+                "demo-root".to_string(),
+                package_response("demo-root", &["1.0.0"]),
+            ),
+            (
+                "demo-mid".to_string(),
+                package_response("demo-mid", &["1.0.0"]),
+            ),
+            (
+                "demo-leaf".to_string(),
+                package_response("demo-leaf", &["1.0.0"]),
+            ),
+        ])),
+        version_json: Arc::new(HashMap::from([
+            (
+                ("demo-root".to_string(), "1.0.0".to_string()),
+                version_response(&["demo-mid[feature]>=1.0"]),
+            ),
+            (
+                ("demo-mid".to_string(), "1.0.0".to_string()),
+                version_response(&["demo-leaf>=1.0; extra == 'feature'"]),
+            ),
+            (
+                ("demo-leaf".to_string(), "1.0.0".to_string()),
+                version_response(&[]),
+            ),
+        ])),
+    };
+    let base_url = spawn_fixture_server(state).await;
+    let cache = fixture_cache(&base_url);
+    let target = linux_target();
+    let parsed_deps_cache: DashMap<
+        ParsedDepsCacheKey,
+        Vec<pip_mirror::resolver::markers::ParsedDependency>,
+    > = DashMap::new();
+    let ctx = SolveContext {
+        cache: &cache,
+        target: &target,
+        allow_prerelease: false,
+        include_source: false,
+        linux_max_glibc: "2.39",
+        metadata_workers: 8,
+        parsed_deps_cache: Some(&parsed_deps_cache),
+    };
+
+    let result = solve_one_target(
+        &ctx,
+        "demo-root",
+        &"1.0.0".parse().unwrap(),
+        &HashSet::new(),
+    )
+    .await
+    .unwrap();
+
+    assert!(result.solved_versions.contains_key("demo-root"));
+    assert!(result.solved_versions.contains_key("demo-mid"));
+    assert!(result.solved_versions.contains_key("demo-leaf"));
+    assert!(
+        result
+            .active_extras
+            .get("demo-mid")
+            .is_some_and(|extras| extras.contains("feature"))
+    );
+    // 验证 ParsedDepsCache 在求解过程中被填充
+    assert!(!parsed_deps_cache.is_empty());
+
+    // 用相同的缓存再次求解，验证结果一致
+    let result2 = solve_one_target(
+        &ctx,
+        "demo-root",
+        &"1.0.0".parse().unwrap(),
+        &HashSet::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.solved_versions, result2.solved_versions);
+}
+
+#[tokio::test]
+async fn test_prefilter_skips_incompatible_versions() {
+    let version_hits = Arc::new(AtomicUsize::new(0));
+    let state = FixtureState {
+        package_hits: Arc::new(AtomicUsize::new(0)),
+        version_hits: version_hits.clone(),
+        package_json: Arc::new(HashMap::from([
+            (
+                "demo-macos-only".to_string(),
+                json!({
+                    "releases": {
+                        "1.0.0": [{
+                            "filename": "demo-macos-only-1.0.0-py3-none-macosx_11_0_arm64.whl",
+                            "url": "https://example.com/demo-macos-only-1.0.0.whl",
+                            "digests": { "sha256": "abc" },
+                            "size": 1,
+                        }]
+                    }
+                }),
+            ),
+            (
+                "demo-universal".to_string(),
+                package_response("demo-universal", &["1.0.0"]),
+            ),
+        ])),
+        version_json: Arc::new(HashMap::from([(
+            ("demo-universal".to_string(), "1.0.0".to_string()),
+            version_response(&[]),
+        )])),
+    };
+    let base_url = spawn_fixture_server(state).await;
+
+    let top_packages =
+        vec!["demo-macos-only".to_string(), "demo-universal".to_string()];
+    let params = PlanParams {
+        top_packages: &top_packages,
+        pypi_url: &base_url,
+        top_versions_per_package: 1,
+        adjacent_versions_per_side: 0,
+        allow_prerelease: false,
+        include_source: false,
+        linux_max_glibc: "2.39",
+        resolve_workers: 2,
+        metadata_workers: 4,
+        targets: vec![linux_target()],
+    };
+
+    let plan = build_dependency_plan(&params, &reqwest::Client::new())
+        .await
+        .unwrap();
+
+    // demo-universal 应该有 planned files
+    assert!(!plan.planned_files.is_empty());
+
+    // demo-macos-only 在 linux target 下不可安装，不应产生 planned files
+    let macos_files: Vec<_> = plan
+        .planned_files
+        .iter()
+        .filter(|f| f.package_name == "demo-macos-only")
+        .collect();
+    assert!(
+        macos_files.is_empty(),
+        "demo-macos-only 不应有 planned files"
+    );
+
+    // version json 仅被 demo-universal 请求（demo-macos-only 被预过滤跳过）
+    assert_eq!(
+        version_hits.load(Ordering::SeqCst),
+        1,
+        "version json 请求数应为 1（仅 demo-universal）"
     );
 }

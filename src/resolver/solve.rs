@@ -6,7 +6,7 @@ use pubgrub::{
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::discovery::{DiscoveredClosure, discover_closure};
-use super::eligibility::SolveContext;
+use super::eligibility::{ParsedDepsCacheKey, SolveContext};
 use super::error::ResolveError;
 use super::markers::{ParsedDependency, parse_requires_dist};
 use super::pubgrub::spec_to_range;
@@ -16,6 +16,7 @@ const ROOT_PACKAGE: &str = "__root__";
 pub type ActiveExtrasMap = HashMap<String, HashSet<String>>;
 pub type SolvedVersions = HashMap<String, Version>;
 
+#[derive(Clone)]
 pub struct SolveResult {
     pub solved_versions: SolvedVersions,
     pub active_extras: ActiveExtrasMap,
@@ -75,8 +76,29 @@ pub(crate) async fn parse_version_dependencies(
     version: &Version,
     extras: &HashSet<String>,
 ) -> Result<Vec<ParsedDependency>, ResolveError> {
+    let mut extras_vec: Vec<String> = extras.iter().cloned().collect();
+    extras_vec.sort();
+    let key = ParsedDepsCacheKey {
+        package: package.to_string(),
+        version: version.clone(),
+        target: ctx.target.clone(),
+        extras: extras_vec,
+    };
+
+    if let Some(cache) = ctx.parsed_deps_cache {
+        if let Some(cached) = cache.get(&key) {
+            return Ok(cached.clone());
+        }
+    }
+
     let requires_dist = ctx.cache.get_requires_dist(package, version).await?;
-    Ok(parse_requires_dist(&requires_dist, extras, ctx.target)?)
+    let result = parse_requires_dist(&requires_dist, extras, ctx.target)?;
+
+    if let Some(cache) = ctx.parsed_deps_cache {
+        cache.insert(key, result.clone());
+    }
+
+    Ok(result)
 }
 
 fn solve_discovered_graph(

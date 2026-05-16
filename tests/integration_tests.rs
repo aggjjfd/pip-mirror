@@ -97,6 +97,7 @@ async fn solve_exact_target(
         include_source: false,
         linux_max_glibc: LINUX_MAX_GLIBC,
         metadata_workers: TEST_METADATA_WORKERS,
+        parsed_deps_cache: None,
     };
     let root_version =
         select_first_installable_version(&cache, &ctx, &package).await;
@@ -174,6 +175,8 @@ async fn test_build_dependency_plan_e2e_smoke() {
             linux_max_glibc: LINUX_MAX_GLIBC,
             resolve_workers: TEST_RESOLVE_WORKERS,
             metadata_workers: TEST_METADATA_WORKERS,
+            targets:
+                pip_mirror::resolver::types::TargetEnv::all_resolution_targets(),
         };
         let plan = build_dependency_plan(&params, &client)
             .await

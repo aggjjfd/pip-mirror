@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use dashmap::DashMap;
 use futures::{StreamExt, stream};
 use pep440_rs::{Version, VersionSpecifier, VersionSpecifiers};
 use pubgrub::Range;
@@ -7,10 +8,21 @@ use pubgrub::Range;
 use crate::filters::version_is_installable_for_target;
 
 use super::error::ResolveError;
+use super::markers::ParsedDependency;
 use super::metadata::MetadataCache;
 use super::types::TargetEnv;
 
 const MAX_VERSION_MATCH_CHECKS_PER_PACKAGE: usize = 16;
+
+/// Cache key for parsed dependencies of a specific package@version under a
+/// given target and extras set.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ParsedDepsCacheKey {
+    pub package: String,
+    pub version: Version,
+    pub target: TargetEnv,
+    pub extras: Vec<String>, // sorted for deterministic hashing
+}
 
 pub struct SolveContext<'a> {
     pub cache: &'a MetadataCache,
@@ -19,6 +31,8 @@ pub struct SolveContext<'a> {
     pub include_source: bool,
     pub linux_max_glibc: &'a str,
     pub metadata_workers: usize,
+    pub parsed_deps_cache:
+        Option<&'a DashMap<ParsedDepsCacheKey, Vec<ParsedDependency>>>,
 }
 
 pub async fn version_matches_target(
@@ -59,14 +73,28 @@ async fn build_candidate_pool(
     package: &str,
     matches_range: &Range<Version>,
 ) -> Result<Vec<Version>, ResolveError> {
-    Ok(ctx
-        .cache
-        .get_all_versions(package)
-        .await?
+    let all_versions = ctx.cache.get_all_versions(package).await?;
+    let candidates: Vec<Version> = all_versions
         .into_iter()
-        .filter(|version| ctx.allow_prerelease || !version.any_prerelease())
         .filter(|version| matches_range.contains(version))
-        .collect())
+        .collect();
+
+    if ctx.allow_prerelease {
+        return Ok(candidates);
+    }
+
+    let stable: Vec<Version> = candidates
+        .iter()
+        .filter(|v| !v.any_prerelease())
+        .cloned()
+        .collect();
+
+    if !stable.is_empty() {
+        Ok(stable)
+    } else {
+        // 若该包所有可用版本均为 pre-release，仍允许使用（与 uv 行为一致）
+        Ok(candidates)
+    }
 }
 
 async fn concurrent_match_checks(
@@ -122,11 +150,12 @@ fn target_python_version(target: &TargetEnv) -> Version {
 }
 
 /// Parse a `requires_python` specifier string, handling `!=X.Y*` wildcard
-/// comparisons that pep440_rs's string parser rejects.
+/// comparisons and `>=X.Y.*` legacy forms that pep440_rs's string parser rejects.
 fn parse_requires_python_spec(
     requires_python: &str,
 ) -> Result<VersionSpecifiers, String> {
-    let specifiers = requires_python
+    let normalized = super::normalize_legacy_wildcards(requires_python);
+    let specifiers = normalized
         .split(',')
         .map(str::trim)
         .filter(|part| !part.is_empty())
@@ -223,5 +252,22 @@ mod tests {
         assert!(parse_requires_python_spec("!=").is_err());
         assert!(parse_requires_python_spec(">=abc").is_err());
         assert!(parse_requires_python_spec("invalid").is_err());
+    }
+
+    #[test]
+    fn test_parse_requires_python_gte_legacy_wildcard() {
+        // nltk 3.6.2 uses >=3.5.*
+        let spec = parse_requires_python_spec(">=3.5.*").unwrap();
+        assert!(!spec.contains(&Version::from_str("3.4.0").unwrap()));
+        assert!(spec.contains(&Version::from_str("3.5.0").unwrap()));
+        assert!(spec.contains(&Version::from_str("3.5.1").unwrap()));
+        assert!(spec.contains(&Version::from_str("3.12.0").unwrap()));
+    }
+
+    #[test]
+    fn test_parse_requires_python_lte_legacy_wildcard() {
+        let spec = parse_requires_python_spec("<=3.5.*").unwrap();
+        assert!(spec.contains(&Version::from_str("3.5.0").unwrap()));
+        assert!(!spec.contains(&Version::from_str("3.6.0").unwrap()));
     }
 }

@@ -242,6 +242,8 @@ async fn test_build_dependency_plan_fetches_metadata_concurrently() {
         linux_max_glibc: LINUX_MAX_GLIBC,
         resolve_workers: 4,
         metadata_workers: 8,
+        targets: pip_mirror::resolver::types::TargetEnv::all_resolution_targets(
+        ),
     };
 
     let plan = build_dependency_plan(&params, &reqwest::Client::new())
@@ -313,6 +315,7 @@ async fn test_version_matches_target_normalizes_legacy_requires_python() {
         include_source: false,
         linux_max_glibc: LINUX_MAX_GLIBC,
         metadata_workers: 8,
+        parsed_deps_cache: None,
     };
 
     let matches =

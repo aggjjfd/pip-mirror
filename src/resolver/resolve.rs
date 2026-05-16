@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use futures::{StreamExt, stream};
@@ -7,12 +8,14 @@ use tracing::info;
 
 use crate::downloader::FileInfo;
 
-use super::eligibility::{SolveContext, version_matches_target};
+use super::eligibility::{
+    ParsedDepsCacheKey, SolveContext, version_matches_target,
+};
 pub use super::error::ResolveError;
 use super::metadata::MetadataCache;
 use super::plan::expand_solved_versions;
 use super::pubgrub::{bare_name, collect_pkg_extras};
-use super::solve::solve_one_target;
+use super::solve::{SolveResult, solve_one_target};
 use super::types::TargetEnv;
 
 pub struct PlanParams<'a> {
@@ -25,6 +28,7 @@ pub struct PlanParams<'a> {
     pub linux_max_glibc: &'a str,
     pub resolve_workers: usize,
     pub metadata_workers: usize,
+    pub targets: Vec<TargetEnv>,
 }
 
 pub struct DependencyPlan {
@@ -32,6 +36,17 @@ pub struct DependencyPlan {
     pub prefetched_files: HashMap<(String, String), Vec<u8>>,
     pub solved_versions: DashMap<String, Vec<Version>>,
 }
+
+/// Cache key for memoizing `solve_one_target` results.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct SolveCacheKey {
+    package: String,
+    version: Version,
+    target: TargetEnv,
+    extras: Vec<String>, // sorted for deterministic hashing
+}
+
+type SolveResultCache = DashMap<SolveCacheKey, SolveResult>;
 
 pub async fn build_dependency_plan(
     params: &PlanParams<'_>,
@@ -44,10 +59,23 @@ pub async fn build_dependency_plan(
     );
     let top_versions = collect_top_versions(params, &cache).await?;
     let pkg_extras = collect_pkg_extras(params.top_packages);
-    let targets = TargetEnv::all_resolution_targets();
-    let all_solutions =
-        solve_all_targets(params, &cache, &top_versions, &pkg_extras, &targets)
-            .await?;
+    let targets = if params.targets.is_empty() {
+        TargetEnv::all_resolution_targets()
+    } else {
+        params.targets.clone()
+    };
+    let solve_cache = Arc::new(SolveResultCache::new());
+    let parsed_deps_cache = Arc::new(DashMap::new());
+    let all_solutions = solve_all_targets(
+        params,
+        &cache,
+        &top_versions,
+        &pkg_extras,
+        &targets,
+        &solve_cache,
+        &parsed_deps_cache,
+    )
+    .await?;
     let expanded = expand_solved_versions(
         &all_solutions,
         &cache,
@@ -124,10 +152,19 @@ async fn solve_all_targets(
     top_versions: &HashMap<String, Vec<Version>>,
     pkg_extras: &HashMap<String, std::collections::HashSet<String>>,
     targets: &[TargetEnv],
+    solve_cache: &SolveResultCache,
+    parsed_deps_cache: &DashMap<
+        ParsedDepsCacheKey,
+        Vec<super::markers::ParsedDependency>,
+    >,
 ) -> Result<Vec<super::solve::SolveResult>, ResolveError> {
     let jobs = build_solve_jobs(top_versions, pkg_extras, targets);
+    let jobs = prefilter_solve_jobs(params, cache, jobs).await?;
     let results = stream::iter(jobs)
-        .map(|job| async move { run_solve_job(params, cache, &job).await })
+        .map(|job| async move {
+            run_solve_job(params, cache, &job, solve_cache, parsed_deps_cache)
+                .await
+        })
         .buffer_unordered(params.resolve_workers)
         .collect::<Vec<_>>()
         .await;
@@ -143,8 +180,35 @@ async fn run_solve_job(
     params: &PlanParams<'_>,
     cache: &MetadataCache,
     job: &SolveJob,
+    solve_cache: &SolveResultCache,
+    parsed_deps_cache: &DashMap<
+        ParsedDepsCacheKey,
+        Vec<super::markers::ParsedDependency>,
+    >,
 ) -> Result<(usize, Option<super::solve::SolveResult>), ResolveError> {
-    let ctx = build_solve_context(params, cache, &job.target);
+    let mut extras_vec: Vec<String> = job.extras.iter().cloned().collect();
+    extras_vec.sort();
+    let cache_key = SolveCacheKey {
+        package: job.package.clone(),
+        version: job.version.clone(),
+        target: job.target.clone(),
+        extras: extras_vec,
+    };
+
+    if let Some(cached) = solve_cache.get(&cache_key) {
+        info!(
+            "求解命中缓存: {}@{} -> {}",
+            job.package, job.version, job.target
+        );
+        return Ok((job.index, Some(cached.clone())));
+    }
+
+    let ctx = build_solve_context(
+        params,
+        cache,
+        &job.target,
+        Some(parsed_deps_cache),
+    );
     if !version_matches_target(&ctx, &job.package, &job.version).await? {
         return Ok((job.index, None));
     }
@@ -169,6 +233,7 @@ async fn run_solve_job(
         "求解完成: {}@{} -> {}",
         job.package, job.version, job.target
     );
+    solve_cache.insert(cache_key, solved.clone());
     Ok((job.index, Some(solved)))
 }
 
@@ -212,10 +277,39 @@ fn build_solve_jobs(
         .collect()
 }
 
+async fn prefilter_solve_jobs(
+    params: &PlanParams<'_>,
+    cache: &MetadataCache,
+    jobs: Vec<SolveJob>,
+) -> Result<Vec<SolveJob>, ResolveError> {
+    let results = stream::iter(jobs)
+        .map(|job| async move {
+            let ctx = build_solve_context(params, cache, &job.target, None);
+            let compatible =
+                version_matches_target(&ctx, &job.package, &job.version)
+                    .await?;
+            Ok::<_, ResolveError>((job, compatible))
+        })
+        .buffer_unordered(params.metadata_workers)
+        .collect::<Vec<_>>()
+        .await;
+
+    Ok(results
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|(_, compat)| *compat)
+        .map(|(job, _)| job)
+        .collect())
+}
+
 fn build_solve_context<'a>(
     params: &'a PlanParams<'a>,
     cache: &'a MetadataCache,
     target: &'a TargetEnv,
+    parsed_deps_cache: Option<
+        &'a DashMap<ParsedDepsCacheKey, Vec<super::markers::ParsedDependency>>,
+    >,
 ) -> SolveContext<'a> {
     SolveContext {
         cache,
@@ -224,6 +318,7 @@ fn build_solve_context<'a>(
         include_source: params.include_source,
         linux_max_glibc: params.linux_max_glibc,
         metadata_workers: params.metadata_workers,
+        parsed_deps_cache,
     }
 }
 
@@ -246,7 +341,11 @@ async fn collect_planned_files(
     cache: &MetadataCache,
     expanded: &DashMap<String, Vec<Version>>,
 ) -> Result<Vec<FileInfo>, ResolveError> {
-    let targets = super::types::TargetEnv::all_resolution_targets();
+    let targets = if params.targets.is_empty() {
+        super::types::TargetEnv::all_resolution_targets()
+    } else {
+        params.targets.clone()
+    };
     let jobs = build_file_jobs(expanded);
     let results = stream::iter(jobs)
         .map(|(index, package, version)| {
@@ -295,4 +394,42 @@ fn build_file_jobs(
         .enumerate()
         .map(|(index, (package, version))| (index, package, version))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use pep440_rs::Version;
+
+    use super::{SolveCacheKey, SolveResult, SolveResultCache};
+    use crate::resolver::types::TargetEnv;
+
+    #[test]
+    fn test_solve_cache_key_hash_and_eq() {
+        let target = TargetEnv::all_resolution_targets()[0].clone();
+        let key1 = SolveCacheKey {
+            package: "demo".to_string(),
+            version: Version::new([1, 0, 0]),
+            target: target.clone(),
+            extras: vec!["feature".to_string()],
+        };
+        let key2 = SolveCacheKey {
+            package: "demo".to_string(),
+            version: Version::new([1, 0, 0]),
+            target,
+            extras: vec!["feature".to_string()],
+        };
+        assert_eq!(key1, key2);
+
+        let cache = SolveResultCache::new();
+        cache.insert(
+            key1,
+            SolveResult {
+                solved_versions: HashMap::new(),
+                active_extras: HashMap::new(),
+            },
+        );
+        assert!(cache.contains_key(&key2));
+    }
 }

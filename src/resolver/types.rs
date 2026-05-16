@@ -2,6 +2,8 @@ use std::fmt;
 
 use type_state_builder::TypeStateBuilder;
 
+use crate::config::TargetSpec;
+
 /// All resolution targets, listed explicitly as (python_version, sys_platform,
 /// platform_system, platform_machine, os_name).
 ///
@@ -88,6 +90,63 @@ impl TargetEnv {
                     .build()
             })
             .collect()
+    }
+
+    /// Convert user-friendly TargetSpec into TargetEnv.
+    /// Returns None if the os/arch combination is not supported.
+    fn from_spec(spec: &TargetSpec) -> Option<TargetEnv> {
+        let os_lower = spec.os.to_lowercase();
+        let arch_lower = spec.arch.to_lowercase();
+        let (sys_platform, platform_system, platform_machine, os_name) =
+            match (os_lower.as_str(), arch_lower.as_str()) {
+                ("linux", "x64" | "x86_64" | "amd64") => {
+                    ("linux", "Linux", "x86_64", "posix")
+                }
+                ("win32" | "windows", "x86") => {
+                    ("win32", "Windows", "x86", "nt")
+                }
+                ("win32" | "windows", "x64" | "x86_64" | "amd64") => {
+                    ("win32", "Windows", "AMD64", "nt")
+                }
+                _ => return None,
+            };
+
+        let dot_count = spec.python.matches('.').count();
+        let python_version = if dot_count == 1 {
+            spec.python.clone()
+        } else if dot_count == 2 {
+            let parts: Vec<&str> = spec.python.split('.').collect();
+            format!("{}.{}", parts[0], parts[1])
+        } else {
+            return None;
+        };
+
+        let python_full_version = if dot_count == 1 {
+            format!("{python_version}{DEFAULT_IMPLEMENTATION_VERSION_SUFFIX}")
+        } else {
+            spec.python.clone()
+        };
+
+        Some(
+            TargetEnv::builder()
+                .python_version(python_version)
+                .python_full_version(python_full_version.clone())
+                .sys_platform(sys_platform.to_string())
+                .platform_machine(platform_machine.to_string())
+                .platform_system(platform_system.to_string())
+                .os_name(os_name.to_string())
+                .implementation_name(CPYTHON_IMPLEMENTATION_NAME.to_string())
+                .platform_python_implementation(
+                    CPYTHON_IMPLEMENTATION_LABEL.to_string(),
+                )
+                .implementation_version(python_full_version)
+                .build(),
+        )
+    }
+
+    /// Build resolution targets from user config.
+    pub fn from_specs(specs: &[TargetSpec]) -> Vec<TargetEnv> {
+        specs.iter().filter_map(TargetEnv::from_spec).collect()
     }
 
     /// Convert to pep508_rs::MarkerEnvironment for marker evaluation.
