@@ -137,6 +137,7 @@ async fn create_sync_plan(
         linux_max_glibc: &config.linux_max_glibc,
         resolve_workers: config.resolve_workers,
         metadata_workers: config.metadata_workers,
+        targets: crate::resolver::types::TargetEnv::from_specs(&config.targets),
     };
     build_dependency_plan(&params, client).await
 }
@@ -247,7 +248,8 @@ async fn build_top_only_plan(
     );
     let mut planned_files = Vec::new();
     let solved_versions: DashMap<String, Vec<Version>> = DashMap::new();
-    let targets = crate::resolver::types::TargetEnv::all_resolution_targets();
+    let targets =
+        crate::resolver::types::TargetEnv::from_specs(&config.targets);
 
     for pkg in pkgs {
         let package = bare_name(pkg);
