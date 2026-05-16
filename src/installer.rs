@@ -1,11 +1,26 @@
 use axum::{
     body::Body,
-    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 
-use crate::server::AppState;
+const UV_INSTALLER_SH: &str =
+    include_str!("../packages/installers/uv-installer.sh");
+const UV_INSTALLER_PS1: &str =
+    include_str!("../packages/installers/uv-installer.ps1");
+
+const UV_LINUX: &[u8] = include_bytes!(
+    "../packages/uv-releases/0.11.14/uv-x86_64-unknown-linux-gnu.tar.gz"
+);
+const UV_LINUX_SHA256: &[u8] = include_bytes!(
+    "../packages/uv-releases/0.11.14/uv-x86_64-unknown-linux-gnu.tar.gz.sha256"
+);
+const UV_WINDOWS: &[u8] = include_bytes!(
+    "../packages/uv-releases/0.11.14/uv-x86_64-pc-windows-msvc.zip"
+);
+const UV_WINDOWS_SHA256: &[u8] = include_bytes!(
+    "../packages/uv-releases/0.11.14/uv-x86_64-pc-windows-msvc.zip.sha256"
+);
 
 fn patch_installer(content: &str, url: &str) -> String {
     content
@@ -24,7 +39,6 @@ fn patch_installer(content: &str, url: &str) -> String {
 }
 
 pub async fn serve_installer(
-    State(state): State<AppState>,
     axum::extract::Path(name): axum::extract::Path<String>,
     req: axum::extract::Request,
 ) -> Response {
@@ -33,16 +47,21 @@ pub async fn serve_installer(
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("localhost");
-    let path = state.repo_dir.join("installers").join(&name);
-    let content = match tokio::fs::read_to_string(&path).await {
-        Ok(s) => s,
-        Err(_) => return (StatusCode::NOT_FOUND, "Not Found").into_response(),
-    };
     let url = format!("http://{}/uv-releases/0.11.14", host);
-    let patched = patch_installer(&content, &url);
+    let (patched, content_type) = match name.as_str() {
+        "uv-installer.sh" => (
+            patch_installer(UV_INSTALLER_SH, &url),
+            "text/plain; charset=utf-8",
+        ),
+        "uv-installer.ps1" => (
+            patch_installer(UV_INSTALLER_PS1, &url),
+            "text/plain; charset=utf-8",
+        ),
+        _ => return (StatusCode::NOT_FOUND, "Not Found").into_response(),
+    };
     Response::builder()
         .status(200)
-        .header("Content-Type", "text/plain; charset=utf-8")
+        .header("Content-Type", content_type)
         .body(Body::from(patched))
         .unwrap()
 }
@@ -60,23 +79,20 @@ fn mime_for_release(tail: &str) -> &'static str {
 }
 
 pub async fn serve_uv_release(
-    State(state): State<AppState>,
     axum::extract::Path(tail): axum::extract::Path<String>,
 ) -> Response {
-    let path = state.repo_dir.join("uv-releases").join(&tail);
-    if !path.exists() {
-        return (StatusCode::NOT_FOUND, "Not Found").into_response();
-    }
+    let data: &'static [u8] = match tail.as_str() {
+        "0.11.14/uv-x86_64-unknown-linux-gnu.tar.gz" => UV_LINUX,
+        "0.11.14/uv-x86_64-unknown-linux-gnu.tar.gz.sha256" => UV_LINUX_SHA256,
+        "0.11.14/uv-x86_64-pc-windows-msvc.zip" => UV_WINDOWS,
+        "0.11.14/uv-x86_64-pc-windows-msvc.zip.sha256" => UV_WINDOWS_SHA256,
+        _ => return (StatusCode::NOT_FOUND, "Not Found").into_response(),
+    };
     let mime = mime_for_release(&tail);
-    match tokio::fs::File::open(&path).await {
-        Ok(file) => Response::builder()
-            .status(200)
-            .header("Content-Type", mime)
-            .header("Access-Control-Allow-Origin", "*")
-            .body(Body::from_stream(crate::server::file_body(file)))
-            .unwrap(),
-        Err(_) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, "Read error").into_response()
-        }
-    }
+    Response::builder()
+        .status(200)
+        .header("Content-Type", mime)
+        .header("Access-Control-Allow-Origin", "*")
+        .body(Body::from(data))
+        .unwrap()
 }
