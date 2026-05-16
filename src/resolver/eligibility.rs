@@ -145,7 +145,7 @@ fn requires_python_matches_target(
 }
 
 fn target_python_version(target: &TargetEnv) -> Version {
-    Version::from_str(&target.python_full_version)
+    Version::from_str(target.python_full_version())
         .expect("supported target Python versions must be valid")
 }
 

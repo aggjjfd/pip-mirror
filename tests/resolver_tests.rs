@@ -2,23 +2,14 @@ use std::collections::HashSet;
 
 use pep440_rs::Version;
 use pip_mirror::resolver::pubgrub;
+use pip_mirror::resolver::types::TargetEnv;
 
 fn no_extras() -> HashSet<String> {
     HashSet::new()
 }
 
-fn linux_target() -> pip_mirror::resolver::types::TargetEnv {
-    pip_mirror::resolver::types::TargetEnv {
-        python_version: "3.12".to_string(),
-        python_full_version: "3.12.0".to_string(),
-        sys_platform: "linux".to_string(),
-        platform_machine: "x86_64".to_string(),
-        platform_system: "Linux".to_string(),
-        os_name: "posix".to_string(),
-        implementation_name: "cpython".to_string(),
-        platform_python_implementation: "CPython".to_string(),
-        implementation_version: "3.12.0".to_string(),
-    }
+fn linux_target() -> TargetEnv {
+    TargetEnv::test_env("linux", "x86_64", "3.12")
 }
 
 // ── pubgrub helpers ──

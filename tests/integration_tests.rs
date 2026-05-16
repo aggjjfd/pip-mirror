@@ -15,24 +15,11 @@ const TEST_RESOLVE_WORKERS: usize = 4;
 const TEST_METADATA_WORKERS: usize = 8;
 
 fn py312_linux_target() -> TargetEnv {
-    TargetEnv {
-        python_version: "3.12".to_string(),
-        python_full_version: "3.12.0".to_string(),
-        sys_platform: "linux".to_string(),
-        platform_machine: "x86_64".to_string(),
-        platform_system: "Linux".to_string(),
-        os_name: "posix".to_string(),
-        implementation_name: "cpython".to_string(),
-        platform_python_implementation: "CPython".to_string(),
-        implementation_version: "3.12.0".to_string(),
-    }
+    TargetEnv::test_env("linux", "x86_64", "3.12")
 }
 
 fn uv_platform(target: &TargetEnv) -> &'static str {
-    match (
-        target.sys_platform.as_str(),
-        target.platform_machine.as_str(),
-    ) {
+    match (target.sys_platform(), target.platform_machine()) {
         ("linux", "x86_64") => "x86_64-manylinux_2_39",
         ("win32", "x86") => "i686-pc-windows-msvc",
         ("win32", "AMD64") => "x86_64-pc-windows-msvc",
@@ -57,7 +44,7 @@ fn uv_resolve_exact(requirement: &str, target: &TargetEnv) -> HashSet<String> {
             "--prerelease",
             "disallow",
             "--python-version",
-            &target.python_version,
+            target.python_version(),
             "--python-platform",
             uv_platform(target),
             requirement,

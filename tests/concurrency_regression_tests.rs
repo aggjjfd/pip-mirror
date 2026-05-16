@@ -192,17 +192,7 @@ fn download_file(filename: &str, base_url: &str) -> FileInfo {
 }
 
 fn linux_target() -> TargetEnv {
-    TargetEnv {
-        python_version: "3.12".to_string(),
-        python_full_version: "3.12.0".to_string(),
-        sys_platform: "linux".to_string(),
-        platform_machine: "x86_64".to_string(),
-        platform_system: "Linux".to_string(),
-        os_name: "posix".to_string(),
-        implementation_name: "cpython".to_string(),
-        platform_python_implementation: "CPython".to_string(),
-        implementation_version: "3.12.0".to_string(),
-    }
+    TargetEnv::test_env("linux", "x86_64", "3.12")
 }
 
 fn metadata_cache(base_url: &str) -> MetadataCache {

@@ -1,30 +1,24 @@
 use std::fmt;
 
-use type_state_builder::TypeStateBuilder;
-
 use crate::config::TargetSpec;
 
-/// All resolution targets, listed explicitly as (python_version, sys_platform,
-/// platform_system, platform_machine, os_name).
+/// All resolution targets, listed as (python_version, os, arch) where os/arch
+/// are raw platform identifiers passed into the type-state builder.
 ///
 /// Python 3.8 is the only version that keeps win32 x86; all later versions drop it.
-pub const SUPPORTED_RESOLUTION_TARGETS: &[(&str, &str, &str, &str, &str)] = &[
-    // Python 3.8
-    ("3.8", "linux", "Linux", "x86_64", "posix"),
-    ("3.8", "win32", "Windows", "x86", "nt"),
-    ("3.8", "win32", "Windows", "AMD64", "nt"),
-    // Python 3.9
-    ("3.9", "linux", "Linux", "x86_64", "posix"),
-    ("3.9", "win32", "Windows", "AMD64", "nt"),
-    // Python 3.10
-    ("3.10", "linux", "Linux", "x86_64", "posix"),
-    ("3.10", "win32", "Windows", "AMD64", "nt"),
-    // Python 3.11
-    ("3.11", "linux", "Linux", "x86_64", "posix"),
-    ("3.11", "win32", "Windows", "AMD64", "nt"),
-    // Python 3.12
-    ("3.12", "linux", "Linux", "x86_64", "posix"),
-    ("3.12", "win32", "Windows", "AMD64", "nt"),
+pub const SUPPORTED_RESOLUTION_TARGETS: &[(&str, &str, &str)] = &[
+    // (python, os, arch)
+    ("3.8", "linux", "x86_64"),
+    ("3.8", "win32", "x86"),
+    ("3.8", "win32", "AMD64"),
+    ("3.9", "linux", "x86_64"),
+    ("3.9", "win32", "AMD64"),
+    ("3.10", "linux", "x86_64"),
+    ("3.10", "win32", "AMD64"),
+    ("3.11", "linux", "x86_64"),
+    ("3.11", "win32", "AMD64"),
+    ("3.12", "linux", "x86_64"),
+    ("3.12", "win32", "AMD64"),
 ];
 
 pub const CPYTHON_IMPLEMENTATION_NAME: &str = "cpython";
@@ -32,27 +26,21 @@ pub const CPYTHON_IMPLEMENTATION_LABEL: &str = "CPython";
 pub const DEFAULT_IMPLEMENTATION_VERSION_SUFFIX: &str = ".0";
 
 /// Target environment: (Python version, platform).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, TypeStateBuilder)]
-#[builder(impl_into)]
+///
+/// Constructed exclusively through the type-state builder
+/// (`TargetEnv::builder()` → `PlatformBuilder` → `VersionBuilder` → `BuildReady`),
+/// which guarantees that all correlated fields are internally consistent.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TargetEnv {
-    #[builder(required)]
-    pub python_version: String, // "3.12"
-    #[builder(required)]
-    pub python_full_version: String, // "3.12.0"
-    #[builder(required)]
-    pub sys_platform: String, // "linux" / "win32"
-    #[builder(required)]
-    pub platform_machine: String, // "x86_64" / "AMD64" / "x86"
-    #[builder(required)]
-    pub platform_system: String, // "Linux" / "Windows"
-    #[builder(required)]
-    pub os_name: String, // "posix" / "nt"
-    #[builder(required)]
-    pub implementation_name: String, // "cpython"
-    #[builder(required)]
-    pub platform_python_implementation: String, // "CPython"
-    #[builder(required)]
-    pub implementation_version: String, // "3.12.0"
+    python_version: String,                 // "3.12"
+    python_full_version: String,            // "3.12.0"
+    sys_platform: String,                   // "linux" / "win32"
+    platform_machine: String,               // "x86_64" / "AMD64" / "x86"
+    platform_system: String,                // "Linux" / "Windows"
+    os_name: String,                        // "posix" / "nt"
+    implementation_name: String,            // "cpython"
+    platform_python_implementation: String, // "CPython"
+    implementation_version: String,         // "3.12.0"
 }
 
 impl fmt::Display for TargetEnv {
@@ -66,91 +54,62 @@ impl fmt::Display for TargetEnv {
 }
 
 impl TargetEnv {
+    // ── getters ──
+    pub fn python_version(&self) -> &str {
+        &self.python_version
+    }
+    pub fn python_full_version(&self) -> &str {
+        &self.python_full_version
+    }
+    pub fn sys_platform(&self) -> &str {
+        &self.sys_platform
+    }
+    pub fn platform_machine(&self) -> &str {
+        &self.platform_machine
+    }
+    pub fn platform_system(&self) -> &str {
+        &self.platform_system
+    }
+    pub fn os_name(&self) -> &str {
+        &self.os_name
+    }
+    pub fn implementation_name(&self) -> &str {
+        &self.implementation_name
+    }
+    pub fn platform_python_implementation(&self) -> &str {
+        &self.platform_python_implementation
+    }
+    pub fn implementation_version(&self) -> &str {
+        &self.implementation_version
+    }
+
+    // ── entry point ──
+    pub fn builder() -> PlatformBuilder {
+        PlatformBuilder
+    }
+
     /// Generate all resolution targets from constants.
     pub fn all_resolution_targets() -> Vec<TargetEnv> {
         SUPPORTED_RESOLUTION_TARGETS
             .iter()
-            .map(|(pv, sys, sys_name, machine, os)| {
-                let full =
-                    format!("{pv}{DEFAULT_IMPLEMENTATION_VERSION_SUFFIX}");
-                TargetEnv::builder()
-                    .python_version(pv.to_string())
-                    .python_full_version(full.clone())
-                    .sys_platform(sys.to_string())
-                    .platform_machine(machine.to_string())
-                    .platform_system(sys_name.to_string())
-                    .os_name(os.to_string())
-                    .implementation_name(
-                        CPYTHON_IMPLEMENTATION_NAME.to_string(),
-                    )
-                    .platform_python_implementation(
-                        CPYTHON_IMPLEMENTATION_LABEL.to_string(),
-                    )
-                    .implementation_version(full.clone())
-                    .build()
+            .filter_map(|(pv, os, arch)| {
+                Some(
+                    TargetEnv::builder()
+                        .platform(os, arch)?
+                        .python_version(pv)?
+                        .build(),
+                )
             })
             .collect()
-    }
-
-    fn map_platform(
-        os_lower: &str,
-        arch_lower: &str,
-    ) -> Option<(&'static str, &'static str, &'static str, &'static str)> {
-        match (os_lower, arch_lower) {
-            ("linux", "x64" | "x86_64" | "amd64") => {
-                Some(("linux", "Linux", "x86_64", "posix"))
-            }
-            ("win32" | "windows", "x86") => {
-                Some(("win32", "Windows", "x86", "nt"))
-            }
-            ("win32" | "windows", "x64" | "x86_64" | "amd64") => {
-                Some(("win32", "Windows", "AMD64", "nt"))
-            }
-            _ => None,
-        }
-    }
-
-    fn parse_python_version(spec: &TargetSpec) -> Option<(String, String)> {
-        let dot_count = spec.python.matches('.').count();
-        let pv = match dot_count {
-            1 => spec.python.clone(),
-            2 => {
-                let parts: Vec<&str> = spec.python.split('.').collect();
-                format!("{}.{}", parts[0], parts[1])
-            }
-            _ => return None,
-        };
-        let full = if dot_count == 1 {
-            format!("{pv}{DEFAULT_IMPLEMENTATION_VERSION_SUFFIX}")
-        } else {
-            spec.python.clone()
-        };
-        Some((pv, full))
     }
 
     /// Convert user-friendly TargetSpec into TargetEnv.
     /// Returns None if the os/arch combination is not supported.
     fn from_spec(spec: &TargetSpec) -> Option<TargetEnv> {
-        let (sys_platform, platform_system, platform_machine, os_name) =
-            Self::map_platform(
-                &spec.os.to_lowercase(),
-                &spec.arch.to_lowercase(),
-            )?;
-        let (python_version, python_full_version) =
-            Self::parse_python_version(spec)?;
         Some(
             TargetEnv::builder()
-                .python_version(python_version)
-                .python_full_version(python_full_version.clone())
-                .sys_platform(sys_platform.to_string())
-                .platform_machine(platform_machine.to_string())
-                .platform_system(platform_system.to_string())
-                .os_name(os_name.to_string())
-                .implementation_name(CPYTHON_IMPLEMENTATION_NAME.to_string())
-                .platform_python_implementation(
-                    CPYTHON_IMPLEMENTATION_LABEL.to_string(),
-                )
-                .implementation_version(python_full_version)
+                .platform(&spec.os, &spec.arch)?
+                .python_version(&spec.python)?
                 .build(),
         )
     }
@@ -183,5 +142,129 @@ impl TargetEnv {
             sys_platform: self.sys_platform.as_str(),
         }
         .try_into()
+    }
+
+    /// Test helper — builds a TargetEnv from raw identifiers, panics on invalid input.
+    pub fn test_env(os: &str, arch: &str, py: &str) -> TargetEnv {
+        TargetEnv::builder()
+            .platform(os, arch)
+            .expect("test_env: unsupported os/arch combination")
+            .python_version(py)
+            .expect("test_env: invalid python version")
+            .build()
+    }
+}
+
+// ── type-state builder ──────────────────────────────────────────────────────
+
+/// Phase 1: empty builder — only `.platform()` is available.
+pub struct PlatformBuilder;
+
+impl PlatformBuilder {
+    /// Accept `(os, arch)`, auto-derive `sys_platform`, `platform_system`,
+    /// `platform_machine`, and `os_name`.
+    /// Returns `None` when the os/arch combination is unsupported.
+    pub fn platform(self, os: &str, arch: &str) -> Option<VersionBuilder> {
+        let (sys_platform, platform_system, platform_machine, os_name) =
+            Self::map_platform(&os.to_lowercase(), &arch.to_lowercase())?;
+        Some(VersionBuilder {
+            sys_platform: sys_platform.to_string(),
+            platform_system: platform_system.to_string(),
+            platform_machine: platform_machine.to_string(),
+            os_name: os_name.to_string(),
+        })
+    }
+
+    fn map_platform(
+        os_lower: &str,
+        arch_lower: &str,
+    ) -> Option<(&'static str, &'static str, &'static str, &'static str)> {
+        match (os_lower, arch_lower) {
+            ("linux", "x64" | "x86_64" | "amd64") => {
+                Some(("linux", "Linux", "x86_64", "posix"))
+            }
+            ("win32" | "windows", "x86") => {
+                Some(("win32", "Windows", "x86", "nt"))
+            }
+            ("win32" | "windows", "x64" | "x86_64" | "amd64") => {
+                Some(("win32", "Windows", "AMD64", "nt"))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Phase 2: platform fields set — only `.python_version()` is available.
+pub struct VersionBuilder {
+    sys_platform: String,
+    platform_system: String,
+    platform_machine: String,
+    os_name: String,
+}
+
+impl VersionBuilder {
+    /// Accept a Python version string (e.g. `"3.12"` or `"3.12.0"`), auto-derive
+    /// `python_full_version` and `implementation_version`.
+    /// Returns `None` when the version cannot be parsed.
+    pub fn python_version(self, py: &str) -> Option<BuildReady> {
+        let (python_version, python_full_version) =
+            Self::parse_python_version(py)?;
+        Some(BuildReady {
+            sys_platform: self.sys_platform,
+            platform_system: self.platform_system,
+            platform_machine: self.platform_machine,
+            os_name: self.os_name,
+            python_version,
+            python_full_version: python_full_version.clone(),
+            implementation_version: python_full_version,
+        })
+    }
+
+    fn parse_python_version(py: &str) -> Option<(String, String)> {
+        let dot_count = py.matches('.').count();
+        let pv = match dot_count {
+            1 => py.to_string(),
+            2 => {
+                let parts: Vec<&str> = py.split('.').collect();
+                format!("{}.{}", parts[0], parts[1])
+            }
+            _ => return None,
+        };
+        let full = if dot_count == 1 {
+            format!("{pv}{DEFAULT_IMPLEMENTATION_VERSION_SUFFIX}")
+        } else {
+            py.to_string()
+        };
+        Some((pv, full))
+    }
+}
+
+/// Phase 3: all derived fields filled — ready for `.build()`.
+pub struct BuildReady {
+    sys_platform: String,
+    platform_system: String,
+    platform_machine: String,
+    os_name: String,
+    python_version: String,
+    python_full_version: String,
+    implementation_version: String,
+}
+
+impl BuildReady {
+    /// Produce the final `TargetEnv`, filling constant fields
+    /// (`implementation_name`, `platform_python_implementation`).
+    pub fn build(self) -> TargetEnv {
+        TargetEnv {
+            python_version: self.python_version,
+            python_full_version: self.python_full_version,
+            sys_platform: self.sys_platform,
+            platform_machine: self.platform_machine,
+            platform_system: self.platform_system,
+            os_name: self.os_name,
+            implementation_name: CPYTHON_IMPLEMENTATION_NAME.to_string(),
+            platform_python_implementation: CPYTHON_IMPLEMENTATION_LABEL
+                .to_string(),
+            implementation_version: self.implementation_version,
+        }
     }
 }

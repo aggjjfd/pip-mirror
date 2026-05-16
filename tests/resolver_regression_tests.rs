@@ -24,31 +24,11 @@ use pip_mirror::resolver::types::TargetEnv;
 use serde_json::{Value, json};
 
 fn linux_target() -> TargetEnv {
-    TargetEnv {
-        python_version: "3.12".to_string(),
-        python_full_version: "3.12.0".to_string(),
-        sys_platform: "linux".to_string(),
-        platform_machine: "x86_64".to_string(),
-        platform_system: "Linux".to_string(),
-        os_name: "posix".to_string(),
-        implementation_name: "cpython".to_string(),
-        platform_python_implementation: "CPython".to_string(),
-        implementation_version: "3.12.0".to_string(),
-    }
+    TargetEnv::test_env("linux", "x86_64", "3.12")
 }
 
 fn win_target() -> TargetEnv {
-    TargetEnv {
-        python_version: "3.12".to_string(),
-        python_full_version: "3.12.0".to_string(),
-        sys_platform: "win32".to_string(),
-        platform_machine: "AMD64".to_string(),
-        platform_system: "Windows".to_string(),
-        os_name: "nt".to_string(),
-        implementation_name: "cpython".to_string(),
-        platform_python_implementation: "CPython".to_string(),
-        implementation_version: "3.12.0".to_string(),
-    }
+    TargetEnv::test_env("win32", "AMD64", "3.12")
 }
 
 #[test]
@@ -83,11 +63,7 @@ fn test_markers_python_version_fork() {
         "numpy>=1.26; python_version >= '3.12'".to_string(),
     ];
 
-    let py311 = TargetEnv {
-        python_version: "3.11".to_string(),
-        python_full_version: "3.11.0".to_string(),
-        ..linux_target()
-    };
+    let py311 = TargetEnv::test_env("linux", "x86_64", "3.11");
     let deps = parse_requires_dist(&lines, &HashSet::new(), &py311).unwrap();
     assert_eq!(deps.len(), 1);
     assert_eq!(deps[0].version_spec, ">=1.24");
@@ -128,10 +104,7 @@ fn test_installability_respects_target_platform() {
         "2.39",
     ));
 
-    let win32 = TargetEnv {
-        platform_machine: "x86".to_string(),
-        ..win_target()
-    };
+    let win32 = TargetEnv::test_env("win32", "x86", "3.12");
     assert!(!version_is_installable_for_target(
         &files, &win32, false, "2.39",
     ));

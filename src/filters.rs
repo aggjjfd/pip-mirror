@@ -139,7 +139,7 @@ fn parse_minor_from_tag(tag: &str, prefix: &str) -> Option<u32> {
 }
 
 fn target_python_minor(target: &TargetEnv) -> Option<u32> {
-    let mut parts = target.python_version.split('.');
+    let mut parts = target.python_version().split('.');
     let major = parts.next()?.parse::<u32>().ok()?;
     let minor = parts.next()?.parse::<u32>().ok()?;
     (major == 3).then_some(minor)
@@ -246,10 +246,7 @@ pub fn sdist_fallback_allowed(
 }
 
 fn target_platform_key(target: &TargetEnv) -> Option<&'static str> {
-    match (
-        target.sys_platform.as_str(),
-        target.platform_machine.as_str(),
-    ) {
+    match (target.sys_platform(), target.platform_machine()) {
         ("linux", "x86_64") => Some(TARGET_LINUX_X86_64),
         ("win32", "x86") => Some(TARGET_WIN32),
         ("win32", "AMD64") => Some(TARGET_WIN_AMD64),

@@ -134,17 +134,7 @@ fn test_normalize_name() {
 }
 
 fn linux_target(py: &str) -> TargetEnv {
-    TargetEnv {
-        python_version: py.to_string(),
-        python_full_version: format!("{py}.0"),
-        sys_platform: "linux".to_string(),
-        platform_machine: "x86_64".to_string(),
-        platform_system: "Linux".to_string(),
-        os_name: "posix".to_string(),
-        implementation_name: "cpython".to_string(),
-        platform_python_implementation: "CPython".to_string(),
-        implementation_version: format!("{py}.0"),
-    }
+    TargetEnv::test_env("linux", "x86_64", py)
 }
 
 fn file_info(filename: &str) -> FileInfo {
