@@ -44,3 +44,5 @@ pip-mirror
 
 # Local config override
 pip-mirror.toml
+src/fonts/hm-sans.woff2
+src/fonts/fira-code.woff2

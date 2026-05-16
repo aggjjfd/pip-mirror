@@ -13,16 +13,20 @@ use axum::{
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::access_log::AccessLogger;
+use crate::config::TargetSpec;
 
 #[derive(Clone)]
 struct AppState {
     repo_dir: Arc<PathBuf>,
     #[allow(dead_code)]
     access_logger: Arc<AccessLogger>,
+    targets: Arc<Vec<TargetSpec>>,
 }
 
 fn build_router(state: AppState) -> Router {
     Router::new()
+        .route("/", get(serve_index))
+        .route("/fonts/{name}", get(serve_font))
         .route("/simple/{*tail}", get(serve_simple))
         .route("/python-builds/index.json", get(serve_python_builds_index))
         .route("/python-builds/{*tail}", get(serve_python_builds_file))
@@ -35,7 +39,43 @@ fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-fn make_state(repo_dir: PathBuf) -> AppState {
+const HM_SANS_FONT: &[u8] = include_bytes!("fonts/hm-sans-subset.woff2");
+const FIRA_CODE_FONT: &[u8] = include_bytes!("fonts/fira-code-subset.woff2");
+
+async fn serve_font(
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Response {
+    let (body, content_type) = match name.as_str() {
+        "hm-sans-subset.woff2" => (HM_SANS_FONT, "font/woff2"),
+        "fira-code-subset.woff2" => (FIRA_CODE_FONT, "font/woff2"),
+        _ => return (StatusCode::NOT_FOUND, "Not Found").into_response(),
+    };
+    Response::builder()
+        .status(200)
+        .header("Content-Type", content_type)
+        .header("Cache-Control", "public, max-age=31536000")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+async fn serve_index(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+) -> Response {
+    let host = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    let html = crate::index_page::render(&state.targets, &state.repo_dir, host);
+    Response::builder()
+        .status(200)
+        .header("Content-Type", "text/html; charset=utf-8")
+        .body(Body::from(html))
+        .unwrap()
+}
+
+fn make_state(repo_dir: PathBuf, targets: Vec<TargetSpec>) -> AppState {
     let access_logger = Arc::new(
         AccessLogger::open(&repo_dir.join(".access_log.db"))
             .unwrap_or_else(|e| panic!("无法打开 access_log.db: {e}")),
@@ -43,6 +83,7 @@ fn make_state(repo_dir: PathBuf) -> AppState {
     AppState {
         repo_dir: Arc::new(repo_dir),
         access_logger,
+        targets: Arc::new(targets),
     }
 }
 
@@ -50,6 +91,7 @@ pub async fn start_server(
     host: &str,
     port: u16,
     repository_dir: PathBuf,
+    targets: Vec<TargetSpec>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !repository_dir.exists() {
         return Err(
@@ -59,11 +101,13 @@ pub async fn start_server(
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
     tracing::info!("PIP 镜像服务器启动\n  地址: http://{host}:{port}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, build_router(make_state(repository_dir))).await?;
+    axum::serve(listener, build_router(make_state(repository_dir, targets)))
+        .await?;
     Ok(())
 }
 
-/// Determine the file path to serve: either index.html (for dirs) or the file itself.
+/// Determine the file path to serve: either index.html (for dirs) or the file
+/// itself.
 pub fn resolve_serve_path(base: &Path, tail: &str) -> (PathBuf, PathBuf) {
     let path = if tail.is_empty() {
         base.to_path_buf()
@@ -94,14 +138,6 @@ fn try_serve_json(body: Vec<u8>) -> Response {
         .unwrap()
 }
 
-pub fn content_type_for(path: &Path) -> &'static str {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    match ext {
-        "json" => "application/vnd.pypi.simple.v1+json",
-        "whl" => "application/octet-stream",
-        _ => "application/vnd.pypi.simple.v1+html",
-    }
-}
 fn file_body(
     file: tokio::fs::File,
 ) -> impl futures::Stream<Item = Result<axum::body::Bytes, std::io::Error>> {
@@ -118,13 +154,25 @@ fn file_body(
     })
 }
 
-fn serve_stream_response(file: tokio::fs::File, path: &Path) -> Response {
+fn serve_stream_response(
+    file: tokio::fs::File,
+    content_type: &'static str,
+) -> Response {
     Response::builder()
         .status(200)
-        .header("Content-Type", content_type_for(path))
+        .header("Content-Type", content_type)
         .header("Access-Control-Allow-Origin", "*")
         .body(Body::from_stream(file_body(file)))
         .unwrap()
+}
+
+pub fn content_type_for(path: &Path) -> &'static str {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    match ext {
+        "json" => "application/vnd.pypi.simple.v1+json",
+        "whl" => "application/octet-stream",
+        _ => "application/vnd.pypi.simple.v1+html",
+    }
 }
 
 fn wants_json(req: &axum::extract::Request) -> bool {
@@ -133,6 +181,30 @@ fn wants_json(req: &axum::extract::Request) -> bool {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .contains("application/vnd.pypi.simple.v1+json")
+}
+
+fn wants_vendor_html(req: &axum::extract::Request) -> bool {
+    req.headers()
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .contains("application/vnd.pypi.simple.v1+html")
+}
+
+fn simple_content_type(
+    req: &axum::extract::Request,
+    path: &Path,
+) -> &'static str {
+    if wants_json(req) {
+        return "application/vnd.pypi.simple.v1+json";
+    }
+    if wants_vendor_html(req) {
+        return content_type_for(path);
+    }
+    if path.extension().and_then(|e| e.to_str()) == Some("json") {
+        return "application/vnd.pypi.simple.v1+json";
+    }
+    "text/html"
 }
 
 async fn serve_simple(
@@ -151,8 +223,9 @@ async fn serve_simple(
     if !serve_path.exists() {
         return (StatusCode::NOT_FOUND, "Not Found").into_response();
     }
+    let content_type = simple_content_type(&req, &serve_path);
     match tokio::fs::File::open(&serve_path).await {
-        Ok(file) => serve_stream_response(file, &serve_path),
+        Ok(file) => serve_stream_response(file, content_type),
         Err(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, "Read error").into_response()
         }

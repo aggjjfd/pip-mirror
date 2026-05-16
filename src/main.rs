@@ -238,7 +238,13 @@ async fn cmd_serve(
     let config = pip_mirror::config::Config::load(config_path)?;
     let h = host.unwrap_or(config.server_host);
     let p = port.unwrap_or(config.server_port);
-    pip_mirror::server::start_server(&h, p, config.repository_dir).await?;
+    pip_mirror::server::start_server(
+        &h,
+        p,
+        config.repository_dir,
+        config.targets,
+    )
+    .await?;
     Ok(())
 }
 

@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>内部 PyPI 镜像</title>
+  <style>
+    @font-face {
+      font-family: 'HMSans';
+      src: url('/fonts/hm-sans-subset.woff2') format('woff2');
+      font-weight: 400;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'FiraCode';
+      src: url('/fonts/fira-code-subset.woff2') format('woff2');
+      font-weight: 400;
+      font-style: normal;
+      font-display: swap;
+    }
+    :root {
+      --bg: #f6f8fa;
+      --fg: #1f2328;
+      --muted: #656d76;
+      --accent: #0969da;
+      --accent-hover: #0550ae;
+      --border: #d0d7de;
+      --card: #ffffff;
+      --code-bg: #f6f8fa;
+      --success: #1a7f37;
+      --shadow: 0 1px 3px rgba(31,35,40,0.04);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'HMSans', -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      line-height: 1.6;
+      padding: 2.5rem 1rem;
+    }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--success);
+      background: #dafbe1;
+      border: 1px solid #a2e1b0;
+      padding: 0.15rem 0.5rem;
+      border-radius: 1rem;
+    }
+    .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 2rem; }
+
+    .section {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1.25rem;
+      margin-bottom: 1.25rem;
+      box-shadow: var(--shadow);
+    }
+    .section h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      color: var(--fg);
+    }
+
+    .method-tabs {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    .method-tab {
+      padding: 0.4rem 0.9rem;
+      border-radius: 0.4rem;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: all 0.15s;
+    }
+    .method-tab:hover { color: var(--fg); border-color: #8c959f; }
+    .method-tab.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .method-content { display: none; }
+    .method-content.active { display: block; }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 0.875rem 1rem;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      position: relative;
+    }
+    code {
+      font-family: 'FiraCode', "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+      color: var(--fg);
+    }
+    .copy-btn {
+      position: absolute;
+      top: 0.5rem;
+      right: 0.5rem;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #eaeef2;
+      border: 1px solid var(--border);
+      border-radius: 0.3rem;
+      color: var(--muted);
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    pre:hover .copy-btn { opacity: 1; }
+    .copy-btn:hover { background: #e0e6eb; color: var(--fg); }
+    .copy-btn.copied { color: var(--success); border-color: #a2e1b0; }
+
+    .note {
+      margin-top: 0.75rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .note:first-child { margin-top: 0; }
+    .note code {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      padding: 0.1rem 0.3rem;
+      border-radius: 0.25rem;
+      font-size: 0.8rem;
+    }
+
+    .search-box {
+      width: 100%;
+      padding: 0.6rem 0.9rem;
+      border-radius: 0.5rem;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--fg);
+      font-size: 0.9rem;
+      margin-bottom: 0.75rem;
+    }
+    .search-box:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .search-box::placeholder { color: var(--muted); }
+
+    .pkg-count {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+
+    .pkg-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 0.5rem;
+    }
+    .pkg-item {
+      padding: 0.4rem 0.7rem;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 0.4rem;
+      font-size: 0.82rem;
+      font-family: monospace;
+      color: var(--accent);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: all 0.15s;
+    }
+    .pkg-item:hover {
+      border-color: var(--accent);
+      background: #eef4fc;
+    }
+    .pkg-item.hidden { display: none; }
+    .pkg-item {
+      position: relative;
+      cursor: default;
+    }
+    .pkg-item::before {
+      content: attr(data-versions);
+      position: absolute;
+      bottom: calc(100% + 6px);
+      left: 0;
+      max-width: 320px;
+      padding: 0.4rem 0.6rem;
+      background: var(--fg);
+      color: #fff;
+      font-size: 0.75rem;
+      border-radius: 0.4rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s;
+      z-index: 10;
+      line-height: 1.4;
+    }
+    .pkg-item::after {
+      content: '';
+      position: absolute;
+      bottom: calc(100% + 1px);
+      left: 12px;
+      border: 5px solid transparent;
+      border-top-color: var(--fg);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s;
+      z-index: 10;
+    }
+    .pkg-item[data-versions]:hover::before,
+    .pkg-item[data-versions]:hover::after {
+      opacity: 1;
+    }
+
+    .target-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      margin-top: 0.5rem;
+    }
+    .target-table th, .target-table td {
+      padding: 0.5rem 0.75rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    .target-table th {
+      font-weight: 600;
+      color: var(--muted);
+      background: var(--code-bg);
+    }
+    .target-table tr:last-child td { border-bottom: none; }
+
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.8rem;
+      margin-top: 2rem;
+      padding-bottom: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>
+      内部 PyPI 镜像
+      <span class="badge">
+        <svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5" fill="currentColor"/></svg>
+        运行中
+      </span>
+    </h1>
+    <p class="subtitle">内网可用的 Python 包镜像服务，支持 pip / uv 安装</p>
+
+    <div class="section">
+      <h2>支持环境</h2>
+      <p class="note">本镜像预下载了以下目标环境的 wheel 包：</p>
+      <!--TARGETS_PLACEHOLDER-->
+    </div>
+
+    <div class="section">
+      <h2>使用方式</h2>
+      <div class="method-tabs">
+        <button class="method-tab active" data-target="uv">uv（推荐）</button>
+        <button class="method-tab" data-target="pip">pip</button>
+      </div>
+
+      <div class="method-content active" id="uv">
+        <p class="note">安装 Python 包：</p>
+        <pre><code>uv pip install &lt;包名&gt; --index-url <!--INDEX_URL--></code><button class="copy-btn"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button></pre>
+        <p class="note">或配置为默认源：</p>
+        <pre><code>export UV_DEFAULT_INDEX=<!--INDEX_URL--></code><button class="copy-btn"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button></pre>
+        <p class="note">安装 Python 解释器（如 3.12）：</p>
+        <pre><code>export UV_PYTHON_DOWNLOADS_JSON_URL=<!--PYTHON_URL-->
+uv python install 3.12</code><button class="copy-btn"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button></pre>
+      </div>
+
+      <div class="method-content" id="pip">
+        <p class="note">临时使用：</p>
+        <pre><code>pip install &lt;包名&gt; --index-url <!--INDEX_URL--> --trusted-host <!--HOST_ONLY--></code><button class="copy-btn"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button></pre>
+        <p class="note">或设为默认：</p>
+        <pre><code>pip config set global.index-url <!--INDEX_URL-->
+pip config set global.trusted-host <!--HOST_ONLY--></code><button class="copy-btn"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button></pre>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>可用包</h2>
+      <input type="text" class="search-box" id="pkgSearch" placeholder="搜索包名...">
+      <p class="pkg-count" id="pkgCount"><!--PKG_COUNT_PLACEHOLDER--></p>
+      <div class="pkg-grid" id="pkgGrid" data-pkgs='[]'><!--PACKAGES_PLACEHOLDER--></div>
+    </div>
+
+    <footer>
+      pip-mirror &middot; 内网私有 PyPI
+    </footer>
+  </div>
+
+  <script>
+    document.querySelectorAll('.method-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.method-tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.method-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.target).classList.add('active');
+      });
+    });
+
+    const checkSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+    const copySvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+
+    document.querySelectorAll('.copy-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const code = btn.previousElementSibling.textContent;
+        navigator.clipboard.writeText(code).then(() => {
+          btn.classList.add('copied');
+          btn.innerHTML = checkSvg;
+          setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = copySvg; }, 1500);
+        });
+      });
+    });
+
+    const grid = document.getElementById('pkgGrid');
+    const countEl = document.getElementById('pkgCount');
+    const search = document.getElementById('pkgSearch');
+    let allPkgs = [];
+    try { allPkgs = JSON.parse(grid.dataset.pkgs || '[]'); } catch (e) { allPkgs = []; }
+
+    function render(list) {
+      grid.innerHTML = '';
+      list.forEach(name => {
+        const el = document.createElement('span');
+        el.className = 'pkg-item';
+        el.textContent = name;
+        grid.appendChild(el);
+      });
+      const suffix = list.length < allPkgs.length ? '（筛选后）' : '';
+      countEl.textContent = '共 ' + list.length + ' 个包' + suffix;
+    }
+
+    search.addEventListener('input', e => {
+      const q = e.target.value.trim().toLowerCase();
+      if (!q) { render(allPkgs); return; }
+      render(allPkgs.filter(p => p.toLowerCase().includes(q)));
+    });
+
+    render(allPkgs);
+  </script>
+</body>
+</html>
