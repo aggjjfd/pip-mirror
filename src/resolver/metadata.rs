@@ -82,7 +82,14 @@ impl MetadataCache {
         ver: &Version,
     ) -> Result<Vec<FileInfo>, MetadataError> {
         let index = self.get_package_index(pkg).await?;
-        Ok(index.files_by_version.get(ver).cloned().unwrap_or_default())
+        Ok(index
+            .files_by_version
+            .get(ver)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|f| f.yanked.is_none())
+            .collect())
     }
 
     /// Return requires_dist for a specific package@version.
