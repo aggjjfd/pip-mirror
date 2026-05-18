@@ -60,36 +60,43 @@ jobs:
 
       - name: Build release notes
         run: |
-          VERSION="${GITHUB_REF_NAME}"
+          VERSION="${GITHUB_REF_NAME#v}"
+          TAG="${GITHUB_REF_NAME}"
+
+          # Extract changelog section for this version
+          awk -v ver="[$VERSION]" '
+            $0 ~ "^## " ver { found=1; next }
+            found && $0 ~ "^## " { found=0 }
+            found { print }
+          ' CHANGELOG.md > changelog-section.md
+
           cat <<'BODY' > release-body.md
           ## 下载
 
           | 平台 | 文件名 |
           |------|--------|
-          | Linux x86_64 | `pip-mirror-<<<VERSION>>>-x86_64-unknown-linux-gnu` |
-          | Windows x86_64 | `pip-mirror-<<<VERSION>>>-x86_64-pc-windows-msvc.exe` |
+          | Linux x86_64 | `pip-mirror-TAG-x86_64-unknown-linux-gnu` |
+          | Windows x86_64 | `pip-mirror-TAG-x86_64-pc-windows-msvc.exe` |
 
           ## 快速开始
 
           ```bash
           # Linux
-          chmod +x pip-mirror-<<<VERSION>>>-x86_64-unknown-linux-gnu
-          ./pip-mirror-<<<VERSION>>>-x86_64-unknown-linux-gnu --help
+          chmod +x pip-mirror-TAG-x86_64-unknown-linux-gnu
+          ./pip-mirror-TAG-x86_64-unknown-linux-gnu --help
 
           # Windows（PowerShell）
-          .\\pip-mirror-<<<VERSION>>>-x86_64-pc-windows-msvc.exe --help
+          .\\pip-mirror-TAG-x86_64-pc-windows-msvc.exe --help
           ```
 
-          ## 功能亮点
-
-          - 内网私有 PyPI 镜像（PEP 503 / PEP 691）
-          - 增量/全量同步 PyPI 包
-          - 自动解析目标环境依赖
-          - 内嵌 uv 安装器（内网一键安装 uv）
-          - Web 首页 + 包搜索
-
           BODY
-          sed -i "s/<<<VERSION>>>/${VERSION}/g" release-body.md
+          sed -i "s/TAG/${TAG}/g" release-body.md
+
+          if [ -s changelog-section.md ]; then
+            echo "" >> release-body.md
+            cat changelog-section.md >> release-body.md
+          fi
+
           echo "release_body<<EOF" >> "$GITHUB_ENV"
           cat release-body.md >> "$GITHUB_ENV"
           echo "EOF" >> "$GITHUB_ENV"
