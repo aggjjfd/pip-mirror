@@ -153,6 +153,7 @@ pub(crate) fn collect_files_by_version(
                 .unwrap_or(&vec![])
                 .iter()
                 .filter_map(|f| parse_file_info(f, pkg, version_str))
+                .filter(|fi| fi.yanked.is_none())
                 .collect();
             result.insert(ver, files);
         }

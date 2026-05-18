@@ -82,14 +82,7 @@ impl MetadataCache {
         ver: &Version,
     ) -> Result<Vec<FileInfo>, MetadataError> {
         let index = self.get_package_index(pkg).await?;
-        Ok(index
-            .files_by_version
-            .get(ver)
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|f| f.yanked.is_none())
-            .collect())
+        Ok(index.files_by_version.get(ver).cloned().unwrap_or_default())
     }
 
     /// Return requires_dist for a specific package@version.
@@ -195,13 +188,11 @@ impl MetadataCache {
                 field: "releases".to_string(),
             })?;
 
-        let mut versions: Vec<Version> = releases
-            .keys()
-            .filter_map(|v| v.parse::<Version>().ok())
-            .collect();
-        versions.sort_by(|a, b| b.cmp(a));
-
         let files_by_version = collect_files_by_version(releases, pkg);
+
+        let mut versions: Vec<Version> =
+            files_by_version.keys().cloned().collect();
+        versions.sort_by(|a, b| b.cmp(a));
 
         Ok(PackageIndex {
             versions,
