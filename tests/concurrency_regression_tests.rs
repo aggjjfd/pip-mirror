@@ -188,6 +188,7 @@ fn download_file(filename: &str, base_url: &str) -> FileInfo {
         size: Some(8),
         package_name: "demo".to_string(),
         version: "1.0.0".to_string(),
+        yanked: None,
     }
 }
 

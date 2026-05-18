@@ -15,6 +15,7 @@ pub struct FileRecord<'a> {
     pub version: &'a str,
     pub sha256: &'a str,
     pub size: Option<u64>,
+    pub yanked: Option<&'a str>,
 }
 
 fn push_if_missing(
@@ -40,6 +41,7 @@ impl DownloadStore {
                 sha256 TEXT NOT NULL,
                 size INTEGER,
                 metadata_sha256 TEXT,
+                yanked TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(package_name, filename)
             );
@@ -79,6 +81,7 @@ impl DownloadStore {
                 sha256 TEXT NOT NULL,
                 size INTEGER,
                 metadata_sha256 TEXT,
+                yanked TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(package_name, filename)
             );
@@ -95,9 +98,9 @@ impl DownloadStore {
     ) -> Result<(), rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR IGNORE INTO downloaded_files (filename, package_name, version, sha256, size)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![rec.filename, rec.package_name, rec.version, rec.sha256, rec.size],
+            "INSERT OR IGNORE INTO downloaded_files (filename, package_name, version, sha256, size, yanked)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![rec.filename, rec.package_name, rec.version, rec.sha256, rec.size, rec.yanked],
         )?;
         Ok(())
     }
@@ -110,13 +113,21 @@ impl DownloadStore {
         let tx = conn.transaction()?;
         for rec in records {
             tx.execute(
-                "INSERT OR IGNORE INTO downloaded_files (filename, package_name, version, sha256, size)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![rec.filename, rec.package_name, rec.version, rec.sha256, rec.size],
+                "INSERT OR IGNORE INTO downloaded_files (filename, package_name, version, sha256, size, yanked)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![rec.filename, rec.package_name, rec.version, rec.sha256, rec.size, rec.yanked],
             )?;
         }
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn get_all_yanked(&self) -> DashMap<String, String> {
+        let conn = self.conn.lock().unwrap();
+        Self::collect_hash_map(
+            &conn,
+            "SELECT filename, yanked FROM downloaded_files WHERE yanked IS NOT NULL AND yanked != ''",
+        )
     }
 
     pub fn set_metadata_sha256(
@@ -244,6 +255,7 @@ impl DownloadStore {
             version: &fi.version,
             sha256: &sha256,
             size,
+            yanked: fi.yanked.as_deref(),
         };
         if let Err(e) = self.add_file(&rec) {
             tracing::warn!("写入 .store.db 失败: {e}");

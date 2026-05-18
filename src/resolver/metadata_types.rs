@@ -105,6 +105,19 @@ impl std::fmt::Display for MetadataError {
 
 impl std::error::Error for MetadataError {}
 
+fn parse_yanked(f: &serde_json::Value) -> Option<String> {
+    let yanked = f.get("yanked")?.as_bool()?;
+    if !yanked {
+        return None;
+    }
+    Some(
+        f.get("yanked_reason")
+            .and_then(|r| r.as_str())
+            .map(String::from)
+            .unwrap_or_default(),
+    )
+}
+
 pub(crate) fn parse_file_info(
     f: &serde_json::Value,
     pkg: &str,
@@ -123,6 +136,7 @@ pub(crate) fn parse_file_info(
                     .map(String::from),
             )
             .size(f["size"].as_u64())
+            .yanked(parse_yanked(f))
             .build(),
     )
 }

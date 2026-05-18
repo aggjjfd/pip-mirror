@@ -30,6 +30,52 @@ const UV_WINDOWS_SHA256: &[u8] = include_bytes!(concat!(
     "/uv-x86_64-pc-windows-msvc.zip.sha256"
 ));
 
+fn serve_range(
+    body: &[u8],
+    ct: &'static str,
+    range: &str,
+    total: u64,
+    cors: bool,
+) -> Response {
+    let Some((s, e)) = crate::server::parse_range(range, total) else {
+        return Response::builder()
+            .status(416)
+            .header("Content-Range", format!("bytes */{}", total))
+            .body(Body::empty())
+            .unwrap();
+    };
+    let sliced = body[s as usize..=e as usize].to_vec();
+    let mut b = Response::builder()
+        .status(206)
+        .header("Content-Type", ct)
+        .header("Content-Length", sliced.len())
+        .header("Content-Range", format!("bytes {}-{}/{}", s, e, total));
+    if cors {
+        b = b.header("Access-Control-Allow-Origin", "*");
+    }
+    b.body(Body::from(sliced)).unwrap()
+}
+
+fn serve_bytes(
+    body: &[u8],
+    ct: &'static str,
+    range: Option<&str>,
+    cors: bool,
+) -> Response {
+    let total = body.len() as u64;
+    if let Some(r) = range {
+        return serve_range(body, ct, r, total, cors);
+    }
+    let mut b = Response::builder()
+        .status(200)
+        .header("Content-Type", ct)
+        .header("Content-Length", total);
+    if cors {
+        b = b.header("Access-Control-Allow-Origin", "*");
+    }
+    b.body(Body::from(body.to_vec())).unwrap()
+}
+
 fn patch_installer(content: &str, url: &str, version: &str) -> String {
     let old_urls_sh = format!(
         "ARTIFACT_DOWNLOAD_URLS=\"https://releases.astral.sh/github/uv/releases/download/{v} https://github.com/astral-sh/uv/releases/download/{v}\"",
@@ -75,11 +121,9 @@ pub async fn serve_installer(
         ),
         _ => return (StatusCode::NOT_FOUND, "Not Found").into_response(),
     };
-    Response::builder()
-        .status(200)
-        .header("Content-Type", content_type)
-        .body(Body::from(patched))
-        .unwrap()
+    let body = patched.into_bytes();
+    let range = req.headers().get("range").and_then(|v| v.to_str().ok());
+    serve_bytes(&body, content_type, range, false)
 }
 
 fn mime_for_release(tail: &str) -> &'static str {
@@ -96,6 +140,7 @@ fn mime_for_release(tail: &str) -> &'static str {
 
 pub async fn serve_uv_release(
     axum::extract::Path(tail): axum::extract::Path<String>,
+    req: axum::extract::Request,
 ) -> Response {
     let data: &'static [u8] = match tail.as_str() {
         concat!(
@@ -116,10 +161,6 @@ pub async fn serve_uv_release(
         _ => return (StatusCode::NOT_FOUND, "Not Found").into_response(),
     };
     let mime = mime_for_release(&tail);
-    Response::builder()
-        .status(200)
-        .header("Content-Type", mime)
-        .header("Access-Control-Allow-Origin", "*")
-        .body(Body::from(data))
-        .unwrap()
+    let range = req.headers().get("range").and_then(|v| v.to_str().ok());
+    serve_bytes(data, mime, range, true)
 }

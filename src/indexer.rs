@@ -35,6 +35,7 @@ struct IndexPkg<'a> {
     name: &'a str,
     hashes: &'a DashMap<String, String>,
     meta: &'a DashMap<String, String>,
+    yanked: &'a DashMap<String, String>,
 }
 
 fn index_pkg(ctx: &IndexPkg<'_>) {
@@ -44,6 +45,7 @@ fn index_pkg(ctx: &IndexPkg<'_>) {
         files: &files,
         hashes: ctx.hashes,
         metadata_hashes: ctx.meta,
+        yanked: ctx.yanked,
     };
     let _ = std::fs::write(
         ctx.path.join("index.html"),
@@ -66,6 +68,7 @@ pub fn generate_index(repository_dir: &Path) {
         .unwrap_or_else(|_| panic!("无法打开 .store.db"));
     let hashes = store.get_all_hashes();
     let meta = store.get_all_metadata_hashes();
+    let yanked = store.get_all_yanked();
     let mut names: Vec<String> = Vec::new();
     let Ok(entries) = std::fs::read_dir(&simple_dir) else {
         return;
@@ -82,6 +85,7 @@ pub fn generate_index(repository_dir: &Path) {
             name: &n,
             hashes: &hashes,
             meta: &meta,
+            yanked: &yanked,
         });
     }
     names.sort();
@@ -121,12 +125,14 @@ struct PkgCtx<'a> {
     files: &'a [String],
     hashes: &'a DashMap<String, String>,
     metadata_hashes: &'a DashMap<String, String>,
+    yanked: &'a DashMap<String, String>,
 }
 
 fn build_link_attrs(
     f: &str,
     hashes: &DashMap<String, String>,
     meta: &DashMap<String, String>,
+    yanked: &DashMap<String, String>,
 ) -> String {
     let mut attrs = format!(r#"href="{f}""#);
     if let Some(sha) = hashes.get(f) {
@@ -141,6 +147,9 @@ fn build_link_attrs(
             m.value()
         ));
     }
+    if let Some(y) = yanked.get(f) {
+        attrs.push_str(&format!(r#" data-yanked="{}""#, y.value()));
+    }
     attrs
 }
 
@@ -149,7 +158,12 @@ fn generate_package_html(ctx: &PkgCtx<'_>) -> String {
         .files
         .iter()
         .map(|f| {
-            let attrs = build_link_attrs(f, ctx.hashes, ctx.metadata_hashes);
+            let attrs = build_link_attrs(
+                f,
+                ctx.hashes,
+                ctx.metadata_hashes,
+                ctx.yanked,
+            );
             format!(r#"    <a {attrs}>{f}</a><br/>"#)
         })
         .collect();
@@ -174,6 +188,9 @@ fn generate_package_json(ctx: &PkgCtx<'_>) -> String {
             {
                 entry["dist-info-metadata"] =
                     serde_json::json!({"sha256": meta.value()});
+            }
+            if let Some(y) = ctx.yanked.get(f) {
+                entry["yanked"] = serde_json::Value::String(y.value().clone());
             }
             entry
         })

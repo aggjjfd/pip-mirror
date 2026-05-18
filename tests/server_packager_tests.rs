@@ -104,6 +104,7 @@ fn test_no_changes_has_simple_files() {
         size: Some(100),
         package_name: "pkg".to_string(),
         version: "1.0".to_string(),
+        yanked: None,
     };
     let spec = IncrementalPackage {
         simple_files: &[fi],
@@ -124,6 +125,7 @@ fn test_create_incremental_package_returns_io_error() {
         size: Some(100),
         package_name: "pkg".to_string(),
         version: "1.0".to_string(),
+        yanked: None,
     };
     let tmp = std::env::temp_dir().join("pip-mirror-test-packager-io");
     let spec = IncrementalPackage {

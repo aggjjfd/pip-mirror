@@ -11,6 +11,7 @@ fn test_select_latest_versions_basic() {
             size: Some(100),
             package_name: "pkg".to_string(),
             version: "2.0.0".to_string(),
+            yanked: None,
         },
         downloader::FileInfo {
             filename: "pkg-1.0.0-py3-none-any.whl".to_string(),
@@ -19,6 +20,7 @@ fn test_select_latest_versions_basic() {
             size: Some(100),
             package_name: "pkg".to_string(),
             version: "1.0.0".to_string(),
+            yanked: None,
         },
         downloader::FileInfo {
             filename: "pkg-0.9.0-py3-none-any.whl".to_string(),
@@ -27,6 +29,7 @@ fn test_select_latest_versions_basic() {
             size: Some(100),
             package_name: "pkg".to_string(),
             version: "0.9.0".to_string(),
+            yanked: None,
         },
     ];
     let selected = downloader::select_latest_versions(&files, 2, false);
@@ -47,6 +50,7 @@ fn test_select_latest_versions_max_zero_returns_all() {
             size: Some(100),
             package_name: "pkg".to_string(),
             version: "1.0.0".to_string(),
+            yanked: None,
         },
         downloader::FileInfo {
             filename: "pkg-0.9.0-py3-none-any.whl".to_string(),
@@ -55,6 +59,7 @@ fn test_select_latest_versions_max_zero_returns_all() {
             size: Some(100),
             package_name: "pkg".to_string(),
             version: "0.9.0".to_string(),
+            yanked: None,
         },
     ];
     let selected = downloader::select_latest_versions(&files, 0, false);
@@ -71,6 +76,7 @@ fn test_collect_version_files_filters_platform() {
             size: Some(100),
             package_name: "pkg".to_string(),
             version: "1.0.0".to_string(),
+            yanked: None,
         },
         downloader::FileInfo {
             filename: "pkg-1.0-py3-none-macosx_10_9_x86_64.whl".to_string(),
@@ -79,6 +85,7 @@ fn test_collect_version_files_filters_platform() {
             size: Some(100),
             package_name: "pkg".to_string(),
             version: "1.0.0".to_string(),
+            yanked: None,
         },
         downloader::FileInfo {
             filename: "pkg-1.0.tar.gz".to_string(),
@@ -87,6 +94,7 @@ fn test_collect_version_files_filters_platform() {
             size: Some(100),
             package_name: "pkg".to_string(),
             version: "1.0.0".to_string(),
+            yanked: None,
         },
     ];
     let result = downloader::collect_version_files(&files);
@@ -105,6 +113,7 @@ fn test_collect_version_files_skips_sdist_when_same_version_has_wheel() {
             size: Some(100),
             package_name: "pkg".to_string(),
             version: "1.0.0".to_string(),
+            yanked: None,
         },
         downloader::FileInfo {
             filename: "pkg-1.0.tar.gz".to_string(),
@@ -113,6 +122,7 @@ fn test_collect_version_files_skips_sdist_when_same_version_has_wheel() {
             size: Some(100),
             package_name: "pkg".to_string(),
             version: "1.0.0".to_string(),
+            yanked: None,
         },
     ];
     let result = downloader::collect_version_files(&files);
@@ -130,6 +140,7 @@ fn test_version_has_target() {
             size: Some(100),
             package_name: "pkg".to_string(),
             version: "1.0.0".to_string(),
+            yanked: None,
         },
         downloader::FileInfo {
             filename: "pkg-1.0-py3-none-win_amd64.whl".to_string(),
@@ -138,6 +149,7 @@ fn test_version_has_target() {
             size: Some(100),
             package_name: "pkg".to_string(),
             version: "1.0.0".to_string(),
+            yanked: None,
         },
     ];
     assert!(downloader::version_has_target(&files, "linux_x86_64"));
@@ -161,6 +173,7 @@ fn test_backfill_one_target_finds_old_target() {
                     size: Some(100),
                     package_name: "p".to_string(),
                     version: "0.9.0".to_string(),
+                    yanked: None,
                 },
                 downloader::FileInfo {
                     filename: "p-0.9.0-cp312-cp312-win_amd64.whl".to_string(),
@@ -169,6 +182,7 @@ fn test_backfill_one_target_finds_old_target() {
                     size: Some(100),
                     package_name: "p".to_string(),
                     version: "0.9.0".to_string(),
+                    yanked: None,
                 },
                 downloader::FileInfo {
                     filename: "p-0.9.0-cp312-cp312-win32.whl".to_string(),
@@ -177,6 +191,7 @@ fn test_backfill_one_target_finds_old_target() {
                     size: Some(100),
                     package_name: "p".to_string(),
                     version: "0.9.0".to_string(),
+                    yanked: None,
                 },
             ],
         );
@@ -204,6 +219,7 @@ fn test_backfill_one_target_no_history() {
                 size: Some(100),
                 package_name: "p".to_string(),
                 version: "0.9.0".to_string(),
+                yanked: None,
             }],
         );
         m
@@ -227,6 +243,7 @@ fn test_backfill_one_target_respects_order() {
                 size: Some(100),
                 package_name: "p".to_string(),
                 version: "0.9.0".to_string(),
+                yanked: None,
             }],
         );
         m.insert(
@@ -238,6 +255,7 @@ fn test_backfill_one_target_respects_order() {
                 size: Some(100),
                 package_name: "p".to_string(),
                 version: "0.8.0".to_string(),
+                yanked: None,
             }],
         );
         m

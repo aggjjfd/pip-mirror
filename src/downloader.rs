@@ -22,6 +22,7 @@ pub struct FileInfo {
     pub url: String,
     pub sha256: Option<String>,
     pub size: Option<u64>,
+    pub yanked: Option<String>,
     #[builder(required)]
     pub package_name: String,
     #[builder(required)]

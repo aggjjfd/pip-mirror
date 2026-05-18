@@ -157,31 +157,121 @@ fn try_serve_json(body: Vec<u8>) -> Response {
         .unwrap()
 }
 
-pub(crate) fn file_body(
-    file: tokio::fs::File,
-) -> impl futures::Stream<Item = Result<axum::body::Bytes, std::io::Error>> {
-    futures::stream::try_unfold(file, |mut file| async move {
-        let mut buf = vec![0u8; 65536];
-        match tokio::io::AsyncReadExt::read(&mut file, &mut buf).await {
-            Ok(0) => Ok(None),
-            Ok(n) => {
-                buf.truncate(n);
-                Ok(Some((axum::body::Bytes::from(buf), file)))
-            }
-            Err(e) => Err(e),
-        }
-    })
+fn parse_range_bounds(rest: &str, total: u64) -> Option<(u64, u64)> {
+    let (start_str, end_str) = rest.split_once('-')?;
+    let start = start_str.parse::<u64>().ok()?;
+    let end = if end_str.is_empty() {
+        total.saturating_sub(1)
+    } else {
+        end_str.parse::<u64>().ok()?
+    };
+    if start >= total || start > end {
+        return None;
+    }
+    Some((start, end))
 }
 
-fn serve_stream_response(
+pub(crate) fn parse_range(range: &str, total: u64) -> Option<(u64, u64)> {
+    let rest = range.strip_prefix("bytes=")?;
+    if rest.contains(',') {
+        return None;
+    }
+    parse_range_bounds(rest, total)
+}
+
+pub(crate) fn file_body_range(
+    file: tokio::fs::File,
+    remaining: u64,
+) -> impl futures::Stream<Item = Result<axum::body::Bytes, std::io::Error>> {
+    futures::stream::try_unfold(
+        (file, remaining),
+        |(mut file, remaining)| async move {
+            if remaining == 0 {
+                return Ok(None);
+            }
+            let chunk = 65536u64.min(remaining);
+            let mut buf = vec![0u8; chunk as usize];
+            let n = tokio::io::AsyncReadExt::read(&mut file, &mut buf).await?;
+            if n == 0 {
+                return Ok(None);
+            }
+            buf.truncate(n);
+            let new_remaining = remaining - n as u64;
+            Ok(Some((axum::body::Bytes::from(buf), (file, new_remaining))))
+        },
+    )
+}
+
+pub(crate) async fn build_range_response(
+    mut file: tokio::fs::File,
+    content_type: &'static str,
+    start: u64,
+    end: u64,
+    file_size: u64,
+) -> Response {
+    if tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(start))
+        .await
+        .is_err()
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Seek error")
+            .into_response();
+    }
+    let length = end - start + 1;
+    Response::builder()
+        .status(206)
+        .header("Content-Type", content_type)
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Content-Length", length)
+        .header(
+            "Content-Range",
+            format!("bytes {}-{}/{}", start, end, file_size),
+        )
+        .body(Body::from_stream(file_body_range(file, length)))
+        .unwrap()
+}
+
+pub(crate) fn range_not_satisfiable(file_size: u64) -> Response {
+    Response::builder()
+        .status(416)
+        .header("Content-Range", format!("bytes */{}", file_size))
+        .body(Body::empty())
+        .unwrap()
+}
+
+async fn serve_file_with_range(
     file: tokio::fs::File,
     content_type: &'static str,
+    range_header: Option<&str>,
 ) -> Response {
+    let metadata = match file.metadata().await {
+        Ok(m) => m,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Read error")
+                .into_response();
+        }
+    };
+    let file_size = metadata.len();
+
+    if let Some(range) = range_header {
+        if let Some((start, end)) = parse_range(range, file_size) {
+            return build_range_response(
+                file,
+                content_type,
+                start,
+                end,
+                file_size,
+            )
+            .await;
+        }
+        return range_not_satisfiable(file_size);
+    }
+
     Response::builder()
         .status(200)
         .header("Content-Type", content_type)
         .header("Access-Control-Allow-Origin", "*")
-        .body(Body::from_stream(file_body(file)))
+        .header("Content-Length", file_size)
+        .body(Body::from_stream(file_body_range(file, file_size)))
         .unwrap()
 }
 
@@ -243,8 +333,9 @@ async fn serve_simple(
         return (StatusCode::NOT_FOUND, "Not Found").into_response();
     }
     let content_type = simple_content_type(&req, &serve_path);
+    let range = req.headers().get("range").and_then(|v| v.to_str().ok());
     match tokio::fs::File::open(&serve_path).await {
-        Ok(file) => serve_stream_response(file, content_type),
+        Ok(file) => serve_file_with_range(file, content_type, range).await,
         Err(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, "Read error").into_response()
         }

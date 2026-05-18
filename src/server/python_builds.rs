@@ -8,7 +8,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::server::{AppState, build_access_record, file_body};
+use crate::server::{
+    AppState, build_access_record, build_range_response, file_body_range,
+    parse_range, range_not_satisfiable,
+};
 
 pub fn json_response(body: &str) -> Response {
     Response::builder()
@@ -118,25 +121,63 @@ pub async fn serve_python_builds_index(
     }
 }
 
+async fn file_size(file: &tokio::fs::File) -> Result<u64, Response> {
+    match file.metadata().await {
+        Ok(m) => Ok(m.len()),
+        Err(_) => {
+            Err((StatusCode::INTERNAL_SERVER_ERROR, "Read error")
+                .into_response())
+        }
+    }
+}
+
+fn full_response(
+    file: tokio::fs::File,
+    mime: &'static str,
+    size: u64,
+) -> Response {
+    Response::builder()
+        .status(200)
+        .header("Content-Type", mime)
+        .header("Content-Length", size)
+        .body(Body::from_stream(file_body_range(file, size)))
+        .unwrap()
+}
+
+async fn serve_opened_file(
+    file: tokio::fs::File,
+    mime: &'static str,
+    range: Option<&str>,
+) -> Response {
+    let size = match file_size(&file).await {
+        Ok(s) => s,
+        Err(resp) => return resp,
+    };
+    match range {
+        Some(r) => match parse_range(r, size) {
+            Some((s, e)) => build_range_response(file, mime, s, e, size).await,
+            None => range_not_satisfiable(size),
+        },
+        None => full_response(file, mime, size),
+    }
+}
+
 pub async fn serve_python_builds_file(
     State(state): State<AppState>,
     axum::extract::Path(tail): axum::extract::Path<String>,
     req: axum::extract::Request,
 ) -> Response {
     let path = state.repo_dir.join("python-builds").join(&tail);
+    let mime = if tail.ends_with(".json") {
+        "application/json"
+    } else {
+        "application/octet-stream"
+    };
+    let range = req.headers().get("range").and_then(|v| v.to_str().ok());
     let (status, resp) = match tokio::fs::File::open(&path).await {
         Ok(file) => {
-            let mime = if tail.ends_with(".json") {
-                "application/json"
-            } else {
-                "application/octet-stream"
-            };
-            let resp = Response::builder()
-                .status(200)
-                .header("Content-Type", mime)
-                .body(Body::from_stream(file_body(file)))
-                .unwrap();
-            (200_u16, resp)
+            let resp = serve_opened_file(file, mime, range).await;
+            (resp.status().as_u16(), resp)
         }
         Err(_) => {
             let resp = (StatusCode::NOT_FOUND, "Not Found").into_response();

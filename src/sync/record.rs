@@ -7,6 +7,15 @@ use crate::store::DownloadStore;
 
 const HASH_CONCURRENCY: usize = 8;
 
+struct RecordData {
+    filename: String,
+    package_name: String,
+    version: String,
+    sha256: String,
+    size: Option<u64>,
+    yanked: Option<String>,
+}
+
 pub async fn record_download_results(
     repo: &Path,
     result: &crate::downloader::DownloadResult,
@@ -17,17 +26,19 @@ pub async fn record_download_results(
                 .join("simple")
                 .join(&fi.package_name)
                 .join(&fi.filename);
+            let yanked = fi.yanked.clone();
             async move {
                 let sha256 = hash_file_async(&dest, fi.sha256.clone()).await;
                 let size =
                     tokio::fs::metadata(&dest).await.ok().map(|m| m.len());
-                (
-                    fi.filename.clone(),
-                    fi.package_name.clone(),
-                    fi.version.clone(),
+                RecordData {
+                    filename: fi.filename.clone(),
+                    package_name: fi.package_name.clone(),
+                    version: fi.version.clone(),
                     sha256,
                     size,
-                )
+                    yanked,
+                }
             }
         })
         .buffer_unordered(HASH_CONCURRENCY)
@@ -66,7 +77,8 @@ async fn record_skipped_files(
                 .join("simple")
                 .join(&fi.package_name)
                 .join(&fi.filename);
-            try_hash_file(dest, fi)
+            let yanked = fi.yanked.clone();
+            async move { try_hash_file(dest, fi, yanked).await }
         })
         .buffer_unordered(HASH_CONCURRENCY)
         .collect::<Vec<_>>()
@@ -81,13 +93,21 @@ async fn record_skipped_files(
 async fn try_hash_file(
     dest: std::path::PathBuf,
     fi: FileInfo,
-) -> Option<(String, String, String, String, Option<u64>)> {
+    yanked: Option<String>,
+) -> Option<RecordData> {
     if !dest.exists() {
         return None;
     }
     let sha256 = hash_file_async(&dest, fi.sha256.clone()).await;
     let size = tokio::fs::metadata(&dest).await.ok().map(|m| m.len());
-    Some((fi.filename, fi.package_name, fi.version, sha256, size))
+    Some(RecordData {
+        filename: fi.filename,
+        package_name: fi.package_name,
+        version: fi.version,
+        sha256,
+        size,
+        yanked,
+    })
 }
 
 async fn hash_file_async(dest: &Path, known_sha256: Option<String>) -> String {
@@ -104,20 +124,16 @@ async fn hash_file_async(dest: &Path, known_sha256: Option<String>) -> String {
     }
 }
 
-fn insert_records_batch(
-    store: &DownloadStore,
-    records_data: &[(String, String, String, String, Option<u64>)],
-) {
+fn insert_records_batch(store: &DownloadStore, records_data: &[RecordData]) {
     let records: Vec<crate::store::FileRecord> = records_data
         .iter()
-        .map(|(filename, package_name, version, sha256, size)| {
-            crate::store::FileRecord {
-                filename,
-                package_name,
-                version,
-                sha256,
-                size: *size,
-            }
+        .map(|r| crate::store::FileRecord {
+            filename: &r.filename,
+            package_name: &r.package_name,
+            version: &r.version,
+            sha256: &r.sha256,
+            size: r.size,
+            yanked: r.yanked.as_deref(),
         })
         .collect();
 

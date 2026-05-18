@@ -145,6 +145,7 @@ fn file_info(filename: &str) -> FileInfo {
         size: None,
         package_name: "pyarrow".to_string(),
         version: "24.0.0".to_string(),
+        yanked: None,
     }
 }
 
