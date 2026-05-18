@@ -5,37 +5,52 @@ use axum::{
 };
 
 const UV_INSTALLER_SH: &str =
-    include_str!("../packages/installers/uv-installer.sh");
+    include_str!("../assets/installers/uv-installer.sh");
 const UV_INSTALLER_PS1: &str =
-    include_str!("../packages/installers/uv-installer.ps1");
+    include_str!("../assets/installers/uv-installer.ps1");
 
-const UV_LINUX: &[u8] = include_bytes!(
-    "../packages/uv-releases/0.11.14/uv-x86_64-unknown-linux-gnu.tar.gz"
-);
-const UV_LINUX_SHA256: &[u8] = include_bytes!(
-    "../packages/uv-releases/0.11.14/uv-x86_64-unknown-linux-gnu.tar.gz.sha256"
-);
-const UV_WINDOWS: &[u8] = include_bytes!(
-    "../packages/uv-releases/0.11.14/uv-x86_64-pc-windows-msvc.zip"
-);
-const UV_WINDOWS_SHA256: &[u8] = include_bytes!(
-    "../packages/uv-releases/0.11.14/uv-x86_64-pc-windows-msvc.zip.sha256"
-);
+const UV_LINUX: &[u8] = include_bytes!(concat!(
+    "../assets/uv-releases/",
+    env!("UV_EMBED_VERSION"),
+    "/uv-x86_64-unknown-linux-gnu.tar.gz"
+));
+const UV_LINUX_SHA256: &[u8] = include_bytes!(concat!(
+    "../assets/uv-releases/",
+    env!("UV_EMBED_VERSION"),
+    "/uv-x86_64-unknown-linux-gnu.tar.gz.sha256"
+));
+const UV_WINDOWS: &[u8] = include_bytes!(concat!(
+    "../assets/uv-releases/",
+    env!("UV_EMBED_VERSION"),
+    "/uv-x86_64-pc-windows-msvc.zip"
+));
+const UV_WINDOWS_SHA256: &[u8] = include_bytes!(concat!(
+    "../assets/uv-releases/",
+    env!("UV_EMBED_VERSION"),
+    "/uv-x86_64-pc-windows-msvc.zip.sha256"
+));
 
-fn patch_installer(content: &str, url: &str) -> String {
+fn patch_installer(content: &str, url: &str, version: &str) -> String {
+    let old_urls_sh = format!(
+        "ARTIFACT_DOWNLOAD_URLS=\"https://releases.astral.sh/github/uv/releases/download/{v} https://github.com/astral-sh/uv/releases/download/{v}\"",
+        v = version
+    );
+    let old_urls_ps1 = format!(
+        "$ArtifactDownloadUrls = @(\"https://releases.astral.sh/github/uv/releases/download/{v}\", \"https://github.com/astral-sh/uv/releases/download/{v}\")",
+        v = version
+    );
+    let old_url = format!(
+        "https://releases.astral.sh/github/uv/releases/download/{}",
+        version
+    );
+
     content
+        .replace(&old_urls_sh, &format!("ARTIFACT_DOWNLOAD_URLS=\"{}\"", url))
         .replace(
-            "ARTIFACT_DOWNLOAD_URLS=\"https://releases.astral.sh/github/uv/releases/download/0.11.14 https://github.com/astral-sh/uv/releases/download/0.11.14\"",
-            &format!("ARTIFACT_DOWNLOAD_URLS=\"{}\"", url),
-        )
-        .replace(
-            "$ArtifactDownloadUrls = @(\"https://releases.astral.sh/github/uv/releases/download/0.11.14\", \"https://github.com/astral-sh/uv/releases/download/0.11.14\")",
+            &old_urls_ps1,
             &format!("$ArtifactDownloadUrls = @(\"{}\")", url),
         )
-        .replace(
-            "https://releases.astral.sh/github/uv/releases/download/0.11.14",
-            url,
-        )
+        .replace(&old_url, url)
 }
 
 pub async fn serve_installer(
@@ -47,14 +62,15 @@ pub async fn serve_installer(
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("localhost");
-    let url = format!("http://{}/uv-releases/0.11.14", host);
+    let version = env!("UV_EMBED_VERSION");
+    let url = format!("http://{}/uv-releases/{}", host, version);
     let (patched, content_type) = match name.as_str() {
         "uv-installer.sh" => (
-            patch_installer(UV_INSTALLER_SH, &url),
+            patch_installer(UV_INSTALLER_SH, &url, version),
             "text/plain; charset=utf-8",
         ),
         "uv-installer.ps1" => (
-            patch_installer(UV_INSTALLER_PS1, &url),
+            patch_installer(UV_INSTALLER_PS1, &url, version),
             "text/plain; charset=utf-8",
         ),
         _ => return (StatusCode::NOT_FOUND, "Not Found").into_response(),
@@ -82,10 +98,21 @@ pub async fn serve_uv_release(
     axum::extract::Path(tail): axum::extract::Path<String>,
 ) -> Response {
     let data: &'static [u8] = match tail.as_str() {
-        "0.11.14/uv-x86_64-unknown-linux-gnu.tar.gz" => UV_LINUX,
-        "0.11.14/uv-x86_64-unknown-linux-gnu.tar.gz.sha256" => UV_LINUX_SHA256,
-        "0.11.14/uv-x86_64-pc-windows-msvc.zip" => UV_WINDOWS,
-        "0.11.14/uv-x86_64-pc-windows-msvc.zip.sha256" => UV_WINDOWS_SHA256,
+        concat!(
+            env!("UV_EMBED_VERSION"),
+            "/uv-x86_64-unknown-linux-gnu.tar.gz"
+        ) => UV_LINUX,
+        concat!(
+            env!("UV_EMBED_VERSION"),
+            "/uv-x86_64-unknown-linux-gnu.tar.gz.sha256"
+        ) => UV_LINUX_SHA256,
+        concat!(env!("UV_EMBED_VERSION"), "/uv-x86_64-pc-windows-msvc.zip") => {
+            UV_WINDOWS
+        }
+        concat!(
+            env!("UV_EMBED_VERSION"),
+            "/uv-x86_64-pc-windows-msvc.zip.sha256"
+        ) => UV_WINDOWS_SHA256,
         _ => return (StatusCode::NOT_FOUND, "Not Found").into_response(),
     };
     let mime = mime_for_release(&tail);

@@ -1,0 +1,2 @@
+# uv release binaries are downloaded at build time; do not track
+uv-releases/

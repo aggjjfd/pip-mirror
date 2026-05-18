@@ -1,6 +1,6 @@
 [package]
 name = "pip-mirror"
-version = "0.2.0"
+version = "1.0.0"
 description = "轻量级私有 PIP 仓库 — Rust rewrite（增量/全量同步 + PEP 503/691 服务）"
 edition = "2024"
 license = "MIT"
@@ -37,6 +37,13 @@ futures = "0.3.32"
 
 [dev-dependencies]
 tempfile = "3"
+
+[build-dependencies]
+ureq = "2"
+toml = "0.8"
+
+[package.metadata.uv-embed]
+version = "0.11.14"
 
 [profile.release]
 lto = true
