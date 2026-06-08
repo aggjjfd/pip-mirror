@@ -6,17 +6,18 @@ use tracing::info;
 use crate::downloader::{
     FileInfo, PrefetchedFiles, download_pkg_files_with_prefetched,
 };
-use crate::indexer::generate_index;
-use crate::python_builds::{
-    PythonBuildEntry, build_python_builds_index, download_python_builds_batch,
-};
 use crate::resolver::resolve::{
     DependencyPlan, PlanParams, ResolveError, build_dependency_plan,
 };
 use crate::store::DownloadStore;
 
+pub mod finalize;
 mod plan;
 mod record;
+pub mod url_wheel;
+pub mod url_wheel_download;
+
+pub use finalize::{finalize_mirror, finalize_sync};
 
 pub fn archive_mb(p: &Path) -> f64 {
     std::fs::metadata(p)
@@ -65,7 +66,7 @@ async fn execute_download_phase(
         run_downloads(p.config, p.client, p.repo, p.pending, p.prefetched)
             .await;
     record::record_download_results(p.repo, &result).await?;
-    finalize_sync(
+    finalize::finalize_sync(
         p.client,
         p.repo,
         p.download_python_builds,
@@ -77,7 +78,7 @@ async fn execute_download_phase(
 
 pub async fn do_sync(
     config: &crate::config::Config,
-    pkgs: &[String],
+    pkgs: &[crate::config::PackageSpec],
     no_deps: bool,
     download_python_builds: bool,
     dry_run: bool,
@@ -102,7 +103,7 @@ pub async fn do_sync(
     Ok((client, downloaded))
 }
 
-fn build_sync_client() -> Result<reqwest::Client, reqwest::Error> {
+pub fn build_sync_client() -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
         .build()
@@ -162,17 +163,52 @@ fn filter_prefetched_for_pending(
     result
 }
 
-async fn create_sync_plan(
+fn add_url_wheel_to_plan(
+    plan: &mut DependencyPlan,
+    spec: &crate::config::PackageUrlSpec,
+) -> Result<(), ResolveError> {
+    let parsed =
+        crate::wheel_url::parse_wheel_url(&spec.url, spec.sha256.clone())
+            .map_err(|e| {
+                ResolveError::Config(format!(
+                    "URL whl 解析失败 ({}): {e}",
+                    crate::filters::redact_url_for_display(&spec.url)
+                ))
+            })?;
+    let file_info = FileInfo::builder()
+        .filename(parsed.filename)
+        .url(parsed.url)
+        .sha256(parsed.sha256)
+        .package_name(parsed.package_name.clone())
+        .version(parsed.version.clone())
+        .explicit_url(true)
+        .build();
+    plan.planned_files.push(file_info);
+    let version =
+        parsed.version.parse::<pep440_rs::Version>().map_err(|_| {
+            ResolveError::Config(format!(
+                "无法解析 whl 版本: {}",
+                parsed.version
+            ))
+        })?;
+    plan.solved_versions
+        .entry(parsed.package_name)
+        .or_default()
+        .push(version);
+    Ok(())
+}
+
+async fn build_plan(
     config: &crate::config::Config,
     client: &reqwest::Client,
-    pkgs: &[String],
+    name_pkgs: &[String],
     no_deps: bool,
 ) -> Result<DependencyPlan, ResolveError> {
     if no_deps {
-        return plan::build_top_only_plan(config, client, pkgs).await;
+        return plan::build_top_only_plan(config, client, name_pkgs).await;
     }
     let params = PlanParams {
-        top_packages: pkgs,
+        top_packages: name_pkgs,
         pypi_url: &config.pypi_url,
         top_versions_per_package: config.top_versions_per_package,
         adjacent_versions_per_side: config.adjacent_versions_per_side,
@@ -186,6 +222,35 @@ async fn create_sync_plan(
     build_dependency_plan(&params, client).await
 }
 
+pub async fn create_sync_plan(
+    config: &crate::config::Config,
+    client: &reqwest::Client,
+    pkgs: &[crate::config::PackageSpec],
+    no_deps: bool,
+) -> Result<DependencyPlan, ResolveError> {
+    let (mut name_pkgs, url_pkgs) = url_wheel::split_package_specs(pkgs);
+
+    let url_prefetched = url_wheel_download::maybe_collect_url_wheel_deps(
+        client,
+        &url_pkgs,
+        no_deps,
+        &mut name_pkgs,
+    )
+    .await?;
+
+    let mut plan = build_plan(config, client, &name_pkgs, no_deps).await?;
+    plan.prefetched_files.extend(url_prefetched);
+
+    for spec in &url_pkgs {
+        add_url_wheel_to_plan(&mut plan, spec)?;
+    }
+
+    url_wheel::dedupe_planned_files(&mut plan.planned_files);
+    url_wheel::dedupe_solved_versions(&mut plan.solved_versions);
+
+    Ok(plan)
+}
+
 fn filter_incremental_files(
     repo: &std::path::Path,
     planned_files: Vec<FileInfo>,
@@ -195,69 +260,4 @@ fn filter_incremental_files(
     }
     let store = DownloadStore::open(&repo.join(".store.db"))?;
     Ok(store.filter_missing_files(&planned_files)?)
-}
-
-async fn finalize_sync(
-    client: &reqwest::Client,
-    repo: &std::path::Path,
-    download_python_builds: bool,
-    download_workers: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let python_build_entries = maybe_download_python_builds(
-        client,
-        repo,
-        download_python_builds,
-        download_workers,
-    )
-    .await?;
-    rebuild_indexes(repo, python_build_entries).await?;
-    Ok(())
-}
-
-async fn maybe_download_python_builds(
-    client: &reqwest::Client,
-    repo: &Path,
-    enabled: bool,
-    workers: usize,
-) -> Result<Option<Vec<PythonBuildEntry>>, Box<dyn std::error::Error>> {
-    if !enabled {
-        return Ok(None);
-    }
-    let entries = download_python_builds_batch(client, repo, workers).await?;
-    info!("已下载 Python 解释器，开始生成 python-builds/index.json");
-    Ok(Some(entries))
-}
-
-async fn rebuild_indexes(
-    repo: &Path,
-    python_build_entries: Option<Vec<PythonBuildEntry>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let repo_clone = repo.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        if let Some(entries) = python_build_entries {
-            build_python_builds_index(&entries, &repo_clone)
-                .map_err(|e| format!("生成 python-builds index 失败: {e}"))?;
-        }
-        generate_index(&repo_clone);
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| format!("索引生成线程错误: {e}"))??;
-    Ok(())
-}
-
-pub async fn finalize_mirror(
-    _client: &reqwest::Client,
-    repo: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let repo_clone = repo.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        generate_index(&repo_clone);
-        crate::packager::pack_mirror_archive(&repo_clone)
-            .map_err(|e| format!("打包镜像失败: {e}"))?;
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| format!("打包线程错误: {e}"))??;
-    Ok(())
 }

@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use pep508_rs::{MarkerTree, VerbatimUrl};
 
 use super::types::TargetEnv;
+use crate::wheel_metadata::safe_requires_dist_summary;
 
 /// A dependency parsed from a `requires_dist` line, after marker evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,15 +65,17 @@ fn parse_requirement_parts(
     let (requirement, marker) = split_requirement_and_marker(line);
     let requirement = requirement.trim();
     if requirement.is_empty() {
-        return Err(MarkerError::ParseError(line.to_string()));
+        return Err(MarkerError::ParseError(safe_requires_dist_summary(line)));
     }
     if requirement.contains('@') {
-        return Err(MarkerError::UnsupportedDirectUrl(line.to_string()));
+        return Err(MarkerError::UnsupportedDirectUrl(
+            safe_requires_dist_summary(line),
+        ));
     }
 
     let (name, remainder) = split_name_and_rest(requirement);
     if name.is_empty() {
-        return Err(MarkerError::ParseError(line.to_string()));
+        return Err(MarkerError::ParseError(safe_requires_dist_summary(line)));
     }
     let (extras, version_spec) = parse_extras_and_spec(remainder, line)?;
 
@@ -113,7 +116,7 @@ fn parse_extras_and_spec<'a>(
         return Ok((HashSet::new(), remainder));
     }
     let Some(end) = remainder.find(']') else {
-        return Err(MarkerError::ParseError(line.to_string()));
+        return Err(MarkerError::ParseError(safe_requires_dist_summary(line)));
     };
     let extras = remainder[1..end]
         .split(',')
@@ -143,7 +146,9 @@ fn strip_wrapping_parens(spec: &str) -> Result<&str, MarkerError> {
     let Some(stripped) =
         trimmed.strip_prefix('(').and_then(|s| s.strip_suffix(')'))
     else {
-        return Err(MarkerError::ParseError(trimmed.to_string()));
+        return Err(MarkerError::ParseError(
+            crate::wheel_metadata::safe_requires_dist_summary(trimmed),
+        ));
     };
     Ok(stripped.trim())
 }
@@ -155,7 +160,7 @@ fn parse_marker(marker: Option<&str>) -> Result<MarkerTree, MarkerError> {
         return Ok(MarkerTree::TRUE);
     };
     MarkerTree::parse_str::<VerbatimUrl>(marker)
-        .map_err(|error| MarkerError::ParseError(error.to_string()))
+        .map_err(|error| MarkerError::ParseError(error.message.to_string()))
 }
 
 fn evaluate_marker(

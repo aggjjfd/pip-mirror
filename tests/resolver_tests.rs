@@ -242,6 +242,27 @@ fn test_parse_dependency_line_direct_url_rejected() {
 }
 
 #[test]
+fn test_parse_dependency_line_direct_url_does_not_leak_credentials() {
+    use pip_mirror::resolver::markers::parse_dependency_line;
+    let err = parse_dependency_line(
+        "requests @ https://user:pass@example.com/requests.whl?token=secret",
+        &no_extras(),
+        &linux_target(),
+    )
+    .expect_err("should fail")
+    .to_string();
+    assert!(
+        !err.contains("user:pass"),
+        "error leaked credentials: {err}"
+    );
+    assert!(!err.contains("token=secret"), "error leaked token: {err}");
+    assert!(
+        err.contains("example.com/requests.whl"),
+        "error should keep safe URL for context: {err}"
+    );
+}
+
+#[test]
 fn test_parse_requires_dist_multiple_lines() {
     use pip_mirror::resolver::markers::parse_requires_dist;
     let lines = vec![
@@ -266,6 +287,42 @@ fn test_parse_requires_dist_direct_url_is_error() {
     ];
     let result = parse_requires_dist(&lines, &no_extras(), &linux_target());
     assert!(result.is_err());
+}
+
+#[test]
+fn test_parse_dependency_line_parse_error_does_not_leak_credentials() {
+    use pip_mirror::resolver::markers::parse_dependency_line;
+    // Missing closing ']' causes ParseError; the line contains credentials.
+    let err = parse_dependency_line(
+        "pkg[extra @ https://user:pass@example.com/foo.whl?token=secret",
+        &no_extras(),
+        &linux_target(),
+    )
+    .expect_err("should fail")
+    .to_string();
+    assert!(
+        !err.contains("user:pass"),
+        "error leaked credentials: {err}"
+    );
+    assert!(!err.contains("token=secret"), "error leaked token: {err}");
+}
+
+#[test]
+fn test_parse_dependency_line_marker_error_does_not_leak_credentials() {
+    use pip_mirror::resolver::markers::parse_dependency_line;
+    // Invalid marker syntax with an embedded credential URL.
+    let err = parse_dependency_line(
+        "requests; @ https://user:pass@example.com/foo.whl?token=secret",
+        &no_extras(),
+        &linux_target(),
+    )
+    .expect_err("should fail")
+    .to_string();
+    assert!(
+        !err.contains("user:pass"),
+        "error leaked credentials: {err}"
+    );
+    assert!(!err.contains("token=secret"), "error leaked token: {err}");
 }
 
 // ── types / target env ──

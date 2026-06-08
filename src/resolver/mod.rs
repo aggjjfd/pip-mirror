@@ -1,4 +1,4 @@
-pub(crate) mod build_requires;
+pub mod build_requires;
 pub(crate) mod discovery;
 pub mod eligibility;
 pub mod error;

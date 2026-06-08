@@ -1,7 +1,33 @@
 use std::collections::HashSet;
 
+use url::Url;
+
 use crate::downloader::FileInfo;
 use crate::resolver::types::TargetEnv;
+
+/// Strip query, fragment and userinfo from a URL for safe logging/errors.
+///
+/// If the string cannot be parsed as a URL, returns a placeholder instead of
+/// echoing the original input, so malformed URLs that contain credentials are
+/// not leaked in error messages.
+pub fn redact_url_for_display(url: &str) -> String {
+    match Url::parse(url) {
+        Ok(mut parsed) => {
+            parsed.set_query(None);
+            parsed.set_fragment(None);
+            parsed.set_username("").ok();
+            parsed.set_password(None).ok();
+            if parsed.host_str().is_none()
+                && parsed.scheme() != "file"
+                && url.contains('@')
+            {
+                return "<无法解析的 URL>".to_string();
+            }
+            parsed.to_string()
+        }
+        Err(_) => "<无法解析的 URL>".to_string(),
+    }
+}
 
 static REJECTED_SUBSTRINGS: &[&str] = &[
     "aarch64",

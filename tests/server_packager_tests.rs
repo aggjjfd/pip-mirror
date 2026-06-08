@@ -98,6 +98,7 @@ fn test_no_changes_empty() {
 #[test]
 fn test_no_changes_has_simple_files() {
     let fi = pip_mirror::downloader::FileInfo {
+        explicit_url: false,
         filename: "pkg-1.0.whl".to_string(),
         url: "https://x.com/pkg.whl".to_string(),
         sha256: Some("a".repeat(64)),
@@ -119,6 +120,7 @@ fn test_no_changes_has_simple_files() {
 #[test]
 fn test_create_incremental_package_returns_io_error() {
     let fi = pip_mirror::downloader::FileInfo {
+        explicit_url: false,
         filename: "pkg-1.0.whl".to_string(),
         url: "https://x.com/pkg.whl".to_string(),
         sha256: Some("a".repeat(64)),

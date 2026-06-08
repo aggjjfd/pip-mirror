@@ -19,6 +19,7 @@ pub enum ResolveError {
         target: String,
         detail: String,
     },
+    Config(String),
 }
 
 impl std::fmt::Display for ResolveError {
@@ -48,6 +49,7 @@ impl std::fmt::Display for ResolveError {
                 f,
                 "无法为 {package}@{version} 在 {target} 上求得依赖解: {detail}"
             ),
+            ResolveError::Config(msg) => write!(f, "配置错误: {msg}"),
         }
     }
 }

@@ -148,7 +148,7 @@ impl MetadataCache {
                 package: package.to_string(),
                 version: version.map(String::from),
                 status: 0,
-                source: e.to_string(),
+                source: e.without_url().to_string(),
             }
         })?;
 
@@ -165,7 +165,7 @@ impl MetadataCache {
         resp.json().await.map_err(|e| MetadataError::Json {
             package: package.to_string(),
             version: version.map(String::from),
-            msg: e.to_string(),
+            msg: e.without_url().to_string(),
         })
     }
 

@@ -139,6 +139,7 @@ fn linux_target(py: &str) -> TargetEnv {
 
 fn file_info(filename: &str) -> FileInfo {
     FileInfo {
+        explicit_url: false,
         filename: filename.to_string(),
         url: format!("https://example.invalid/{filename}"),
         sha256: None,
@@ -220,4 +221,15 @@ fn test_select_files_fallback_sdist_requires_only_source_distribution() {
     let selected_without_source =
         filters::select_files_for_version(&files, &targets, false, "2.39");
     assert!(selected_without_source.is_empty());
+}
+
+#[test]
+fn test_redact_url_for_display_returns_placeholder_on_parse_failure() {
+    // A malformed URL that contains credentials must not be echoed back.
+    let malformed =
+        "https://user:pass@example.com:badport/foo.whl?token=secret";
+    let safe = filters::redact_url_for_display(malformed);
+    assert!(!safe.contains("user:pass"), "leaked credentials: {safe}");
+    assert!(!safe.contains("token=secret"), "leaked token: {safe}");
+    assert!(safe.contains("无法解析"), "expected placeholder: {safe}");
 }

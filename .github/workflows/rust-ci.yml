@@ -29,6 +29,9 @@ jobs:
       - name: Run tests
         run: cargo test
 
+      - name: Run e2e tests (ignored by default)
+        run: cargo test --test integration_tests -- --ignored
+
       - name: Clippy (hard gate)
         run: cargo clippy -- -D warnings
 

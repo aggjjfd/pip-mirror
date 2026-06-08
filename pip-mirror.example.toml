@@ -1,5 +1,10 @@
-# 要同步的包列表，支持 extras（如 markitdown[pptx,docx]）
+# 要同步的包列表，支持 extras（如 markitdown[pptx,docx]），
+# 也支持直接指定 whl 下载 URL（http/https/file）
 packages = [
+    # 远程 whl URL（参与依赖解析：会读取 METADATA 并同步其 Requires-Dist）
+    # { url = "https://example.com/mypkg-1.0-py3-none-any.whl" },
+    # 本地 whl URL，可选项 sha256 = "..."
+    # { url = "file:///opt/wheels/mypkg-1.0-py3-none-any.whl" },
     "gradio",
     "openai",
     "streamlit",

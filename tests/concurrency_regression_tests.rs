@@ -182,6 +182,7 @@ fn metadata_version_response() -> Value {
 
 fn download_file(filename: &str, base_url: &str) -> FileInfo {
     FileInfo {
+        explicit_url: false,
         filename: filename.to_string(),
         url: format!("{base_url}/files/{filename}"),
         sha256: None,

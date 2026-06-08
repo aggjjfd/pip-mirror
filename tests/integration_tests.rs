@@ -121,7 +121,7 @@ async fn select_first_installable_version(
 }
 
 #[tokio::test]
-#[ignore = "needs network, run manually with --ignored"]
+#[ignore = "e2e network test: runs ~2.5 min against PyPI"]
 async fn test_solve_one_target_matches_uv_for_requests_linux_py312() {
     pip_mirror::logging::init(false);
     let target = py312_linux_target();
@@ -138,7 +138,7 @@ async fn test_solve_one_target_matches_uv_for_requests_linux_py312() {
 }
 
 #[tokio::test]
-#[ignore = "needs network, run manually with --ignored"]
+#[ignore = "e2e network test: runs ~2.5 min against PyPI"]
 async fn test_build_dependency_plan_e2e_smoke() {
     pip_mirror::logging::init(false);
     let client = reqwest::Client::new();

@@ -76,6 +76,7 @@ fn test_markers_python_version_fork() {
 
 fn file(name: &str) -> FileInfo {
     FileInfo {
+        explicit_url: false,
         filename: name.to_string(),
         url: "https://example.com/file".to_string(),
         sha256: None,
@@ -470,5 +471,91 @@ async fn test_prefilter_skips_incompatible_versions() {
         version_hits.load(Ordering::SeqCst),
         1,
         "version json 请求数应为 1（仅 demo-universal）"
+    );
+}
+
+#[tokio::test]
+async fn test_metadata_cache_fetch_json_error_does_not_leak_credentials() {
+    use std::time::Duration;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let cache = MetadataCache::new(
+        client,
+        "http://user:pass@127.0.0.1:1".to_string(),
+        1,
+    );
+    let err = cache
+        .get_all_versions("demo")
+        .await
+        .expect_err("should fail");
+    let msg = format!("{err}");
+    assert!(
+        !msg.contains("user:pass"),
+        "error leaked credentials: {msg}"
+    );
+    assert!(
+        !msg.contains("token"),
+        "error may contain sensitive query: {msg}"
+    );
+}
+
+async fn start_raw_http_server(response: Vec<u8>) -> u16 {
+    use tokio::io::AsyncWriteExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+
+    tokio::spawn(async move {
+        let _ = tx.send(());
+        if let Ok((mut socket, _)) = listener.accept().await {
+            let _ = socket.write_all(&response).await;
+        }
+    });
+
+    let _ = rx.await;
+    port
+}
+
+#[tokio::test]
+async fn test_metadata_cache_json_error_does_not_leak_credentials() {
+    use std::time::Duration;
+
+    let body = b"hello";
+    let response = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    let mut full_response = response;
+    full_response.extend_from_slice(body);
+    let port = start_raw_http_server(full_response).await;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let cache = MetadataCache::new(
+        client,
+        format!("http://user:pass@127.0.0.1:{port}"),
+        1,
+    );
+    let err = cache
+        .get_all_versions("demo")
+        .await
+        .expect_err("should fail");
+    let msg = format!("{err}");
+    assert!(
+        !msg.contains("user:pass"),
+        "error leaked credentials: {msg}"
+    );
+    assert!(
+        !msg.contains("token"),
+        "error may contain sensitive query: {msg}"
     );
 }

@@ -190,6 +190,43 @@ async fn do_incremental_pack(
     Ok(())
 }
 
+fn looks_like_url(s: &str) -> bool {
+    let lower = s.trim().to_ascii_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("file://")
+}
+
+fn cli_packages_to_specs(
+    packages: Option<Vec<String>>,
+) -> Result<Vec<pip_mirror::config::PackageSpec>, String> {
+    let Some(p) = packages else {
+        return Ok(Vec::new());
+    };
+    for name in &p {
+        if looks_like_url(name) {
+            let safe = pip_mirror::filters::redact_url_for_display(name);
+            return Err(format!(
+                "命令行包名 `{safe}` 看起来像 URL。如需指定 whl URL，请使用配置文件中的 `{{ url = \"{safe}\" }}` 表格式。"
+            ));
+        }
+    }
+    Ok(p.into_iter()
+        .map(pip_mirror::config::PackageSpec::Name)
+        .collect())
+}
+
+fn load_packages(
+    config: &pip_mirror::config::Config,
+    packages: Option<Vec<String>>,
+) -> Result<Vec<pip_mirror::config::PackageSpec>, Box<dyn std::error::Error>> {
+    if let Some(p) = packages {
+        Ok(cli_packages_to_specs(Some(p))?)
+    } else {
+        Ok(config.packages.clone())
+    }
+}
+
 async fn cmd_sync(
     config_path: Option<&std::path::Path>,
     packages: Option<Vec<String>>,
@@ -197,7 +234,7 @@ async fn cmd_sync(
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = pip_mirror::config::Config::load(config_path)?;
-    let pkgs = packages.unwrap_or_else(|| config.packages.clone());
+    let pkgs = load_packages(&config, packages)?;
     info!("增量同步: {} 个包", pkgs.len());
     std::fs::create_dir_all(&config.repository_dir)?;
     let (_client, downloaded) =
@@ -216,7 +253,7 @@ async fn cmd_sync_full(
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = pip_mirror::config::Config::load(config_path)?;
-    let pkgs = packages.unwrap_or_else(|| config.packages.clone());
+    let pkgs = load_packages(&config, packages)?;
     info!("全量同步: {} 个包", pkgs.len());
     if dry_run {
         let (_client, _downloaded) =
@@ -347,4 +384,25 @@ fn cmd_init(
     std::fs::write(output, INIT_TEMPLATE)?;
     info!("示例配置已生成: {}", output.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cli_packages_to_specs;
+
+    #[test]
+    fn test_cli_packages_to_specs_redacts_url_in_error() {
+        let url = "https://user:pass@example.com/foo.whl?token=secret";
+        let err = cli_packages_to_specs(Some(vec![url.to_string()]))
+            .expect_err("should fail");
+        assert!(
+            !err.contains("user:pass"),
+            "error leaked credentials: {err}"
+        );
+        assert!(!err.contains("token=secret"), "error leaked token: {err}");
+        assert!(
+            err.contains("example.com/foo.whl"),
+            "error should keep host/path for user context: {err}"
+        );
+    }
 }

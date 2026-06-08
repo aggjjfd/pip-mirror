@@ -14,13 +14,13 @@ const PYPROJECT_FILE_NAME: &str = "pyproject.toml";
 const SDIST_KIND: &str = "sdist";
 
 #[derive(Debug, Clone)]
-pub(crate) struct PrefetchedSdist {
+pub struct PrefetchedSdist {
     pub filename: String,
     pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct BuildRequiresProbe {
+pub struct BuildRequiresProbe {
     #[allow(dead_code)]
     pub requirements: Vec<String>,
     pub prefetched_sdist: Option<PrefetchedSdist>,
@@ -31,7 +31,7 @@ struct SdistCandidate {
     url: String,
 }
 
-pub(crate) async fn probe_build_requires_from_version_json(
+pub async fn probe_build_requires_from_version_json(
     client: &reqwest::Client,
     version_json: &serde_json::Value,
 ) -> Result<BuildRequiresProbe, String> {
@@ -84,7 +84,7 @@ fn find_sdist_candidate(
     None
 }
 
-async fn download_sdist(
+pub async fn download_sdist(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<Vec<u8>, String> {
@@ -92,14 +92,14 @@ async fn download_sdist(
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("下载源码包失败: {e}"))?;
+        .map_err(|e| format!("下载源码包失败: {}", e.without_url()))?;
     if !resp.status().is_success() {
         return Err(format!("下载源码包失败: HTTP {}", resp.status()));
     }
     let bytes = resp
         .bytes()
         .await
-        .map_err(|e| format!("读取源码包失败: {e}"))?;
+        .map_err(|e| format!("读取源码包失败: {}", e.without_url()))?;
     Ok(bytes.to_vec())
 }
 

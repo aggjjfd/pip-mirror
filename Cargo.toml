@@ -25,6 +25,8 @@ chrono = { version = "0.4", features = ["clock"] }
 pubgrub = { version = "0.3.3", package = "astral-pubgrub" }
 pep440_rs = "0.7"
 pep508_rs = "0.9"
+url = "2.5"
+percent-encoding = "2.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indicatif = "0.17"
@@ -33,6 +35,7 @@ flate2 = "1"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 dashmap = "6"
+bytes = "1"
 futures = "0.3.32"
 
 [dev-dependencies]

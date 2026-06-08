@@ -1,3 +1,4 @@
+mod local;
 mod pipeline;
 
 use crate::filters::{
@@ -10,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use type_state_builder::TypeStateBuilder;
 
 /// File metadata as returned by PyPI JSON API.
@@ -27,6 +29,11 @@ pub struct FileInfo {
     pub package_name: String,
     #[builder(required)]
     pub version: String,
+    /// True when this file came from an explicit user-provided URL
+    /// (rather than discovered via PyPI metadata), so platform filtering
+    /// should be skipped.
+    #[builder(default = "false")]
+    pub explicit_url: bool,
 }
 
 /// Download result summary.
@@ -180,11 +187,20 @@ pub fn backfill_one_target(
     None
 }
 
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 async fn write_atomic(dest_path: &Path, bytes: &[u8]) -> (bool, String) {
     if let Some(parent) = dest_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
-    let tmp = dest_path.with_extension("tmp");
+    let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let file_name = dest_path
+        .file_name()
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default();
+    let tmp =
+        dest_path.with_file_name(format!("{file_name}.{pid}.{counter}.tmp"));
     if let Err(e) = tokio::fs::write(&tmp, bytes).await {
         return (false, format!("写入: {e}"));
     }
@@ -195,13 +211,19 @@ async fn write_atomic(dest_path: &Path, bytes: &[u8]) -> (bool, String) {
     (true, String::new())
 }
 
-/// Download a single file.
+/// Download a single file (HTTP/HTTPS) or copy a local file (file://).
 pub async fn download_file(
     client: &Client,
     fi: &FileInfo,
     dest: &Path,
 ) -> (bool, String) {
     let url = fi.url.split('#').next().unwrap_or(&fi.url);
+    if url
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://"))
+    {
+        return local::copy_local_wheel(url, fi, dest).await;
+    }
     let Ok(resp) = client.get(url).send().await else {
         return (false, "网络错误".into());
     };
@@ -221,6 +243,7 @@ pub async fn download_file(
     }
     write_atomic(dest, &bytes).await
 }
+
 enum DownloadOutcome {
     Skipped(FileInfo),
     Downloaded(FileInfo),
@@ -302,8 +325,13 @@ fn bytes_match_sha256(fi: &FileInfo, bytes: &[u8]) -> bool {
     })
 }
 fn should_skip(fi: &FileInfo, include_source: bool) -> bool {
-    (!include_source && is_source_distribution(&fi.filename))
-        || (fi.filename.ends_with(".whl") && !is_accepted_wheel(&fi.filename))
+    if !include_source && is_source_distribution(&fi.filename) {
+        return true;
+    }
+    if fi.filename.ends_with(".whl") && fi.explicit_url {
+        return false;
+    }
+    fi.filename.ends_with(".whl") && !is_accepted_wheel(&fi.filename)
 }
 pub async fn download_pkg_files(
     client: &reqwest::Client,

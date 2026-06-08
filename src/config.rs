@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use url::Url;
 
 const DEFAULT_INCLUDE_SOURCE: bool = false;
 const DEFAULT_RESOLVE_WORKERS: usize = 8;
@@ -25,10 +26,41 @@ pub struct TargetSpec {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum PackageSpec {
+    Name(String),
+    Url(PackageUrlSpec),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageUrlSpec {
+    pub url: String,
+    #[serde(default)]
+    pub sha256: Option<String>,
+}
+
+impl PackageSpec {
+    pub fn as_url(&self) -> Option<&str> {
+        match self {
+            PackageSpec::Url(u) => Some(&u.url),
+            PackageSpec::Name(_) => None,
+        }
+    }
+
+    pub fn as_name(&self) -> Option<&str> {
+        match self {
+            PackageSpec::Name(n) => Some(n),
+            PackageSpec::Url(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
-    pub packages: Vec<String>,
+    pub packages: Vec<PackageSpec>,
     #[serde(default = "default_repository_dir")]
     pub repository_dir: PathBuf,
     #[serde(default = "default_incremental_dir")]
@@ -174,7 +206,10 @@ fn load_explicit(p: &Path) -> Result<Config, Box<dyn std::error::Error>> {
 fn try_env() -> Option<Config> {
     let pkgs = std::env::var("PIP_MIRROR_PACKAGES").ok()?;
     Some(Config {
-        packages: pkgs.split(',').map(|s| s.trim().to_string()).collect(),
+        packages: pkgs
+            .split(',')
+            .map(|s| PackageSpec::Name(s.trim().to_string()))
+            .collect(),
         ..Config::default()
     })
 }
@@ -191,20 +226,79 @@ impl Config {
     pub fn load(
         path: Option<&Path>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        match path {
+        let cfg = match path {
             Some(p) if !p.exists() => {
-                Err(format!("配置文件不存在: {}", p.display()).into())
+                return Err(format!("配置文件不存在: {}", p.display()).into());
             }
-            Some(p) => load_explicit(p),
+            Some(p) => load_explicit(p)?,
             None => match try_env() {
-                Some(cfg) => Ok(cfg),
-                None => match try_default_toml()? {
-                    Some(cfg) => Ok(cfg),
-                    None => Ok(Config::default()),
-                },
+                Some(cfg) => cfg,
+                None => try_default_toml()?.unwrap_or_default(),
             },
-        }
+        };
+        cfg.validate()?;
+        Ok(cfg)
     }
+
+    pub fn validate(&self) -> Result<(), String> {
+        self.validate_no_url_names()?;
+        self.validate_url_specs()
+    }
+
+    fn validate_no_url_names(&self) -> Result<(), String> {
+        let looks_like_url = |s: &str| {
+            let lower = s.trim().to_ascii_lowercase();
+            lower.starts_with("http://")
+                || lower.starts_with("https://")
+                || lower.starts_with("file://")
+        };
+        if let Some(name) = self
+            .packages
+            .iter()
+            .filter_map(|s| s.as_name())
+            .find(|s| looks_like_url(s))
+        {
+            let safe = crate::filters::redact_url_for_display(name);
+            return Err(format!(
+                "包名 `{safe}` 看起来像 URL。如需指定 whl URL，请使用 `{{ url = \"{safe}\" }}` 表格式。"
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_url_specs(&self) -> Result<(), String> {
+        if let Some(err) = self
+            .packages
+            .iter()
+            .filter_map(|spec| match spec {
+                PackageSpec::Url(u) => validate_url_spec(u),
+                _ => None,
+            })
+            .next()
+        {
+            return Err(err);
+        }
+        Ok(())
+    }
+}
+
+fn validate_url_spec(u: &PackageUrlSpec) -> Option<String> {
+    let lower = u.url.to_ascii_lowercase();
+    let safe = crate::filters::redact_url_for_display(&u.url);
+    if !lower.starts_with("http://")
+        && !lower.starts_with("https://")
+        && !lower.starts_with("file://")
+    {
+        return Some(format!("URL whl 只支持 http/https/file 协议: {safe}"));
+    }
+    let parsed = match Url::parse(&u.url) {
+        Ok(p) => p,
+        Err(_) => return Some(format!("无法解析 URL: {safe}")),
+    };
+    if !parsed.path().to_ascii_lowercase().ends_with(".whl") {
+        return Some(format!("URL whl 必须以 .whl 结尾: {safe}"));
+    }
+    None
 }
 
 impl Default for Config {

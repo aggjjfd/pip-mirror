@@ -1317,6 +1317,7 @@ version = "1.0.0"
 dependencies = [
  "astral-pubgrub",
  "axum",
+ "bytes",
  "chrono",
  "clap",
  "dashmap",
@@ -1325,6 +1326,7 @@ dependencies = [
  "indicatif",
  "pep440_rs",
  "pep508_rs",
+ "percent-encoding",
  "rayon",
  "reqwest",
  "rusqlite",
@@ -1340,6 +1342,7 @@ dependencies = [
  "tracing-subscriber",
  "type-state-builder",
  "ureq",
+ "url",
  "zip",
 ]
 

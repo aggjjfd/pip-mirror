@@ -51,6 +51,16 @@ server_port = 8080
 
 说明：当前解释器镜像以 CPython 3.8-3.12 为主，默认不覆盖 3.13/3.14。`include_source = true` 时仅在无可用 wheel 且判定为纯 Python 回退条件满足时才会保留源码包；否则 warning 后跳过。
 
+也支持直接指定 whl URL（会读取其 METADATA 并参与依赖解析，等价于把它声明为顶层包）：
+
+```toml
+packages = [
+    "requests",
+    { url = "https://example.com/foo-1.0-py3-none-any.whl" },
+    { url = "file:///opt/wheels/bar-1.0-py3-none-any.whl", sha256 = "abc..." },
+]
+```
+
 ## 1. 外网机首次全量下载
 
 ```bash

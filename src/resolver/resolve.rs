@@ -32,6 +32,7 @@ pub struct PlanParams<'a> {
     pub targets: Vec<TargetEnv>,
 }
 
+#[derive(Debug)]
 pub struct DependencyPlan {
     pub planned_files: Vec<FileInfo>,
     pub prefetched_files: HashMap<(String, String), Vec<u8>>,
