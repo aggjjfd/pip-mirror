@@ -53,6 +53,28 @@ impl DownloadStore {
         })
     }
 
+    fn table_columns(
+        conn: &Connection,
+    ) -> Result<std::collections::HashSet<String>, rusqlite::Error> {
+        let mut stmt = conn.prepare("PRAGMA table_info(downloaded_files)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        rows.collect()
+    }
+
+    fn add_missing_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+        let columns = Self::table_columns(conn)?;
+        let missing = [("yanked", "TEXT"), ("metadata_sha256", "TEXT")]
+            .into_iter()
+            .filter(|(col, _)| !columns.contains(*col));
+        for (col, typ) in missing {
+            conn.execute(
+                &format!("ALTER TABLE downloaded_files ADD COLUMN {col} {typ}"),
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
     fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         let old_sql: Option<String> = conn
             .query_row(
@@ -65,30 +87,30 @@ impl DownloadStore {
             .as_ref()
             .map(|s| s.contains("UNIQUE(filename)"))
             .unwrap_or(false);
-        if !is_old {
-            return Ok(());
+        if is_old {
+            conn.execute(
+                "ALTER TABLE downloaded_files RENAME TO downloaded_files_old",
+                [],
+            )?;
+            conn.execute_batch(
+                "CREATE TABLE downloaded_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    filename TEXT NOT NULL,
+                    package_name TEXT NOT NULL,
+                    version TEXT NOT NULL DEFAULT '',
+                    sha256 TEXT NOT NULL,
+                    size INTEGER,
+                    metadata_sha256 TEXT,
+                    yanked TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(package_name, filename)
+                );
+                INSERT INTO downloaded_files (filename, package_name, version, sha256, size, metadata_sha256, created_at)
+                SELECT filename, package_name, version, sha256, size, metadata_sha256, created_at FROM downloaded_files_old;
+                DROP TABLE downloaded_files_old;",
+            )?;
         }
-        conn.execute(
-            "ALTER TABLE downloaded_files RENAME TO downloaded_files_old",
-            [],
-        )?;
-        conn.execute_batch(
-            "CREATE TABLE downloaded_files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                filename TEXT NOT NULL,
-                package_name TEXT NOT NULL,
-                version TEXT NOT NULL DEFAULT '',
-                sha256 TEXT NOT NULL,
-                size INTEGER,
-                metadata_sha256 TEXT,
-                yanked TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(package_name, filename)
-            );
-            INSERT INTO downloaded_files (filename, package_name, version, sha256, size, metadata_sha256, created_at)
-            SELECT filename, package_name, version, sha256, size, metadata_sha256, created_at FROM downloaded_files_old;
-            DROP TABLE downloaded_files_old;",
-        )?;
+        Self::add_missing_columns(conn)?;
         Ok(())
     }
 
