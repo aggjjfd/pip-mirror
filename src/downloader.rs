@@ -302,11 +302,16 @@ async fn try_download(
         .join("simple")
         .join(&fi.package_name)
         .join(&fi.filename);
-    if dest.exists()
-        || store.as_ref().is_some_and(|s| {
-            s.has_file(&fi.package_name, &fi.filename).unwrap_or(false)
-        })
-    {
+    if store.as_ref().is_some_and(|s| {
+        s.has_file(&fi.package_name, &fi.filename).unwrap_or(false)
+    }) {
+        return DownloadOutcome::Skipped(fi.clone());
+    }
+    if dest.exists() {
+        // 文件已存在但数据库里没有记录：补录，避免重复下载后仍然丢失记录。
+        if let Some(s) = store {
+            s.record_download(fi, &dest).await;
+        }
         return DownloadOutcome::Skipped(fi.clone());
     }
     let key = (fi.package_name.clone(), fi.filename.clone());
