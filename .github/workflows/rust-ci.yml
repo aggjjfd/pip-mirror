@@ -29,6 +29,10 @@ jobs:
       - name: Run tests
         run: cargo test
 
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: 'latest'
+
       - name: Run e2e tests (ignored by default)
         run: cargo test --test integration_tests -- --ignored
 
