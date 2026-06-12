@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use dashmap::DashMap;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 pub struct DownloadStore {
@@ -62,6 +62,19 @@ impl DownloadStore {
     }
 
     fn add_missing_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+        let table_exists = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='downloaded_files'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if !table_exists {
+            // 表尚不存在，后续 CREATE TABLE IF NOT EXISTS 会一次性创建完整结构，
+            // 无需也不应执行 ALTER TABLE。
+            return Ok(());
+        }
         let columns = Self::table_columns(conn)?;
         let missing = [("yanked", "TEXT"), ("metadata_sha256", "TEXT")]
             .into_iter()
