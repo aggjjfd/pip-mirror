@@ -28,6 +28,20 @@ repository_dir = "./packages"
 }
 
 #[test]
+fn test_config_accepts_uv_embed_section() {
+    let toml = r#"
+packages = ["requests"]
+repository_dir = "./packages"
+
+[uv_embed]
+version = "0.11.14"
+"#;
+    let cfg: Config =
+        toml::from_str(toml).expect("should parse uv_embed section");
+    assert_eq!(cfg.uv_embed.version, Some("0.11.14".to_string()));
+}
+
+#[test]
 fn test_config_backward_compatible_strings_only() {
     let toml = r#"
 packages = ["requests", "openai"]
