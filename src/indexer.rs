@@ -64,11 +64,18 @@ pub fn generate_index(repository_dir: &Path) {
         return;
     }
     info!("生成 PEP 503 / PEP 691 索引...");
-    let store = DownloadStore::open(&repository_dir.join(".store.db"))
-        .unwrap_or_else(|_| panic!("无法打开 .store.db"));
-    let hashes = store.get_all_hashes();
-    let meta = store.get_all_metadata_hashes();
-    let yanked = store.get_all_yanked();
+    let db_path = repository_dir.join(".store.db");
+    let (hashes, meta, yanked) =
+        if let Ok(store) = DownloadStore::open(&db_path) {
+            (
+                store.get_all_hashes(),
+                store.get_all_metadata_hashes(),
+                store.get_all_yanked(),
+            )
+        } else {
+            info!(".store.db 不存在或无法打开，使用空 hash/yanked 生成索引");
+            (DashMap::new(), DashMap::new(), DashMap::new())
+        };
     let mut names: Vec<String> = Vec::new();
     let Ok(entries) = std::fs::read_dir(&simple_dir) else {
         return;
