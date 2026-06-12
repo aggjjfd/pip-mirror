@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use pip_mirror::config::{Config, PackageSpec, PackageUrlSpec};
+use pip_mirror::config::{Config, PackageSpec, PackageUrlSpec, UvEmbedConfig};
 use pip_mirror::downloader::FileInfo;
 use pip_mirror::filters::redact_url_for_display;
 use pip_mirror::resolver::resolve::ResolveError;
@@ -42,6 +42,7 @@ fn minimal_config() -> Config {
         server_port: 8080,
         server_host: "127.0.0.1".to_string(),
         targets: vec![],
+        uv_embed: UvEmbedConfig::default(),
     }
 }
 

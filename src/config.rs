@@ -56,6 +56,12 @@ impl PackageSpec {
     }
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UvEmbedConfig {
+    pub version: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -91,6 +97,8 @@ pub struct Config {
     pub server_host: String,
     #[serde(default = "default_targets")]
     pub targets: Vec<TargetSpec>,
+    #[serde(default)]
+    pub uv_embed: UvEmbedConfig,
 }
 
 fn default_repository_dir() -> PathBuf {
@@ -320,6 +328,7 @@ impl Default for Config {
             server_port: default_server_port(),
             server_host: default_server_host(),
             targets: default_targets(),
+            uv_embed: UvEmbedConfig::default(),
         }
     }
 }
