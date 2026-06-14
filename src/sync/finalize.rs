@@ -70,9 +70,7 @@ async fn rebuild_indexes(
             build_python_builds_index(&entries, &repo_clone)
                 .map_err(|e| format!("生成 python-builds index 失败: {e}"))?;
         }
-        // TODO: Task 9 会传入 progress
-        generate_index(&repo_clone);
-        let _ = progress;
+        generate_index(&repo_clone, progress);
         Ok::<(), String>(())
     })
     .await
@@ -86,7 +84,7 @@ pub async fn finalize_mirror(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let repo_clone = repo.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        generate_index(&repo_clone);
+        generate_index(&repo_clone, None);
         crate::packager::pack_mirror_archive(&repo_clone)
             .map_err(|e| format!("打包镜像失败: {e}"))?;
         Ok::<(), String>(())

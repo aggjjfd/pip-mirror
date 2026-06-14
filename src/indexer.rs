@@ -3,6 +3,7 @@ use std::path::Path;
 use dashmap::DashMap;
 use tracing::info;
 
+use crate::progress::{ProgressHandle, SyncEvent};
 use crate::store::DownloadStore;
 
 static INDEX_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
@@ -57,53 +58,119 @@ fn index_pkg(ctx: &IndexPkg<'_>) {
     );
 }
 
-pub fn generate_index(repository_dir: &Path) {
+type StoreMaps = (
+    DashMap<String, String>,
+    DashMap<String, String>,
+    DashMap<String, String>,
+);
+
+fn load_store_maps(repository_dir: &Path) -> StoreMaps {
+    let db_path = repository_dir.join(".store.db");
+    if let Ok(store) = DownloadStore::open(&db_path) {
+        return (
+            store.get_all_hashes(),
+            store.get_all_metadata_hashes(),
+            store.get_all_yanked(),
+        );
+    }
+    info!(".store.db 不存在或无法打开，使用空 hash/yanked 生成索引");
+    (DashMap::new(), DashMap::new(), DashMap::new())
+}
+
+fn list_package_dirs(simple_dir: &Path) -> Vec<std::fs::DirEntry> {
+    let Ok(entries) = std::fs::read_dir(simple_dir) else {
+        return Vec::new();
+    };
+    entries.flatten().filter(|e| e.path().is_dir()).collect()
+}
+
+fn write_root_indexes(simple_dir: &Path, names: &[String]) {
+    let _ = std::fs::write(
+        simple_dir.join("index.html"),
+        generate_index_html(names),
+    );
+    let _ = std::fs::write(
+        simple_dir.join("index.json"),
+        generate_index_json(names),
+    );
+}
+
+fn emit_index_started(progress: &ProgressHandle, total: usize) {
+    progress.emit(SyncEvent::PhaseStarted {
+        phase: "index",
+        total: Some(total as u64),
+    });
+}
+
+fn emit_index_progress(
+    progress: &ProgressHandle,
+    current: usize,
+    message: String,
+) {
+    progress.emit(SyncEvent::PhaseProgress {
+        phase: "index",
+        current: current as u64,
+        message,
+    });
+}
+
+fn emit_index_finished(progress: &ProgressHandle, count: usize) {
+    progress.emit(SyncEvent::PhaseFinished {
+        phase: "index",
+        summary: format!("{} 个包", count),
+    });
+}
+
+fn index_packages(
+    entries: &[std::fs::DirEntry],
+    hashes: &DashMap<String, String>,
+    meta: &DashMap<String, String>,
+    yanked: &DashMap<String, String>,
+    progress: Option<&ProgressHandle>,
+) -> Vec<String> {
+    let mut names: Vec<String> = Vec::with_capacity(entries.len());
+    for (idx, entry) in entries.iter().enumerate() {
+        let path = entry.path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        names.push(name.clone());
+        index_pkg(&IndexPkg {
+            path: &path,
+            name: &name,
+            hashes,
+            meta,
+            yanked,
+        });
+        if let Some(p) = progress {
+            emit_index_progress(p, idx + 1, name);
+        }
+    }
+    names
+}
+
+pub fn generate_index(repository_dir: &Path, progress: Option<ProgressHandle>) {
     let simple_dir = repository_dir.join("simple");
     if !simple_dir.exists() {
         info!("仓库目录为空，跳过索引生成");
         return;
     }
     info!("生成 PEP 503 / PEP 691 索引...");
-    let db_path = repository_dir.join(".store.db");
-    let (hashes, meta, yanked) =
-        if let Ok(store) = DownloadStore::open(&db_path) {
-            (
-                store.get_all_hashes(),
-                store.get_all_metadata_hashes(),
-                store.get_all_yanked(),
-            )
-        } else {
-            info!(".store.db 不存在或无法打开，使用空 hash/yanked 生成索引");
-            (DashMap::new(), DashMap::new(), DashMap::new())
-        };
-    let mut names: Vec<String> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&simple_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let n = path.file_name().unwrap().to_string_lossy().to_string();
-        names.push(n.clone());
-        index_pkg(&IndexPkg {
-            path: &path,
-            name: &n,
-            hashes: &hashes,
-            meta: &meta,
-            yanked: &yanked,
-        });
+
+    let (hashes, meta, yanked) = load_store_maps(repository_dir);
+    let entries = list_package_dirs(&simple_dir);
+
+    if let Some(ref p) = progress {
+        emit_index_started(p, entries.len());
     }
+
+    let mut names =
+        index_packages(&entries, &hashes, &meta, &yanked, progress.as_ref());
     names.sort();
-    let _ = std::fs::write(
-        simple_dir.join("index.html"),
-        generate_index_html(&names),
-    );
-    let _ = std::fs::write(
-        simple_dir.join("index.json"),
-        generate_index_json(&names),
-    );
+    write_root_indexes(&simple_dir, &names);
+
+    if let Some(ref p) = progress {
+        emit_index_finished(p, names.len());
+    }
+
     info!("索引生成完成: {} 个包", names.len());
 }
 

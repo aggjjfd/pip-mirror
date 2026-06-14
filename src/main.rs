@@ -311,7 +311,8 @@ fn cmd_import_incremental(
     let mut tar = tar::Archive::new(reader);
     tar.unpack(&config.repository_dir)?;
     if !args.no_reindex {
-        pip_mirror::indexer::generate_index(&config.repository_dir);
+        // TODO: Task 11 改为 async 并传入 progress 后，替换为 Some(progress.clone())
+        pip_mirror::indexer::generate_index(&config.repository_dir, None);
     }
     info!("导入完成");
     Ok(())

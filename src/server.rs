@@ -117,7 +117,7 @@ pub async fn start_server(
             format!("仓库目录不存在: {}", repository_dir.display()).into()
         );
     }
-    crate::indexer::generate_index(&repository_dir);
+    crate::indexer::generate_index(&repository_dir, None);
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
     tracing::info!("PIP 镜像服务器启动\n  地址: http://{host}:{port}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
