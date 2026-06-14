@@ -9,6 +9,7 @@ pub fn init(verbose: bool) {
         .with_env_filter(filter)
         .with_target(false)
         .with_ansi(true)
+        .with_writer(crate::progress::ProgressWriterMaker)
         .try_init()
         .ok();
 }

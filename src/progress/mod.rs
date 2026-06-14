@@ -1,5 +1,7 @@
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
+use std::sync::OnceLock;
 
+use indicatif::MultiProgress;
 use tokio::sync::mpsc;
 
 pub mod events;
@@ -7,6 +9,43 @@ mod plain;
 mod tty;
 
 pub use events::{FileStatus, SyncEvent};
+
+static PROGRESS_MULTI: OnceLock<MultiProgress> = OnceLock::new();
+
+pub fn set_progress_multi(multi: MultiProgress) {
+    let _ = PROGRESS_MULTI.set(multi);
+}
+
+pub struct ProgressWriterMaker;
+
+impl<'a> tracing_subscriber::fmt::writer::MakeWriter<'a>
+    for ProgressWriterMaker
+{
+    type Writer = ProgressWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        ProgressWriter
+    }
+}
+
+pub struct ProgressWriter;
+
+impl Write for ProgressWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let text = String::from_utf8_lossy(buf);
+        let Some(multi) = PROGRESS_MULTI.get() else {
+            return std::io::stderr().write_all(buf).map(|_| buf.len());
+        };
+        for line in text.lines() {
+            multi.println(line).ok();
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::stderr().flush()
+    }
+}
 
 #[derive(Clone)]
 pub struct ProgressHandle {

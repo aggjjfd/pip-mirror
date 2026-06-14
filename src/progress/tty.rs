@@ -1,41 +1,43 @@
 use std::collections::HashMap;
 
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{
+    MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle,
+};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::{FileStatus, SyncEvent};
 
-pub async fn render(mut rx: UnboundedReceiver<SyncEvent>) {
-    let multi = MultiProgress::new();
-    let overall = multi.add(ProgressBar::new(0));
-    let status = multi.add(ProgressBar::new(0));
+const MAX_MSG_LEN: usize = 30;
+const BAR_WIDTH: usize = 25;
+const MAX_FPS: u8 = 10;
 
-    overall.set_style(
-        ProgressStyle::with_template("{msg} [{bar:40}] {pos}/{len}")
-            .unwrap()
-            .progress_chars("##-"),
+pub async fn render(mut rx: UnboundedReceiver<SyncEvent>) {
+    let multi = MultiProgress::with_draw_target(
+        ProgressDrawTarget::stderr_with_hz(MAX_FPS),
     );
-    status.set_style(
-        ProgressStyle::with_template("{msg}")
-            .unwrap()
-            .progress_chars("##-"),
+    super::set_progress_multi(multi.clone());
+    let bar = multi.add(ProgressBar::new(0));
+
+    bar.set_style(
+        ProgressStyle::with_template(&format!(
+            "{{msg:<{MAX_MSG_LEN}}} [{{bar:{BAR_WIDTH}}}] {{pos}}/{{len}}"
+        ))
+        .unwrap()
+        .progress_chars("##-"),
     );
 
     let mut phase_totals: HashMap<&'static str, u64> = HashMap::new();
     let mut state = RenderState {
-        overall: &overall,
-        status: &status,
+        bar: &bar,
         phase_totals: &mut phase_totals,
     };
     process_events(&multi, &mut state, &mut rx).await;
 
-    overall.finish();
-    status.finish();
+    bar.finish();
 }
 
 struct RenderState<'a> {
-    overall: &'a ProgressBar,
-    status: &'a ProgressBar,
+    bar: &'a ProgressBar,
     phase_totals: &'a mut HashMap<&'static str, u64>,
 }
 
@@ -79,14 +81,15 @@ fn handle_phase_started(
     total: Option<u64>,
 ) {
     if let Some(t) = total {
-        state.overall.set_length(t);
+        state.bar.set_length(t);
         state.phase_totals.insert(phase, t);
     } else {
-        state.overall.set_length(0);
+        state.bar.set_length(0);
     }
-    state.overall.set_position(0);
-    state.overall.set_message(phase.to_string());
-    state.status.set_message("准备中...".to_string());
+    state.bar.set_position(0);
+    state
+        .bar
+        .set_message(truncate(&format!("{phase}: 准备中...")));
 }
 
 fn handle_phase_progress(
@@ -96,10 +99,12 @@ fn handle_phase_progress(
     message: String,
 ) {
     if let Some(&t) = state.phase_totals.get(phase) {
-        state.overall.set_length(t);
+        state.bar.set_length(t);
     }
-    state.overall.set_position(current);
-    state.status.set_message(message);
+    state.bar.set_position(current);
+    state
+        .bar
+        .set_message(truncate(&format!("{phase}: {message}")));
 }
 
 fn handle_phase_finished(
@@ -108,10 +113,12 @@ fn handle_phase_finished(
     summary: String,
 ) {
     if let Some(&t) = state.phase_totals.get(phase) {
-        state.overall.set_length(t);
-        state.overall.set_position(t);
+        state.bar.set_length(t);
+        state.bar.set_position(t);
     }
-    state.status.set_message(summary);
+    state
+        .bar
+        .set_message(truncate(&format!("{phase}: {summary}")));
 }
 
 fn handle_file_done(
@@ -121,5 +128,13 @@ fn handle_file_done(
 ) {
     if let FileStatus::Failed(msg) = status {
         multi.println(format!("! {filename}: {msg}")).ok();
+    }
+}
+
+fn truncate(s: &str) -> String {
+    if s.chars().count() <= MAX_MSG_LEN {
+        s.to_string()
+    } else {
+        s.chars().take(MAX_MSG_LEN - 1).collect::<String>() + "…"
     }
 }
