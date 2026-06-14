@@ -4,8 +4,8 @@ use std::process::Command;
 use pep440_rs::Version;
 use pip_mirror::resolver::eligibility::{SolveContext, version_matches_target};
 use pip_mirror::resolver::metadata::MetadataCache;
+use pip_mirror::resolver::plan::{PlanParams, build_dependency_plan};
 use pip_mirror::resolver::pubgrub::{bare_name, collect_pkg_extras};
-use pip_mirror::resolver::resolve::{PlanParams, build_dependency_plan};
 use pip_mirror::resolver::solve::solve_one_target;
 use pip_mirror::resolver::types::TargetEnv;
 

@@ -7,9 +7,10 @@ use crate::downloader::{
     FileInfo, PrefetchedFiles, download_pkg_files_with_prefetched,
 };
 use crate::progress::{ProgressHandle, SyncEvent};
-use crate::resolver::resolve::{
-    DependencyPlan, PlanParams, ResolveError, build_dependency_plan,
+use crate::resolver::plan::{
+    DependencyPlan, PlanParams, build_dependency_plan,
 };
+use crate::resolver::resolve::ResolveError;
 use crate::store::DownloadStore;
 
 pub mod finalize;

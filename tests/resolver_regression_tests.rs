@@ -18,7 +18,7 @@ use pip_mirror::filters::version_is_installable_for_target;
 use pip_mirror::resolver::eligibility::{ParsedDepsCacheKey, SolveContext};
 use pip_mirror::resolver::markers::parse_requires_dist;
 use pip_mirror::resolver::metadata::MetadataCache;
-use pip_mirror::resolver::resolve::{PlanParams, build_dependency_plan};
+use pip_mirror::resolver::plan::{PlanParams, build_dependency_plan};
 use pip_mirror::resolver::solve::solve_one_target;
 use pip_mirror::resolver::types::TargetEnv;
 use serde_json::{Value, json};

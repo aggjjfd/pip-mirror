@@ -4,10 +4,9 @@ use type_state_builder::TypeStateBuilder;
 
 use crate::downloader::{FileInfo, PrefetchedFiles};
 use crate::resolver::metadata::MetadataCache;
+use crate::resolver::plan::{DependencyPlan, select_top_versions};
 use crate::resolver::pubgrub::bare_name;
-use crate::resolver::resolve::{
-    DependencyPlan, ResolveError, select_top_versions,
-};
+use crate::resolver::resolve::ResolveError;
 use crate::resolver::types::TargetEnv;
 
 #[derive(TypeStateBuilder)]

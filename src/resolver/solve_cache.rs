@@ -4,14 +4,15 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use futures::{StreamExt, stream};
 use pep440_rs::Version;
-use tracing::info;
+use tracing::debug;
 use type_state_builder::TypeStateBuilder;
 
 use super::eligibility::{ParsedDepsCacheKey, version_matches_target};
 use super::error::ResolveError;
 use super::markers::ParsedDependency;
 use super::metadata::MetadataCache;
-use super::resolve::{PlanParams, SolveJob, build_solve_context};
+use super::plan::PlanParams;
+use super::resolve::{SolveJob, build_solve_context};
 use super::solve::{SolveResult, solve_one_target};
 use super::types::TargetEnv;
 
@@ -68,7 +69,7 @@ async fn do_actual_solve(
     if !version_matches_target(&ctx, &job.package, &job.version).await? {
         return Ok((job.index, None));
     }
-    info!(
+    debug!(
         "开始求解: {}@{} -> {}",
         job.package, job.version, job.target
     );
@@ -86,7 +87,7 @@ async fn do_actual_solve(
         return Ok((job.index, None));
     }
     let solved = result?;
-    info!(
+    debug!(
         "求解完成: {}@{} -> {}",
         job.package, job.version, job.target
     );
@@ -106,7 +107,7 @@ pub(crate) async fn run_solve_job(
         job.extras.as_ref(),
     );
     if let Some(cached) = caches.solve.get(&cache_key) {
-        info!(
+        debug!(
             "求解命中缓存: {}@{} -> {}",
             job.package, job.version, job.target
         );

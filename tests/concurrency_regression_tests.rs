@@ -14,7 +14,7 @@ use axum::{
 use pip_mirror::downloader::{FileInfo, download_pkg_files};
 use pip_mirror::resolver::eligibility::{SolveContext, version_matches_target};
 use pip_mirror::resolver::metadata::MetadataCache;
-use pip_mirror::resolver::resolve::{PlanParams, build_dependency_plan};
+use pip_mirror::resolver::plan::{PlanParams, build_dependency_plan};
 use pip_mirror::resolver::types::TargetEnv;
 use serde_json::{Value, json};
 use tempfile::TempDir;
