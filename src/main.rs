@@ -77,16 +77,18 @@ async fn cmd_sync_d(
     p: Option<Vec<String>>,
     nd: bool,
     dr: bool,
+    verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    cmd_sync(c.as_deref(), p, nd, dr).await
+    cmd_sync(c.as_deref(), p, nd, dr, verbose).await
 }
 async fn cmd_sync_full_d(
     c: Option<PathBuf>,
     p: Option<Vec<String>>,
     nd: bool,
     dr: bool,
+    verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    cmd_sync_full(c.as_deref(), p, nd, dr).await
+    cmd_sync_full(c.as_deref(), p, nd, dr, verbose).await
 }
 async fn cmd_serve_d(
     c: Option<PathBuf>,
@@ -96,7 +98,10 @@ async fn cmd_serve_d(
     cmd_serve(c.as_deref(), h, p).await
 }
 
-async fn try_sync(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
+async fn try_sync(
+    cmd: Command,
+    verbose: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Command::Sync {
         config,
         packages,
@@ -104,11 +109,14 @@ async fn try_sync(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
         dry_run,
     } = cmd
     {
-        return cmd_sync_d(config, packages, no_deps, dry_run).await;
+        return cmd_sync_d(config, packages, no_deps, dry_run, verbose).await;
     }
-    try_sync_full(cmd).await
+    try_sync_full(cmd, verbose).await
 }
-async fn try_sync_full(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
+async fn try_sync_full(
+    cmd: Command,
+    verbose: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Command::SyncFull {
         config,
         packages,
@@ -116,7 +124,8 @@ async fn try_sync_full(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
         dry_run,
     } = cmd
     {
-        return cmd_sync_full_d(config, packages, no_deps, dry_run).await;
+        return cmd_sync_full_d(config, packages, no_deps, dry_run, verbose)
+            .await;
     }
     try_serve(cmd).await
 }
@@ -160,114 +169,13 @@ fn try_init(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     pip_mirror::logging::init(cli.verbose);
-    try_sync(cli.command).await
+    let verbose = cli.verbose;
+    try_sync(cli.command, verbose).await
 }
 
 // ── command implementations ──
 
-fn log_incremental_archive(archive: &std::path::Path) {
-    info!(
-        "增量包: {} ({:.2} MB)",
-        archive.display(),
-        pip_mirror::sync::archive_mb(archive)
-    );
-}
-
-async fn do_incremental_pack(
-    config: &pip_mirror::config::Config,
-    downloaded: Vec<pip_mirror::downloader::FileInfo>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(&config.incremental_dir)?;
-    if let Some(a) = pip_mirror::packager::build_incremental_package_async(
-        &config.repository_dir,
-        &downloaded,
-        &config.incremental_dir,
-    )
-    .await?
-    {
-        log_incremental_archive(&a);
-    }
-    Ok(())
-}
-
-fn looks_like_url(s: &str) -> bool {
-    let lower = s.trim().to_ascii_lowercase();
-    lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.starts_with("file://")
-}
-
-fn cli_packages_to_specs(
-    packages: Option<Vec<String>>,
-) -> Result<Vec<pip_mirror::config::PackageSpec>, String> {
-    let Some(p) = packages else {
-        return Ok(Vec::new());
-    };
-    for name in &p {
-        if looks_like_url(name) {
-            let safe = pip_mirror::filters::redact_url_for_display(name);
-            return Err(format!(
-                "命令行包名 `{safe}` 看起来像 URL。如需指定 whl URL，请使用配置文件中的 `{{ url = \"{safe}\" }}` 表格式。"
-            ));
-        }
-    }
-    Ok(p.into_iter()
-        .map(pip_mirror::config::PackageSpec::Name)
-        .collect())
-}
-
-fn load_packages(
-    config: &pip_mirror::config::Config,
-    packages: Option<Vec<String>>,
-) -> Result<Vec<pip_mirror::config::PackageSpec>, Box<dyn std::error::Error>> {
-    if let Some(p) = packages {
-        Ok(cli_packages_to_specs(Some(p))?)
-    } else {
-        Ok(config.packages.clone())
-    }
-}
-
-async fn cmd_sync(
-    config_path: Option<&std::path::Path>,
-    packages: Option<Vec<String>>,
-    no_deps: bool,
-    dry_run: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let config = pip_mirror::config::Config::load(config_path)?;
-    let pkgs = load_packages(&config, packages)?;
-    info!("增量同步: {} 个包", pkgs.len());
-    std::fs::create_dir_all(&config.repository_dir)?;
-    let (_client, downloaded) =
-        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true, dry_run, None)
-            .await?;
-    if !dry_run {
-        do_incremental_pack(&config, downloaded).await?;
-    }
-    Ok(())
-}
-
-async fn cmd_sync_full(
-    config_path: Option<&std::path::Path>,
-    packages: Option<Vec<String>>,
-    no_deps: bool,
-    dry_run: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let config = pip_mirror::config::Config::load(config_path)?;
-    let pkgs = load_packages(&config, packages)?;
-    info!("全量同步: {} 个包", pkgs.len());
-    if dry_run {
-        let (_client, _downloaded) = pip_mirror::sync::do_sync(
-            &config, &pkgs, no_deps, true, true, None,
-        )
-        .await?;
-        return Ok(());
-    }
-    pip_mirror::sync::clean_repo(&config.repository_dir)?;
-    let (client, _downloaded) =
-        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true, false, None)
-            .await?;
-    pip_mirror::sync::finalize_mirror(&client, &config.repository_dir).await
-}
+use pip_mirror::sync_cmd::{cmd_sync, cmd_sync_full};
 
 async fn cmd_serve(
     config_path: Option<&std::path::Path>,
@@ -391,7 +299,7 @@ fn cmd_init(
 
 #[cfg(test)]
 mod tests {
-    use super::cli_packages_to_specs;
+    use pip_mirror::sync_cmd::cli_packages_to_specs;
 
     #[test]
     fn test_cli_packages_to_specs_redacts_url_in_error() {

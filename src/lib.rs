@@ -13,6 +13,7 @@ pub mod resolver;
 pub mod server;
 pub mod store;
 pub mod sync;
+pub mod sync_cmd;
 pub mod wheel_metadata;
 pub mod wheel_url;
 
