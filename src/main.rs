@@ -238,7 +238,7 @@ async fn cmd_sync(
     info!("增量同步: {} 个包", pkgs.len());
     std::fs::create_dir_all(&config.repository_dir)?;
     let (_client, downloaded) =
-        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true, dry_run)
+        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true, dry_run, None)
             .await?;
     if !dry_run {
         do_incremental_pack(&config, downloaded).await?;
@@ -256,14 +256,16 @@ async fn cmd_sync_full(
     let pkgs = load_packages(&config, packages)?;
     info!("全量同步: {} 个包", pkgs.len());
     if dry_run {
-        let (_client, _downloaded) =
-            pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true, true)
-                .await?;
+        let (_client, _downloaded) = pip_mirror::sync::do_sync(
+            &config, &pkgs, no_deps, true, true, None,
+        )
+        .await?;
         return Ok(());
     }
     pip_mirror::sync::clean_repo(&config.repository_dir)?;
     let (client, _downloaded) =
-        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true, false).await?;
+        pip_mirror::sync::do_sync(&config, &pkgs, no_deps, true, false, None)
+            .await?;
     pip_mirror::sync::finalize_mirror(&client, &config.repository_dir).await
 }
 

@@ -55,7 +55,7 @@ async fn test_create_sync_plan_with_url_wheel_no_deps() {
         sha256: Some("abc".to_string()),
     })];
 
-    let plan = create_sync_plan(&config, &client, &pkgs, true)
+    let plan = create_sync_plan(&config, &client, &pkgs, true, None)
         .await
         .expect("plan should succeed");
 
@@ -78,7 +78,7 @@ async fn test_create_sync_plan_url_wheel_invalid_extension() {
         sha256: None,
     })];
 
-    let err = create_sync_plan(&config, &client, &pkgs, true)
+    let err = create_sync_plan(&config, &client, &pkgs, true, None)
         .await
         .expect_err("should fail");
     assert!(
@@ -103,7 +103,7 @@ async fn test_create_sync_plan_dedupes_duplicate_url_wheels() {
         }),
     ];
 
-    let plan = create_sync_plan(&config, &client, &pkgs, true)
+    let plan = create_sync_plan(&config, &client, &pkgs, true, None)
         .await
         .expect("plan should succeed");
 
@@ -126,7 +126,7 @@ Version: 1.0
     let client = reqwest::Client::new();
     let pkgs = vec![PackageSpec::Url(PackageUrlSpec { url, sha256: None })];
 
-    let plan = create_sync_plan(&config, &client, &pkgs, false)
+    let plan = create_sync_plan(&config, &client, &pkgs, false, None)
         .await
         .expect("plan should succeed");
 
@@ -192,7 +192,7 @@ Requires-Dist: typing-extensions
 
     let config = minimal_config();
     let client = reqwest::Client::new();
-    let plan = create_sync_plan(&config, &client, &pkgs, false)
+    let plan = create_sync_plan(&config, &client, &pkgs, false, None)
         .await
         .expect("plan should succeed");
 
