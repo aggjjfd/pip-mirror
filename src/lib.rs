@@ -7,6 +7,7 @@ pub mod indexer;
 pub mod installer;
 pub mod logging;
 pub mod packager;
+pub mod progress;
 pub mod python_builds;
 pub mod resolver;
 pub mod server;
