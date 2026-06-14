@@ -15,6 +15,7 @@ pub(super) async fn run_download_pipeline(
     prefetched_files: &crate::downloader::PrefetchedFiles,
     include_source: bool,
     download_workers: usize,
+    progress: Option<crate::progress::ProgressHandle>,
 ) -> DownloadResult {
     let mut result = DownloadResult::default();
     let store = open_download_store(repo);
@@ -26,6 +27,7 @@ pub(super) async fn run_download_pipeline(
         prefetched_files,
         pending,
         download_workers,
+        &progress,
     )
     .await;
     merge_download_outcomes(&mut result, outcomes);
@@ -65,12 +67,22 @@ async fn run_download_tasks(
     prefetched_files: &crate::downloader::PrefetchedFiles,
     pending: Vec<FileInfo>,
     download_workers: usize,
+    progress: &Option<crate::progress::ProgressHandle>,
 ) -> Vec<DownloadOutcome> {
     stream::iter(pending)
         .map(|fi| {
             let store = store.clone();
+            let progress = progress.clone();
             async move {
-                try_download(client, &store, prefetched_files, &fi, repo).await
+                try_download(
+                    client,
+                    &store,
+                    prefetched_files,
+                    &fi,
+                    repo,
+                    &progress,
+                )
+                .await
             }
         })
         .buffer_unordered(download_workers)

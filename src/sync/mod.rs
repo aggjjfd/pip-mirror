@@ -145,6 +145,7 @@ async fn run_downloads(
         prefetched,
         config.include_source,
         config.download_workers,
+        None,
     )
     .await
 }

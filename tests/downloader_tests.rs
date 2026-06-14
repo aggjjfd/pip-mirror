@@ -402,6 +402,7 @@ async fn test_explicit_url_wheel_bypasses_platform_filter() {
         &downloader::PrefetchedFiles::new(),
         false,
         1,
+        None,
     )
     .await;
 
