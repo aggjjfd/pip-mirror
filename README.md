@@ -8,13 +8,13 @@
 ```mermaid
 flowchart LR
     A[外网机: 配置 packages] --> B[sync-full]
-    B --> C[mirror.tar.gz + mirror.sha256]
+    B --> C[mirror.tar.zst + mirror.sha256]
     C --> D[拷贝到内网机]
     D --> E[验签并解压到 packages/]
     E --> F[serve/systemd 启动服务]
     F --> G[内网客户端 pip/uv 使用]
     G --> H[外网机日常 sync]
-    H --> I[incremental_*.tar.gz]
+    H --> I[incremental_*.tar.zst]
     I --> J[拷贝到内网机]
     J --> K[import-incremental]
     K --> F
@@ -67,7 +67,7 @@ packages = [
 ./target/x86_64-unknown-linux-musl/release/pip-mirror sync-full -c pip-mirror.toml
 ```
 
-产物：`mirror.tar.gz` + `mirror.sha256`。用途：首次上线、灾备重建、基线重置。
+产物：`mirror.tar.zst` + `mirror.sha256`。用途：首次上线、灾备重建、基线重置。
 
 ## 2. 内网机落地全量数据并启动服务
 
@@ -75,7 +75,7 @@ packages = [
 
 ```bash
 sha256sum -c mirror.sha256
-tar -xzf mirror.tar.gz
+tar -xaf mirror.tar.zst
 ./target/x86_64-unknown-linux-musl/release/pip-mirror serve -c pip-mirror.toml
 ```
 
@@ -106,7 +106,7 @@ sudo systemctl status pip-mirror --no-pager
 ./target/x86_64-unknown-linux-musl/release/pip-mirror sync -c pip-mirror.toml
 ```
 
-有新增时会生成 `incremental/incremental_*.tar.gz`；无新增则不产包。
+有新增时会生成 `incremental/incremental_*.tar.zst`；无新增则不产包。
 
 ## 4. 内网机导入增量包
 
@@ -114,7 +114,7 @@ sudo systemctl status pip-mirror --no-pager
 
 ```bash
 ./target/x86_64-unknown-linux-musl/release/pip-mirror import-incremental \
-  ./incremental_20260507_120000.tar.gz -c pip-mirror.toml
+  ./incremental_20260507_120000.tar.zst -c pip-mirror.toml
 ```
 
 导入后会更新仓库与索引，服务无需重启即可对客户端可见。
@@ -140,8 +140,8 @@ pip install requests
 
 ## 6. 推荐运行节奏
 
-1. 首次：`sync-full` -> 传输 `mirror.tar.gz` -> 内网 `serve`。
-2. 日常：外网 `sync` -> 传输 `incremental_*.tar.gz` -> 内网 `import-incremental`。
+1. 首次：`sync-full` -> 传输 `mirror.tar.zst` -> 内网 `serve`。
+2. 日常：外网 `sync` -> 传输 `incremental_*.tar.zst` -> 内网 `import-incremental`。
 3. 大版本变更或灾备：重新走一次 `sync-full` 全量链路。
 
 ## 7. 常用命令
@@ -151,7 +151,7 @@ pip install requests
 
 ./target/x86_64-unknown-linux-musl/release/pip-mirror sync -c pip-mirror.toml
 
-./target/x86_64-unknown-linux-musl/release/pip-mirror import-incremental <incremental.tar.gz> -c pip-mirror.toml
+./target/x86_64-unknown-linux-musl/release/pip-mirror import-incremental <incremental.tar.zst> -c pip-mirror.toml
 
 ./target/x86_64-unknown-linux-musl/release/pip-mirror serve -c pip-mirror.toml
 

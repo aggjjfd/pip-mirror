@@ -15,7 +15,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// 增量同步: wheel + Python 解释器, 产 incremental_*.tar.gz
+    /// 增量同步: wheel + Python 解释器, 产 incremental_*.tar.zst
     Sync {
         #[arg(short = 'c', long)]
         config: Option<PathBuf>,
@@ -27,7 +27,7 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// 全量同步: 清空仓库 → 重拉 → 产 mirror.tar.gz + mirror.sha256
+    /// 全量同步: 清空仓库 → 重拉 → 产 mirror.tar.zst + mirror.sha256
     SyncFull {
         #[arg(short = 'c', long)]
         config: Option<PathBuf>,
@@ -305,8 +305,8 @@ fn cmd_import_incremental(
         args.archive.display(),
         config.repository_dir.display()
     );
-    let f = std::fs::File::open(args.archive)?;
-    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(f));
+    let reader = pip_mirror::packager::open_archive_reader(args.archive)?;
+    let mut tar = tar::Archive::new(reader);
     tar.unpack(&config.repository_dir)?;
     if !args.no_reindex {
         pip_mirror::indexer::generate_index(&config.repository_dir);

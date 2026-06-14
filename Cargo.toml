@@ -33,6 +33,7 @@ indicatif = "0.17"
 sha2 = "0.10"
 flate2 = "1"
 tar = "0.4"
+zstd = { version = "0.13", features = ["zstdmt"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 dashmap = "6"
 bytes = "1"

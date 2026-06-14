@@ -1,8 +1,12 @@
 use std::path::Path;
+use std::sync::Mutex;
 
 use pip_mirror::logging;
 use pip_mirror::packager::IncrementalPackage;
 use pip_mirror::server;
+
+// 避免并行测试同时修改 PIP_MIRROR_TAR_COMPRESSION 环境变量
+static TAR_COMPRESSION_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_logging_init_no_panic() {
@@ -117,9 +121,8 @@ fn test_no_changes_has_simple_files() {
     assert!(!pip_mirror::packager::no_changes(&spec));
 }
 
-#[test]
-fn test_create_incremental_package_returns_io_error() {
-    let fi = pip_mirror::downloader::FileInfo {
+fn make_test_file_info() -> pip_mirror::downloader::FileInfo {
+    pip_mirror::downloader::FileInfo {
         explicit_url: false,
         filename: "pkg-1.0.whl".to_string(),
         url: "https://x.com/pkg.whl".to_string(),
@@ -128,8 +131,17 @@ fn test_create_incremental_package_returns_io_error() {
         package_name: "pkg".to_string(),
         version: "1.0".to_string(),
         yanked: None,
-    };
-    let tmp = std::env::temp_dir().join("pip-mirror-test-packager-io");
+    }
+}
+
+#[test]
+fn test_create_incremental_package_default_compression() {
+    let _guard = TAR_COMPRESSION_LOCK.lock().unwrap();
+    // SAFETY: serialized by TAR_COMPRESSION_LOCK and only used in this test binary
+    unsafe { std::env::remove_var("PIP_MIRROR_TAR_COMPRESSION") };
+
+    let fi = make_test_file_info();
+    let tmp = tempfile::tempdir().unwrap().path().to_path_buf();
     let spec = IncrementalPackage {
         simple_files: &[fi],
         python_builds_files: &[],
@@ -141,5 +153,36 @@ fn test_create_incremental_package_returns_io_error() {
     // 正常路径下应返回 Ok(Some(_))
     let result = pip_mirror::packager::create_incremental_package(&spec);
     assert!(result.is_ok(), "create_incremental_package 应返回 Ok");
-    std::fs::remove_dir_all(&tmp).ok();
+    let path = result.unwrap().expect("应产生增量包");
+    assert!(
+        path.to_string_lossy().ends_with(".tar.zst"),
+        "增量包后缀应为 .tar.zst: {path:?}"
+    );
+}
+
+#[test]
+fn test_create_incremental_package_none_compression() {
+    let _guard = TAR_COMPRESSION_LOCK.lock().unwrap();
+    // SAFETY: serialized by TAR_COMPRESSION_LOCK and only used in this test binary
+    unsafe { std::env::set_var("PIP_MIRROR_TAR_COMPRESSION", "none") };
+
+    let fi = make_test_file_info();
+    let tmp = tempfile::tempdir().unwrap().path().to_path_buf();
+    let spec = IncrementalPackage {
+        simple_files: &[fi],
+        python_builds_files: &[],
+        python_builds_index: None,
+        repository_dir: &tmp,
+        output_dir: &tmp.join("out"),
+    };
+    std::fs::create_dir_all(&tmp).unwrap();
+    let result = pip_mirror::packager::create_incremental_package(&spec);
+    // SAFETY: serialized by TAR_COMPRESSION_LOCK and only used in this test binary
+    unsafe { std::env::remove_var("PIP_MIRROR_TAR_COMPRESSION") };
+    assert!(result.is_ok(), "create_incremental_package 应返回 Ok");
+    let path = result.unwrap().expect("应产生增量包");
+    assert!(
+        path.to_string_lossy().ends_with(".tar"),
+        "无压缩时增量包后缀应为 .tar: {path:?}"
+    );
 }

@@ -1,12 +1,12 @@
 name: E2E (Four Modes)
 
 # 端到端测试, 模拟"外网-内网"双机部署完整链路：
-#   1) 外网机 sync-full 全量同步 → 产 mirror.tar.gz
-#   2) artifact 转移: mirror.tar.gz 拷贝到内网机
+#   1) 外网机 sync-full 全量同步 → 产 mirror.tar.zst
+#   2) artifact 转移: mirror.tar.zst 拷贝到内网机
 #   3) 内网机解压并 serve → 客户端第一次下载验证
 #   4) 外网机模拟"清包留库": 删除 simple/ + python-builds/ 仅保留 .store.db
-#   5) 外网机 sync 增量同步 → 产 incremental_*.tar.gz（此时外网只剩数据库没有包）
-#   6) artifact 转移: incremental_*.tar.gz + 更新后的 .store.db 拷贝到内网机
+#   5) 外网机 sync 增量同步 → 产 incremental_*.tar.zst（此时外网只剩数据库没有包）
+#   6) artifact 转移: incremental_*.tar.zst + 更新后的 .store.db 拷贝到内网机
 #   7) 内网机 import-incremental → 重建索引
 #   8) 客户端第二次下载验证（增量包 + 旧包仍可用）
 #
@@ -19,7 +19,6 @@ name: E2E (Four Modes)
 #
 # CI 上 CPU 弱网络强：
 #   - resolve/download 并发拉到 16，metadata 并发拉到 32
-#   - PIP_MIRROR_TAR_COMPRESSION=none → mirror.tar.gz 内部不压缩
 
 on:
   push:
@@ -34,7 +33,6 @@ jobs:
     env:
       MIRROR_HOST: 127.0.0.1
       MIRROR_PORT: '18080'
-      PIP_MIRROR_TAR_COMPRESSION: none
 
     steps:
       - uses: actions/checkout@v4
@@ -110,13 +108,13 @@ jobs:
           echo "----- lan.toml -----"
           cat lan.toml
 
-      - name: '外网机 — sync-full 全量同步（产 mirror.tar.gz）'
+      - name: '外网机 — sync-full 全量同步（产 mirror.tar.zst）'
         run: |
           set -euo pipefail
           mkdir -p /tmp/wan
           cd /tmp/wan
           $PIP_MIRROR_BIN sync-full -c "$GITHUB_WORKSPACE/wan-full.toml" 2>&1 | tee sync-full.log
-          ls -lh mirror.tar.gz mirror.sha256
+          ls -lh mirror.tar.zst mirror.sha256
           sha256sum -c mirror.sha256
           # 验证外网机仓库结构
           if [ ! -d /tmp/wan/packages/simple/requests ]; then
@@ -139,27 +137,27 @@ jobs:
           echo "外网机仓库尺寸:"
           du -sh /tmp/wan/packages
 
-      - name: 'artifact 转移 — mirror.tar.gz 外网→内网'
+      - name: 'artifact 转移 — mirror.tar.zst 外网→内网'
         run: |
           set -euo pipefail
           mkdir -p /tmp/lan
-          cp /tmp/wan/mirror.tar.gz /tmp/wan/mirror.sha256 /tmp/lan/
-          echo "mirror.tar.gz 已拷贝到内网机 /tmp/lan/"
-          ls -lh /tmp/lan/mirror.tar.gz
+          cp /tmp/wan/mirror.tar.zst /tmp/wan/mirror.sha256 /tmp/lan/
+          echo "mirror.tar.zst 已拷贝到内网机 /tmp/lan/"
+          ls -lh /tmp/lan/mirror.tar.zst
 
-      - name: '内网机 — 解压 mirror.tar.gz 并验证'
+      - name: '内网机 — 解压 mirror.tar.zst 并验证'
         run: |
           set -euo pipefail
           cd /tmp/lan
-          tar -xzf mirror.tar.gz
+          tar -xaf mirror.tar.zst
           test -d /tmp/lan/packages/simple/requests
           test -f /tmp/lan/packages/simple/requests/index.html
           test -f /tmp/lan/packages/simple/requests/index.json
           test -f /tmp/lan/packages/.store.db
           test -f /tmp/lan/packages/python-builds/index.json
-          # access_log.db 不应进 mirror.tar.gz
+          # access_log.db 不应进 mirror.tar.zst
           if [ -f /tmp/lan/packages/.access_log.db ]; then
-            echo "BUG: .access_log.db should be filtered out of mirror.tar.gz"
+            echo "BUG: .access_log.db should be filtered out of mirror.tar.zst"
             exit 1
           fi
           echo "内网机 simple/ (head 10):"
@@ -241,11 +239,11 @@ jobs:
           set -euo pipefail
           cd /tmp/wan
           $PIP_MIRROR_BIN sync -c "$GITHUB_WORKSPACE/wan-inc.toml" 2>&1 | tee sync.log
-          ls -lh incremental/incremental_*.tar.gz
-          ARCHIVE=$(realpath incremental/incremental_*.tar.gz | head -1)
+          ls -lh incremental/incremental_*.tar.zst
+          ARCHIVE=$(realpath incremental/incremental_*.tar.zst | head -1)
           echo "INCREMENTAL=$ARCHIVE" >> "$GITHUB_ENV"
           # 列出增量包内容
-          tar -tzf "$ARCHIVE" | tee /tmp/inc-list.txt
+          tar -taf "$ARCHIVE" | tee /tmp/inc-list.txt
           # 增量包必须含新增的三个深依赖包
           for pkg in gradio streamlit markitdown; do
             if ! grep -qE "^simple/${pkg}/" /tmp/inc-list.txt; then
@@ -262,13 +260,13 @@ jobs:
           # 外网的 .store.db 已包含两次同步的完整记录，覆盖内网旧 db
           cp /tmp/wan/packages/.store.db /tmp/lan/packages/
           echo "artifact 转移完成:"
-          ls -lh /tmp/lan/incremental_*.tar.gz
+          ls -lh /tmp/lan/incremental_*.tar.zst
           echo "内网 .store.db 记录数: $(sqlite3 /tmp/lan/packages/.store.db 'SELECT COUNT(*) FROM downloaded_files;')"
 
       - name: '内网机 — import-incremental（现算 sha256 + 重建索引）'
         run: |
           set -euo pipefail
-          INC_LOCAL=$(ls /tmp/lan/incremental_*.tar.gz | head -1)
+          INC_LOCAL=$(ls /tmp/lan/incremental_*.tar.zst | head -1)
           $PIP_MIRROR_BIN import-incremental "$INC_LOCAL" -c "$GITHUB_WORKSPACE/lan.toml" 2>&1 | tee import.log
           # 验证新增包已入库
           for pkg in gradio streamlit markitdown; do
@@ -322,7 +320,7 @@ jobs:
       - name: '--strict happy path（同一增量包再次 import 不报错）'
         run: |
           set -euo pipefail
-          INC_LOCAL=$(ls /tmp/lan/incremental_*.tar.gz | head -1)
+          INC_LOCAL=$(ls /tmp/lan/incremental_*.tar.zst | head -1)
           $PIP_MIRROR_BIN import-incremental "$INC_LOCAL" -c "$GITHUB_WORKSPACE/lan.toml" --strict 2>&1 | tee strict.log
 
       - name: 'Stop server'

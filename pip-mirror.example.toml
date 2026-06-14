@@ -1,60 +1,223 @@
 # 要同步的包列表，支持 extras（如 markitdown[pptx,docx]），
 # 也支持直接指定 whl 下载 URL（http/https/file）
 packages = [
-    # 远程 whl URL（参与依赖解析：会读取 METADATA 并同步其 Requires-Dist）
-    # { url = "https://example.com/mypkg-1.0-py3-none-any.whl" },
-    # 本地 whl URL，可选项 sha256 = "..."
-    # { url = "file:///opt/wheels/mypkg-1.0-py3-none-any.whl" },
+    # ---------- Web UI / 应用框架 ----------
     "gradio",
-    "openai",
     "streamlit",
+    "Django",
+    "Flask",
+
+    # ---------- AI / LLM / Agent ----------
+    "openai",
+    "openai-agents",
+    "ftllm",
+    "browser-use",
+    "agentao",
+
+    # ---------- Excel 处理 ----------
     "openpyxl",
     "xlsxwriter",
     "pyxlsb",
     "xlrd",
+
+    # ---------- Office 文档 ----------
     "python-docx",
     "python-pptx",
+
+    # ---------- Windows 专用 ----------
     "pywin32",
     "pywinauto",
+    "pywpsrpc",
+
+    # ---------- GIS / 地理信息 ----------
     "shapely",
     "geopandas",
     "folium",
     "geopy",
+    "rasterio",
+
+    # ---------- 常用工具库 ----------
+    "requests",
+    "httpx",
+    "aiofiles",
     "tomli",
     "python-dotenv",
-    "requests",
     "six",
     "tqdm",
     "colorama",
+    "Jinja2",
+    "rich",
+    "orjson",
+    "lxml",
+    "python-magic",
+    "cachetools",
+    "more-itertools",
+    "pyyaml",
+
+    # ---------- 包管理 / 构建 / 开发工具 ----------
     "uv",
-    "duckdb",
+    "pytest",
+    "pytest-cov",
+    "pytest-xdist",
+    "pytest-asyncio",
+    "hypothesis",
+    "ruff",
+    "mypy",
+    "hatchling",
+    "pyinstaller",
+    "pre-commit",
+    "coverage",
+
+    # ---------- 数据科学 / ML / OLAP ----------
     "numpy",
     "pandas",
     "polars",
     "pyarrow",
+    "duckdb",
+    "scipy",
+    "scikit-learn",
+    "scikit-image",
+    "xgboost",
+    "lightgbm",
+
+    # ---------- 计算机视觉 ----------
+    "opencv-python",
+    "ultralytics",
+
+    # ---------- 数据可视化 ----------
     "matplotlib",
     "seaborn",
+
+    # ---------- GUI ----------
     "gooey",
     "pyside6",
-    "pyinstaller",
-    "pytest",
-    "ruff",
-    "mypy",
-    "hatchling",
-    "pydantic",
-    "uvicorn",
+
+    # ---------- Web 框架 / 服务器 / 实时通信 ----------
     "fastapi",
+    "uvicorn",
+    "python-socketio",
+
+    # ---------- 日志 ----------
     "loguru",
+
+    # ---------- PDF ----------
     "pypdf",
     "pymupdf",
+
+    # ---------- 图像处理 ----------
     "pillow",
+
+    # ---------- OCR / NLP / 中文处理 / 语音 ----------
     "onnxruntime",
     "rapidocr-onnxruntime",
     "pypinyin",
     "jieba",
+    "OmniSenseVoice",
+
+    # ---------- 音频 / 视频 ----------
     "soundfile",
+    "pydub",
+    "mutagen",
+    "librosa",
+    "av",
+
+    # ---------- 浏览器自动化 ----------
     "playwright",
+
+    # ---------- 网页解析 / 爬虫 ----------
+    "BeautifulSoup",
+    "Scrapy",
+
+    # ---------- 交互式 / CLI ----------
+    "ipython",
+    "typer",
+
+    # ---------- 任务调度 ----------
+    "schedule",
+    "huey",
+
+    # ---------- 认证 ----------
+    "Authlib",
+
+    # ---------- 测试与模拟数据 ----------
+    "faker",
+    "watchdog",
+
+    # ---------- 二维码 ----------
+    "qrcode[pil]",
+
+    # ---------- 向量数据库 ----------
+    "chromadb",
+
+    # ---------- 文档转换 ----------
     "markitdown[pptx,docx,xls,xlsx,pdf]",
+
+    # ---------- 通用 ORM / 查询工具 ----------
+    "sqlalchemy",
+    "sqlmodel",
+    "alembic",
+    "peewee",
+    "dataset",
+    "records",
+    "databases",
+
+    # ---------- PostgreSQL ----------
+    # psycopg：PostgreSQL 官方推荐的现代驱动（Python 3.8+）
+    # psycopg2-binary：经典 psycopg2 的预编译版本，兼容性最好
+    "psycopg[binary]",
+    "psycopg2-binary",
+    "asyncpg",
+
+    # ---------- MySQL / MariaDB ----------
+    "pymysql",
+    "mysql-connector-python",
+    "mysqlclient",
+    "aiomysql",
+    "mariadb",
+
+    # ---------- Microsoft SQL Server ----------
+    "pyodbc",
+    "pymssql",
+
+    # ---------- Oracle（11g 兼容） ----------
+    # cx_Oracle：经典 C 扩展驱动，广泛支持 Oracle 11g/11.2
+    # oracledb：新一代官方驱动，Thick 模式配合 Instant Client 可连 11.2+
+    "cx_Oracle",
+    "oracledb",
+
+    # ---------- ClickHouse ----------
+    "clickhouse-connect",
+    "clickhouse-driver",
+    "clickhouse-sqlalchemy",
+
+    # ---------- DuckDB / SQLite ----------
+    "duckdb",
+    "sqlite-utils",
+
+    # ---------- NoSQL ----------
+    "pymongo",
+    "motor",
+    "redis",
+    "elasticsearch",
+    "elasticsearch-dbapi",
+    "cassandra-driver",
+    "neo4j",
+
+    # ---------- 消息队列 ----------
+    "confluent-kafka",
+    "kafka-python",
+    "pika",
+
+    # ---------- NVIDIA CUDA / 深度学习运行时 ----------
+    "nvidia-cudnn-cu12",
+    "nvidia-cusparselt-cu12",
+    "nvidia-nvshmem-cu12",
+
+    # 远程 whl URL（参与依赖解析：会读取 METADATA 并同步其 Requires-Dist）
+    # { url = "https://example.com/mypkg-1.0-py3-none-any.whl" },
+
+    # 本地 whl URL，可选项 sha256 = "..."
+    # { url = "file:///opt/wheels/mypkg-1.0-py3-none-any.whl" },
 ]
 
 # 包仓库本地存储目录
