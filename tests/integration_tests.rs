@@ -165,7 +165,7 @@ async fn test_build_dependency_plan_e2e_smoke() {
             targets:
                 pip_mirror::resolver::types::TargetEnv::all_resolution_targets(),
         };
-        let plan = build_dependency_plan(&params, &client)
+        let plan = build_dependency_plan(&params, &client, None)
             .await
             .expect("build plan should succeed");
         assert!(

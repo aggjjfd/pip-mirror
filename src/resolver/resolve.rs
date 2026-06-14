@@ -7,6 +7,7 @@ use pep440_rs::Version;
 use tracing::info;
 
 use crate::downloader::FileInfo;
+use crate::progress::{ProgressHandle, SyncEvent};
 
 use super::eligibility::SolveContext;
 pub use super::error::ResolveError;
@@ -42,13 +43,43 @@ pub struct DependencyPlan {
 pub async fn build_dependency_plan(
     params: &PlanParams<'_>,
     client: &reqwest::Client,
+    progress: Option<ProgressHandle>,
 ) -> Result<DependencyPlan, ResolveError> {
+    if let Some(ref p) = progress {
+        p.emit(SyncEvent::PhaseStarted {
+            phase: "resolve",
+            total: Some(params.top_packages.len() as u64),
+        });
+    }
+
+    let (plan, solution_count) =
+        build_dependency_plan_inner(params, client, &progress).await?;
+
+    if let Some(ref p) = progress {
+        p.emit(SyncEvent::PhaseFinished {
+            phase: "resolve",
+            summary: format!(
+                "{} 个解，{} 个文件",
+                solution_count,
+                plan.planned_files.len()
+            ),
+        });
+    }
+
+    Ok(plan)
+}
+
+async fn build_dependency_plan_inner(
+    params: &PlanParams<'_>,
+    client: &reqwest::Client,
+    progress: &Option<ProgressHandle>,
+) -> Result<(DependencyPlan, usize), ResolveError> {
     let cache = MetadataCache::new(
         client.clone(),
         params.pypi_url.to_string(),
         params.metadata_workers,
     );
-    let top_versions = collect_top_versions(params, &cache).await?;
+    let top_versions = collect_top_versions(params, &cache, progress).await?;
     let pkg_extras = collect_pkg_extras(params.top_packages);
     let targets = if params.targets.is_empty() {
         TargetEnv::all_resolution_targets()
@@ -70,6 +101,7 @@ pub async fn build_dependency_plan(
         &top_versions,
         &pkg_extras,
         &targets,
+        progress,
     )
     .await?;
     let expanded = expand_solved_versions(
@@ -90,16 +122,20 @@ pub async fn build_dependency_plan(
         params.metadata_workers,
     )
     .await?;
+
     info!(
         "依赖规划完成: {} 个解，{} 个文件",
         all_solutions.len(),
         planned_files.len()
     );
-    Ok(DependencyPlan {
-        planned_files,
-        prefetched_files,
-        solved_versions: expanded,
-    })
+    Ok((
+        DependencyPlan {
+            planned_files,
+            prefetched_files,
+            solved_versions: expanded,
+        },
+        all_solutions.len(),
+    ))
 }
 
 pub(crate) fn select_top_versions(
@@ -120,9 +156,10 @@ pub(crate) fn select_top_versions(
 async fn collect_top_versions(
     params: &PlanParams<'_>,
     cache: &MetadataCache,
+    progress: &Option<ProgressHandle>,
 ) -> Result<HashMap<String, Vec<Version>>, ResolveError> {
-    let results = stream::iter(params.top_packages.iter())
-        .map(|package_ref| async move {
+    let results = stream::iter(params.top_packages.iter().enumerate())
+        .map(|(idx, package_ref)| async move {
             let package = bare_name(package_ref);
             let all_versions = cache.get_all_versions(&package).await?;
             let selected = select_top_versions(
@@ -131,6 +168,13 @@ async fn collect_top_versions(
                 params.allow_prerelease,
             );
             info!("顶层包 {}: 选定 {} 个版本", package, selected.len());
+            if let Some(p) = progress {
+                p.emit(SyncEvent::PhaseProgress {
+                    phase: "resolve",
+                    current: idx as u64 + 1,
+                    message: package.to_string(),
+                });
+            }
             Ok::<_, ResolveError>((package, selected))
         })
         .buffer_unordered(params.resolve_workers)
@@ -142,12 +186,14 @@ async fn collect_top_versions(
     Ok(top_versions.into_iter().collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn solve_all_targets(
     params: &PlanParams<'_>,
     caches: &SolveCaches<'_>,
     top_versions: &HashMap<String, Vec<Version>>,
     pkg_extras: &HashMap<String, HashSet<String>>,
     targets: &[TargetEnv],
+    _progress: &Option<ProgressHandle>,
 ) -> Result<Vec<super::solve::SolveResult>, ResolveError> {
     let jobs = build_solve_jobs(top_versions, pkg_extras, targets);
     let jobs = prefilter_solve_jobs(params, caches.meta, jobs).await?;

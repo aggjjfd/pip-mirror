@@ -238,7 +238,7 @@ async fn test_build_dependency_plan_fetches_metadata_concurrently() {
         ),
     };
 
-    let plan = build_dependency_plan(&params, &reqwest::Client::new())
+    let plan = build_dependency_plan(&params, &reqwest::Client::new(), None)
         .await
         .unwrap();
     assert!(!plan.planned_files.is_empty());

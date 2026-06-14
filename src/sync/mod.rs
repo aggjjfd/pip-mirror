@@ -6,6 +6,7 @@ use tracing::info;
 use crate::downloader::{
     FileInfo, PrefetchedFiles, download_pkg_files_with_prefetched,
 };
+use crate::progress::ProgressHandle;
 use crate::resolver::resolve::{
     DependencyPlan, PlanParams, ResolveError, build_dependency_plan,
 };
@@ -204,6 +205,7 @@ async fn build_plan(
     client: &reqwest::Client,
     name_pkgs: &[String],
     no_deps: bool,
+    progress: Option<ProgressHandle>,
 ) -> Result<DependencyPlan, ResolveError> {
     if no_deps {
         return plan::build_top_only_plan(config, client, name_pkgs).await;
@@ -220,7 +222,7 @@ async fn build_plan(
         metadata_workers: config.metadata_workers,
         targets: crate::resolver::types::TargetEnv::from_specs(&config.targets),
     };
-    build_dependency_plan(&params, client).await
+    build_dependency_plan(&params, client, progress).await
 }
 
 pub async fn create_sync_plan(
@@ -239,7 +241,8 @@ pub async fn create_sync_plan(
     )
     .await?;
 
-    let mut plan = build_plan(config, client, &name_pkgs, no_deps).await?;
+    let mut plan =
+        build_plan(config, client, &name_pkgs, no_deps, None).await?;
     plan.prefetched_files.extend(url_prefetched);
 
     for spec in &url_pkgs {

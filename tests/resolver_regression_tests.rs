@@ -448,7 +448,7 @@ async fn test_prefilter_skips_incompatible_versions() {
         targets: vec![linux_target()],
     };
 
-    let plan = build_dependency_plan(&params, &reqwest::Client::new())
+    let plan = build_dependency_plan(&params, &reqwest::Client::new(), None)
         .await
         .unwrap();
 
