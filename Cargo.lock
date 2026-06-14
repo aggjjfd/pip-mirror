@@ -1322,6 +1322,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clap",
+ "console",
  "dashmap",
  "flate2",
  "futures",
