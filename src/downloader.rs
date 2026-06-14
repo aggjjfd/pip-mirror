@@ -1,3 +1,4 @@
+pub mod client;
 mod local;
 mod pipeline;
 mod select;
