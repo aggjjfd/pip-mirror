@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
 use futures::{StreamExt, stream};
@@ -153,29 +154,42 @@ pub(crate) fn select_top_versions(
     }
 }
 
+fn emit_top_version_progress(
+    progress: &Option<ProgressHandle>,
+    completed: &AtomicU64,
+    package: &str,
+) {
+    if let Some(p) = progress {
+        let current = completed.fetch_add(1, Ordering::Relaxed) + 1;
+        p.emit(SyncEvent::PhaseProgress {
+            phase: "resolve",
+            current,
+            message: package.to_string(),
+        });
+    }
+}
+
 async fn collect_top_versions(
     params: &PlanParams<'_>,
     cache: &MetadataCache,
     progress: &Option<ProgressHandle>,
 ) -> Result<HashMap<String, Vec<Version>>, ResolveError> {
-    let results = stream::iter(params.top_packages.iter().enumerate())
-        .map(|(idx, package_ref)| async move {
-            let package = bare_name(package_ref);
-            let all_versions = cache.get_all_versions(&package).await?;
-            let selected = select_top_versions(
-                all_versions,
-                params.top_versions_per_package,
-                params.allow_prerelease,
-            );
-            info!("顶层包 {}: 选定 {} 个版本", package, selected.len());
-            if let Some(p) = progress {
-                p.emit(SyncEvent::PhaseProgress {
-                    phase: "resolve",
-                    current: idx as u64 + 1,
-                    message: package.to_string(),
-                });
+    let completed = Arc::new(AtomicU64::new(0));
+    let results = stream::iter(params.top_packages.iter())
+        .map(|package_ref| {
+            let completed = Arc::clone(&completed);
+            async move {
+                let package = bare_name(package_ref);
+                let all_versions = cache.get_all_versions(&package).await?;
+                let selected = select_top_versions(
+                    all_versions,
+                    params.top_versions_per_package,
+                    params.allow_prerelease,
+                );
+                info!("顶层包 {}: 选定 {} 个版本", package, selected.len());
+                emit_top_version_progress(progress, &completed, &package);
+                Ok::<_, ResolveError>((package, selected))
             }
-            Ok::<_, ResolveError>((package, selected))
         })
         .buffer_unordered(params.resolve_workers)
         .collect::<Vec<_>>()
