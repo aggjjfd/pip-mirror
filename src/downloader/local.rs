@@ -4,6 +4,7 @@ use sha2::Digest;
 use url::Url;
 
 use crate::downloader::FileInfo;
+use crate::hex_digest;
 
 async fn read_source_bytes(url: &str) -> Result<Vec<u8>, String> {
     let parsed =
@@ -19,7 +20,7 @@ async fn read_source_bytes(url: &str) -> Result<Vec<u8>, String> {
 fn verify_hash(bytes: &[u8], expected: &str) -> bool {
     let mut h = sha2::Sha256::new();
     h.update(bytes);
-    let actual = format!("{:x}", h.finalize());
+    let actual = hex_digest(h.finalize().as_slice());
     actual.eq_ignore_ascii_case(expected)
 }
 

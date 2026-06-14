@@ -22,7 +22,7 @@ pub struct AccessRecord {
     #[builder(required)]
     pub status_code: u16,
     pub user_agent: Option<String>,
-    pub bytes_sent: Option<u64>,
+    pub bytes_sent: Option<i64>,
     pub referer: Option<String>,
 }
 
@@ -90,7 +90,7 @@ impl AccessLogger {
         }
     }
 
-    pub fn get_top_ips(&self, limit: usize) -> Vec<(String, u64)> {
+    pub fn get_top_ips(&self, limit: usize) -> Vec<(String, i64)> {
         let conn = self.conn.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
             "SELECT client_ip, COUNT(*) as cnt FROM access_log
@@ -106,7 +106,7 @@ impl AccessLogger {
         rows.flatten().collect()
     }
 
-    pub fn get_top_paths(&self, limit: usize) -> Vec<(String, u64)> {
+    pub fn get_top_paths(&self, limit: usize) -> Vec<(String, i64)> {
         let conn = self.conn.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
             "SELECT path, COUNT(*) as cnt FROM access_log
@@ -154,7 +154,7 @@ impl AccessLogger {
 
 #[derive(Debug, Default)]
 pub struct Summary {
-    pub total_requests: u64,
-    pub successful_requests: u64,
-    pub unique_ips: u64,
+    pub total_requests: i64,
+    pub successful_requests: i64,
+    pub unique_ips: i64,
 }

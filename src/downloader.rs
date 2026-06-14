@@ -5,6 +5,7 @@ use crate::filters::{
     is_accepted_wheel, is_source_distribution, platform_to_target,
     sdist_fallback_allowed,
 };
+use crate::hex_digest;
 use dashmap::DashMap;
 use reqwest::Client;
 use sha2::{Digest, Sha256};
@@ -32,7 +33,7 @@ pub struct FileInfo {
     /// True when this file came from an explicit user-provided URL
     /// (rather than discovered via PyPI metadata), so platform filtering
     /// should be skipped.
-    #[builder(default = "false")]
+    #[builder(default = false)]
     pub explicit_url: bool,
 }
 
@@ -236,7 +237,7 @@ pub async fn download_file(
     if fi.sha256.as_ref().is_some_and(|expected| {
         let mut h = Sha256::new();
         h.update(&bytes);
-        let actual = format!("{:x}", h.finalize());
+        let actual = hex_digest(h.finalize().as_slice());
         !actual.eq_ignore_ascii_case(expected)
     }) {
         return (false, "hash 校验失败".into());
@@ -325,7 +326,7 @@ fn bytes_match_sha256(fi: &FileInfo, bytes: &[u8]) -> bool {
     fi.sha256.as_ref().is_none_or(|expected| {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
-        let actual = format!("{:x}", hasher.finalize());
+        let actual = hex_digest(hasher.finalize().as_slice());
         actual.eq_ignore_ascii_case(expected)
     })
 }

@@ -1,6 +1,7 @@
 use futures::StreamExt;
 
 use crate::downloader::PrefetchedFiles;
+use crate::hex_digest;
 use crate::resolver::resolve::ResolveError;
 use crate::sync::url_wheel::{MAX_REMOTE_WHEEL_BYTES, read_local_wheel_deps};
 
@@ -8,7 +9,7 @@ pub fn sha256_matches(bytes: &[u8], expected: &str) -> bool {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    let actual = format!("{:x}", hasher.finalize());
+    let actual = hex_digest(hasher.finalize().as_slice());
     actual.eq_ignore_ascii_case(expected)
 }
 

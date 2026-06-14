@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use tracing::info;
 
 use crate::downloader::FileInfo;
+use crate::hex_digest;
 
 /// 增量/全量镜像包的压缩方式。
 #[derive(Clone, Copy, Debug)]
@@ -234,8 +235,15 @@ pub fn create_incremental_package(
 pub fn write_sha256(archive: &Path) -> std::io::Result<PathBuf> {
     let mut file = std::fs::File::open(archive)?;
     let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher)?;
-    let digest = format!("{:x}", hasher.finalize());
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hex_digest(hasher.finalize().as_slice());
     // mirror.tar.zst → mirror.sha256 (not mirror.tar.sha256)
     let stem = archive.file_stem().unwrap().to_str().unwrap();
     let base = stem.rsplit_once('.').map_or(stem, |x| x.0);

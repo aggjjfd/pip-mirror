@@ -60,8 +60,8 @@ fn find_metadata<R: Read + std::io::Seek>(
     ))
 }
 
-fn read_metadata_limited(
-    file: &mut zip::read::ZipFile<'_>,
+fn read_metadata_limited<R: std::io::Read + ?Sized>(
+    file: &mut R,
 ) -> Result<String, String> {
     let mut limited = file.take(MAX_METADATA_BYTES);
     let mut content = String::new();

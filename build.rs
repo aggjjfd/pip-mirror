@@ -32,9 +32,17 @@ fn curl_download(
 }
 
 fn ureq_download(url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let resp = ureq::get(url).timeout(Duration::from_secs(120)).call()?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(120)))
+        .build()
+        .into();
     let mut body = Vec::new();
-    resp.into_reader().read_to_end(&mut body)?;
+    agent
+        .get(url)
+        .call()?
+        .body_mut()
+        .as_reader()
+        .read_to_end(&mut body)?;
     Ok(body)
 }
 
@@ -78,7 +86,7 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
 
     let cargo_toml = fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
-    let doc: toml::Value = cargo_toml.parse().expect("parse Cargo.toml");
+    let doc: toml::Table = cargo_toml.parse().expect("parse Cargo.toml");
 
     let version = doc["package"]["metadata"]["uv-embed"]["version"]
         .as_str()

@@ -14,3 +14,8 @@ pub mod store;
 pub mod sync;
 pub mod wheel_metadata;
 pub mod wheel_url;
+
+/// 将字节切片格式化为小写十六进制字符串。
+pub fn hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}

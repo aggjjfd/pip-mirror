@@ -4,6 +4,9 @@ use std::sync::Mutex;
 use dashmap::DashMap;
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
+use std::io::Read;
+
+use crate::hex_digest;
 
 pub struct DownloadStore {
     conn: Mutex<Connection>,
@@ -14,7 +17,7 @@ pub struct FileRecord<'a> {
     pub package_name: &'a str,
     pub version: &'a str,
     pub sha256: &'a str,
-    pub size: Option<u64>,
+    pub size: Option<i64>,
     pub yanked: Option<&'a str>,
 }
 
@@ -249,8 +252,14 @@ impl DownloadStore {
     pub fn hash_file(path: &Path) -> Result<String, std::io::Error> {
         let mut hasher = Sha256::new();
         let mut file = std::fs::File::open(path)?;
-        std::io::copy(&mut file, &mut hasher)?;
-        Ok(format!("{:x}", hasher.finalize()))
+        let mut buf = [0u8; 8192];
+        loop {
+            match file.read(&mut buf)? {
+                0 => break,
+                n => hasher.update(&buf[..n]),
+            }
+        }
+        Ok(hex_digest(hasher.finalize().as_slice()))
     }
 
     pub(crate) fn handle_hash_result(
@@ -283,7 +292,7 @@ impl DownloadStore {
                     .await;
             Self::handle_hash_result(hr)
         };
-        let size = tokio::fs::metadata(dest).await.ok().map(|m| m.len());
+        let size = tokio::fs::metadata(dest).await.ok().map(|m| m.len() as i64);
         let rec = FileRecord {
             filename: &fi.filename,
             package_name: &fi.package_name,

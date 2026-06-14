@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::hex_digest;
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 use tracing::info;
@@ -29,7 +30,7 @@ pub struct PythonBuildEntry {
     pub sha256: Option<String>,
     #[builder(required)]
     pub filename: String,
-    #[builder(default = "serde_json::Value::Null")]
+    #[builder(default = serde_json::Value::Null)]
     pub raw: serde_json::Value,
 }
 
@@ -222,7 +223,7 @@ fn verify_sha256(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    let actual = format!("{:x}", hasher.finalize());
+    let actual = hex_digest(hasher.finalize().as_slice());
     if actual.to_lowercase() != expected.to_lowercase() {
         return Err(format!("sha256 校验失败: {filename}").into());
     }

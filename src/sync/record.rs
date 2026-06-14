@@ -12,7 +12,7 @@ struct RecordData {
     package_name: String,
     version: String,
     sha256: String,
-    size: Option<u64>,
+    size: Option<i64>,
     yanked: Option<String>,
 }
 
@@ -29,8 +29,10 @@ pub async fn record_download_results(
             let yanked = fi.yanked.clone();
             async move {
                 let sha256 = hash_file_async(&dest, fi.sha256.clone()).await;
-                let size =
-                    tokio::fs::metadata(&dest).await.ok().map(|m| m.len());
+                let size = tokio::fs::metadata(&dest)
+                    .await
+                    .ok()
+                    .map(|m| m.len() as i64);
                 RecordData {
                     filename: fi.filename.clone(),
                     package_name: fi.package_name.clone(),
@@ -99,7 +101,10 @@ async fn try_hash_file(
         return None;
     }
     let sha256 = hash_file_async(&dest, fi.sha256.clone()).await;
-    let size = tokio::fs::metadata(&dest).await.ok().map(|m| m.len());
+    let size = tokio::fs::metadata(&dest)
+        .await
+        .ok()
+        .map(|m| m.len() as i64);
     Some(RecordData {
         filename: fi.filename,
         package_name: fi.package_name,
