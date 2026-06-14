@@ -153,3 +153,97 @@ pub async fn cmd_sync_full(
     info!("全量同步: {} 个包", pkgs.len());
     perform_sync_full(config, pkgs, no_deps, dry_run, verbose).await
 }
+
+fn emit_import_started(
+    progress: &crate::progress::ProgressHandle,
+    message: &str,
+) {
+    progress.emit(crate::progress::SyncEvent::PhaseStarted {
+        phase: "import",
+        total: None,
+    });
+    progress.emit(crate::progress::SyncEvent::PhaseProgress {
+        phase: "import",
+        current: 0,
+        message: message.to_string(),
+    });
+}
+
+fn emit_import_finished(
+    progress: &crate::progress::ProgressHandle,
+    summary: &str,
+) {
+    progress.emit(crate::progress::SyncEvent::PhaseFinished {
+        phase: "import",
+        summary: summary.to_string(),
+    });
+}
+
+async fn unpack_archive(
+    archive: &std::path::Path,
+    repo_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let archive = archive.to_path_buf();
+    let repo_dir = repo_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let reader = crate::packager::open_archive_reader(&archive)
+            .map_err(|e| format!("打开增量包失败: {e}"))?;
+        let mut tar = tar::Archive::new(reader);
+        tar.unpack(&repo_dir)
+            .map_err(|e| format!("解包失败: {e}"))?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("解包任务异常: {e}"))?
+    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })
+}
+
+async fn perform_import_incremental(
+    config: Config,
+    archive: std::path::PathBuf,
+    no_reindex: bool,
+    verbose: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    crate::progress::run_with_progress(verbose, |progress| async move {
+        emit_import_started(&progress, &format!("解包 {}", archive.display()));
+        unpack_archive(&archive, &config.repository_dir).await?;
+        emit_import_finished(&progress, "解包完成");
+
+        if !no_reindex {
+            crate::indexer::generate_index(
+                &config.repository_dir,
+                Some(progress.clone()),
+            );
+        }
+
+        emit_import_finished(&progress, "导入完成");
+        info!("导入完成");
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+    .await
+}
+
+pub async fn cmd_import_incremental(
+    archive: &Path,
+    config_path: Option<&Path>,
+    no_reindex: bool,
+    strict: bool,
+    verbose: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::load(config_path)?;
+    if strict {
+        info!("严格模式: 校验增量包完整性");
+    }
+    info!(
+        "解包 {} → {}",
+        archive.display(),
+        config.repository_dir.display()
+    );
+    perform_import_incremental(
+        config,
+        archive.to_path_buf(),
+        no_reindex,
+        verbose,
+    )
+    .await
+}

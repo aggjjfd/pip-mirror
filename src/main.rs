@@ -127,15 +127,21 @@ async fn try_sync_full(
         return cmd_sync_full_d(config, packages, no_deps, dry_run, verbose)
             .await;
     }
-    try_serve(cmd).await
+    try_serve(cmd, verbose).await
 }
-async fn try_serve(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
+async fn try_serve(
+    cmd: Command,
+    verbose: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Command::Serve { config, host, port } = cmd {
         return cmd_serve_d(config, host, port).await;
     }
-    try_import(cmd)
+    try_import(cmd, verbose).await
 }
-fn try_import(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
+async fn try_import(
+    cmd: Command,
+    verbose: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Command::ImportIncremental {
         archive,
         config,
@@ -143,22 +149,24 @@ fn try_import(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
         strict,
     } = cmd
     {
-        return cmd_import_incremental(ImportIncrementalArgs {
-            archive: &archive,
-            config_path: config.as_deref(),
+        return cmd_import_incremental(
+            &archive,
+            config.as_deref(),
             no_reindex,
             strict,
-        });
+            verbose,
+        )
+        .await;
     }
-    try_access(cmd)
+    try_access(cmd).await
 }
-fn try_access(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
+async fn try_access(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
     if let Command::AccessLog { config, limit } = cmd {
         return cmd_access_log(config.as_deref(), limit);
     }
-    try_init(cmd)
+    try_init(cmd).await
 }
-fn try_init(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
+async fn try_init(cmd: Command) -> Result<(), Box<dyn std::error::Error>> {
     if let Command::Init { output } = cmd {
         return cmd_init(&output);
     }
@@ -175,7 +183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // ── command implementations ──
 
-use pip_mirror::sync_cmd::{cmd_sync, cmd_sync_full};
+use pip_mirror::sync_cmd::{cmd_import_incremental, cmd_sync, cmd_sync_full};
 
 async fn cmd_serve(
     config_path: Option<&std::path::Path>,
@@ -192,37 +200,6 @@ async fn cmd_serve(
         config.targets,
     )
     .await?;
-    Ok(())
-}
-
-struct ImportIncrementalArgs<'a> {
-    archive: &'a std::path::Path,
-    config_path: Option<&'a std::path::Path>,
-    no_reindex: bool,
-    strict: bool,
-}
-
-#[allow(unused_variables)]
-fn cmd_import_incremental(
-    args: ImportIncrementalArgs<'_>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let config = pip_mirror::config::Config::load(args.config_path)?;
-    if args.strict {
-        info!("严格模式: 校验增量包完整性");
-    }
-    info!(
-        "解包 {} → {}",
-        args.archive.display(),
-        config.repository_dir.display()
-    );
-    let reader = pip_mirror::packager::open_archive_reader(args.archive)?;
-    let mut tar = tar::Archive::new(reader);
-    tar.unpack(&config.repository_dir)?;
-    if !args.no_reindex {
-        // TODO: Task 11 改为 async 并传入 progress 后，替换为 Some(progress.clone())
-        pip_mirror::indexer::generate_index(&config.repository_dir, None);
-    }
-    info!("导入完成");
     Ok(())
 }
 
