@@ -333,12 +333,12 @@ jobs:
           echo "===== tail server.log ====="
           tail -100 server.log 2>/dev/null || echo "(no server.log)"
 
-      - name: 'Upload mirror.tar.gz for Windows client job'
+      - name: 'Upload mirror.tar.zst for Windows client job'
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: mirror-tarball-${{ github.run_id }}
-          path: /tmp/wan/mirror.tar.gz
+          path: /tmp/wan/mirror.tar.zst
           retention-days: 1
           if-no-files-found: error
 
@@ -387,11 +387,14 @@ jobs:
           New-Item -ItemType Directory -Force -Path target/release | Out-Null
           Copy-Item target/x86_64-pc-windows-msvc/release/pip-mirror.exe target/release/pip-mirror.exe
 
-      - name: 'Download mirror.tar.gz from linux job'
+      - name: 'Download mirror.tar.zst from linux job'
         uses: actions/download-artifact@v4
         with:
           name: mirror-tarball-${{ github.run_id }}
           path: .
+
+      - name: '安装 Python 依赖（zstandard 用于解压 tar.zst）'
+        run: uv pip install --system zstandard
 
       - name: 'Mode 3 — serve + Windows 客户端验证（Python 脚本）'
         run: python scripts/e2e_windows_client_mode3.py

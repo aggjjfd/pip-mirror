@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -11,6 +12,11 @@ from pathlib import Path
 from typing import TextIO
 from urllib.error import URLError
 from urllib.request import urlopen
+
+try:
+    import zstandard as zstd
+except ImportError:
+    zstd = None
 
 SERVER_READY_TIMEOUT_SECONDS = 60
 HTTP_TIMEOUT_SECONDS = 5
@@ -28,7 +34,7 @@ STAGE_TOML = Path("stage.toml")
 SERVER_LOG = Path("server.log")
 SERVER_ERR = Path("server.err")
 SERVER_PID = Path("server.pid")
-MIRROR_TARBALL = Path("mirror.tar.gz")
+MIRROR_TARBALL = Path("mirror.tar.zst")
 ACCESS_LOG_DB = STAGE_DIR / "packages" / ".access_log.db"
 
 GREEN = "\033[32m"
@@ -80,11 +86,28 @@ def require_path(path: Path, hint: str) -> None:
 
 
 def prepare_stage() -> None:
-    log_info("extract mirror.tar.gz to C:\\stage")
+    log_info("extract mirror.tar.zst to C:\\stage")
     STAGE_DIR.mkdir(parents=True, exist_ok=True)
     require_path(MIRROR_TARBALL, "mirror tarball missing")
-    with tarfile.open(MIRROR_TARBALL, "r:gz") as archive:
-        archive.extractall(STAGE_DIR)
+
+    # Python 3.13+ tarfile 原生支持 zst；否则使用 zstandard 库
+    if sys.version_info >= (3, 13):
+        with tarfile.open(MIRROR_TARBALL, "r:zst") as archive:
+            archive.extractall(STAGE_DIR)
+    elif zstd is not None:
+        with MIRROR_TARBALL.open("rb") as f:
+            decompressor = zstd.ZstdDecompressor()
+            with decompressor.stream_reader(f) as reader:
+                with tarfile.open(fileobj=reader, mode="r|") as archive:
+                    archive.extractall(STAGE_DIR)
+    else:
+        # fallback：使用系统 tar 命令（Windows 10+ 自带 bsdtar 支持 zstd）
+        tar_bin = shutil.which("tar")
+        if tar_bin is None:
+            raise RuntimeError(
+                "无法解压 mirror.tar.zst：需要 Python 3.13+、zstandard 库或系统 tar 命令"
+            )
+        run_checked([tar_bin, "-xaf", str(MIRROR_TARBALL), "-C", str(STAGE_DIR)])
 
     required_paths = [
         STAGE_DIR / "packages" / "simple" / "requests" / "index.html",
