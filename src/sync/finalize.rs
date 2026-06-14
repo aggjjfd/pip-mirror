@@ -33,7 +33,8 @@ async fn maybe_download_python_builds(
     if !enabled {
         return Ok(None);
     }
-    let entries = download_python_builds_batch(client, repo, workers).await?;
+    let entries =
+        download_python_builds_batch(client, repo, workers, None).await?;
     info!("已下载 Python 解释器，开始生成 python-builds/index.json");
     Ok(Some(entries))
 }

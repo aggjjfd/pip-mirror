@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::hex_digest;
+use crate::progress::{FileStatus, ProgressHandle, SyncEvent};
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 use tracing::info;
@@ -41,7 +42,6 @@ pub async fn fetch_python_builds(
     info!("获取 uv metadata: {UV_METADATA_URL}");
     let resp: serde_json::Value =
         client.get(UV_METADATA_URL).send().await?.json().await?;
-
     let target_entries: Vec<_> = resp
         .as_object()
         .map(|obj| {
@@ -52,7 +52,6 @@ pub async fn fetch_python_builds(
         })
         .unwrap_or_default();
     info!("过滤后目标条目: {}", target_entries.len());
-
     let latest = group_by_platform(&target_entries);
     info!("去重后最新 build: {}", latest.len());
 
@@ -178,7 +177,6 @@ fn group_by_platform(
         };
         groups.entry(key).or_default().push(item);
     }
-
     let mut result = HashMap::new();
     for (_group_key, mut items) in groups {
         items.sort_by(|a, b| {
@@ -264,97 +262,86 @@ async fn download_one_build(
     client: &Client,
     entry: &PythonBuildEntry,
     dir: &Path,
-) {
-    let result = download_python_build(client, entry, dir).await;
-    match result {
-        Ok((_, true)) => info!("  [OK] {}", entry.filename),
-        Err(e) => tracing::warn!("  [FAIL] {}: {e}", entry.filename),
-        _ => {}
+    progress: &Option<ProgressHandle>,
+) -> bool {
+    if let Some(p) = progress {
+        p.emit(SyncEvent::PhaseProgress {
+            phase: "python-builds",
+            current: 0,
+            message: entry.filename.clone(),
+        });
     }
+    let result = download_python_build(client, entry, dir).await;
+    let status = match &result {
+        Ok((_, true)) => {
+            info!("  [OK] {}", entry.filename);
+            Some(FileStatus::Downloaded)
+        }
+        Err(e) => {
+            tracing::warn!("  [FAIL] {}: {e}", entry.filename);
+            Some(FileStatus::Failed(e.to_string()))
+        }
+        _ => None,
+    };
+    if let (Some(p), Some(s)) = (progress, status) {
+        p.emit(SyncEvent::FileDone {
+            package: "python-builds".to_string(),
+            filename: entry.filename.clone(),
+            status: s,
+        });
+    }
+    result.is_ok()
 }
 
 pub async fn download_python_builds_batch(
     client: &Client,
     repo: &Path,
     workers: usize,
+    progress: Option<ProgressHandle>,
 ) -> Result<Vec<PythonBuildEntry>, Box<dyn std::error::Error>> {
     let entries = fetch_python_builds(client).await?;
     let dir = repo.join("python-builds");
     std::fs::create_dir_all(&dir)?;
+
+    if let Some(ref p) = progress {
+        p.emit(SyncEvent::PhaseStarted {
+            phase: "python-builds",
+            total: Some(entries.len() as u64),
+        });
+    }
+
     use futures::{StreamExt, stream};
-    stream::iter(&entries)
+    let succeeded: Vec<PythonBuildEntry> = stream::iter(&entries)
         .map(|entry| {
             let dir = dir.clone();
+            let progress = progress.clone();
             async move {
-                download_one_build(client, entry, &dir).await;
+                download_one_build(client, entry, &dir, &progress)
+                    .await
+                    .then(|| entry.clone())
             }
         })
         .buffer_unordered(workers)
-        .collect::<Vec<_>>()
+        .filter_map(|x| async { x })
+        .collect()
         .await;
-    Ok(entries)
+
+    if let Some(ref p) = progress {
+        p.emit(SyncEvent::PhaseFinished {
+            phase: "python-builds",
+            summary: format!(
+                "{} / {} 个解释器",
+                succeeded.len(),
+                entries.len()
+            ),
+        });
+    }
+
+    Ok(succeeded)
 }
 
-pub fn build_python_builds_index(
-    entries: &[PythonBuildEntry],
-    repo: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut meta = serde_json::Map::new();
-    for entry in entries {
-        let mut e = entry.raw.clone();
-        e["url"] = serde_json::Value::String(format!(
-            "/python-builds/{}",
-            entry.filename
-        ));
-        // uv treats Some("") prerelease as a prerelease → skip stable builds.
-        if e.get("prerelease").and_then(|v| v.as_str()) == Some("") {
-            e["prerelease"] = serde_json::Value::Null;
-        }
-        meta.insert(entry.key.clone(), e);
-    }
-    std::fs::write(
-        repo.join("python-builds/index.json"),
-        serde_json::to_string_pretty(&meta)?,
-    )?;
-    Ok(())
-}
+pub mod index;
+pub use index::build_python_builds_index;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_python_build_entry_builder() {
-        let e = PythonBuildEntry::builder()
-            .key("k".to_string())
-            .url("u".to_string())
-            .filename("f".to_string())
-            .sha256(Some("s".to_string()))
-            .raw(serde_json::json!({"url":"u","sha256":"s"}))
-            .build();
-        assert_eq!(e.key, "k");
-        assert_eq!(e.sha256, Some("s".to_string()));
-
-        let url = "https://e/p%2B3.tar.gz";
-        let p = PythonBuildEntry::builder()
-            .key("e".to_string())
-            .url(url.to_string())
-            .filename(
-                url.rfind('/')
-                    .map(|p| url[p + 1..].replace("%2B", "+").to_string())
-                    .unwrap_or_default(),
-            )
-            .raw(serde_json::json!({"url":url}))
-            .build();
-        assert_eq!(p.filename, "p+3.tar.gz");
-
-        let x = PythonBuildEntry::builder()
-            .key("x".to_string())
-            .url("".to_string())
-            .filename("".to_string())
-            .raw(serde_json::json!({}))
-            .build();
-        assert_eq!(x.url, "");
-        assert_eq!(x.sha256, None);
-    }
-}
+mod tests;
