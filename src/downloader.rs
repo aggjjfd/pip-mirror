@@ -166,7 +166,7 @@ async fn try_prefetched_write(
     }
     let (ok, msg) = write_atomic(dest, bytes).await;
     if ok {
-        tracing::info!("复用预下载文件: {}", fi.filename);
+        tracing::debug!("复用预下载文件: {}", fi.filename);
         if let Some(p) = progress {
             p.emit(SyncEvent::FileDone {
                 package: fi.package_name.clone(),
@@ -191,7 +191,7 @@ async fn try_network_download(
 ) -> DownloadOutcome {
     let (ok, msg) = download_file(client, fi, dest).await;
     if ok {
-        tracing::info!("下载完成: {}", fi.filename);
+        tracing::debug!("下载完成: {}", fi.filename);
         if let Some(p) = progress {
             p.emit(SyncEvent::FileDone {
                 package: fi.package_name.clone(),

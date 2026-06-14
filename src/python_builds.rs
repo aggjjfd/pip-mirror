@@ -5,7 +5,7 @@ use crate::hex_digest;
 use crate::progress::{FileStatus, ProgressHandle, SyncEvent};
 use reqwest::Client;
 use sha2::{Digest, Sha256};
-use tracing::info;
+use tracing::{debug, info};
 use type_state_builder::TypeStateBuilder;
 
 const UV_METADATA_URL: &str = "https://raw.githubusercontent.com/astral-sh/uv/main/crates/uv-python/download-metadata.json";
@@ -274,7 +274,7 @@ async fn download_one_build(
     let result = download_python_build(client, entry, dir).await;
     let status = match &result {
         Ok((_, true)) => {
-            info!("  [OK] {}", entry.filename);
+            debug!("  [OK] {}", entry.filename);
             Some(FileStatus::Downloaded)
         }
         Err(e) => {
