@@ -38,9 +38,20 @@ pub(super) async fn run_download_pipeline(
 fn open_download_store(
     repo: &Path,
 ) -> Option<Arc<crate::store::DownloadStore>> {
-    crate::store::DownloadStore::open(&repo.join(".store.db"))
-        .ok()
-        .map(Arc::new)
+    let db_path = repo.join(".store.db");
+    if let Some(parent) = db_path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!("创建 .store.db 父目录失败: {e}");
+        return None;
+    }
+    match crate::store::DownloadStore::open(&db_path) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(e) => {
+            tracing::warn!("打开或创建 .store.db 失败: {e}");
+            None
+        }
+    }
 }
 
 fn collect_pending_downloads(
