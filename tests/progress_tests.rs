@@ -21,24 +21,23 @@ async fn test_progress_handle_emits_events() {
 
 #[tokio::test]
 async fn test_plain_renderer_outputs_lines() {
-    let result =
-        pip_mirror::progress::run_with_progress(false, |handle| async move {
-            handle.emit(pip_mirror::progress::SyncEvent::PhaseStarted {
-                phase: "download",
-                total: Some(2),
-            });
-            handle.emit(pip_mirror::progress::SyncEvent::PhaseProgress {
-                phase: "download",
-                current: 1,
-                message: "a.whl".to_string(),
-            });
-            handle.emit(pip_mirror::progress::SyncEvent::PhaseFinished {
-                phase: "download",
-                summary: "完成 2/2".to_string(),
-            });
-            Ok::<(), Box<dyn std::error::Error>>(())
-        })
-        .await;
+    let result = run_with_progress(false, |handle| async move {
+        handle.emit(SyncEvent::PhaseStarted {
+            phase: "download",
+            total: Some(2),
+        });
+        handle.emit(SyncEvent::PhaseProgress {
+            phase: "download",
+            current: 1,
+            message: "a.whl".to_string(),
+        });
+        handle.emit(SyncEvent::PhaseFinished {
+            phase: "download",
+            summary: "完成 2/2".to_string(),
+        });
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+    .await;
 
     assert!(result.is_ok());
 }
