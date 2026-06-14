@@ -73,6 +73,8 @@ pub struct Config {
     pub incremental_dir: PathBuf,
     #[serde(default = "default_pypi_url")]
     pub pypi_url: String,
+    #[serde(default)]
+    pub pypi_urls: Vec<String>,
     #[serde(default = "default_index_url")]
     pub index_url: String,
     #[serde(default = "default_include_source")]
@@ -231,6 +233,24 @@ fn try_default_toml() -> Result<Option<Config>, Box<dyn std::error::Error>> {
 }
 
 impl Config {
+    pub fn effective_mirrors(&self) -> Vec<String> {
+        let mut mirrors = Vec::new();
+        if !self.pypi_url.is_empty() {
+            mirrors.push(self.pypi_url.clone());
+        }
+        let extras: Vec<String> = self
+            .pypi_urls
+            .iter()
+            .filter(|u| !u.is_empty() && !mirrors.contains(u))
+            .cloned()
+            .collect();
+        mirrors.extend(extras);
+        if mirrors.is_empty() {
+            mirrors.push(default_pypi_url());
+        }
+        mirrors
+    }
+
     pub fn load(
         path: Option<&Path>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -316,6 +336,7 @@ impl Default for Config {
             repository_dir: default_repository_dir(),
             incremental_dir: default_incremental_dir(),
             pypi_url: default_pypi_url(),
+            pypi_urls: vec![],
             index_url: default_index_url(),
             include_source: default_include_source(),
             resolve_workers: default_resolve_workers(),
@@ -330,5 +351,43 @@ impl Default for Config {
             targets: default_targets(),
             uv_embed: UvEmbedConfig::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_effective_mirrors_single() {
+        let config = Config {
+            pypi_url: "https://a.com".into(),
+            pypi_urls: vec![],
+            ..Config::default()
+        };
+        assert_eq!(config.effective_mirrors(), vec!["https://a.com"]);
+    }
+
+    #[test]
+    fn test_effective_mirrors_combined_and_deduped() {
+        let config = Config {
+            pypi_url: "https://a.com".into(),
+            pypi_urls: vec!["https://a.com".into(), "https://b.com".into()],
+            ..Config::default()
+        };
+        assert_eq!(
+            config.effective_mirrors(),
+            vec!["https://a.com", "https://b.com"]
+        );
+    }
+
+    #[test]
+    fn test_effective_mirrors_default_when_empty() {
+        let config = Config {
+            pypi_url: String::new(),
+            pypi_urls: vec![],
+            ..Config::default()
+        };
+        assert_eq!(config.effective_mirrors(), vec!["https://pypi.org"]);
     }
 }

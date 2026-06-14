@@ -250,6 +250,10 @@ const INIT_TEMPLATE: &str = r#"packages = [
 repository_dir = "./packages"
 incremental_dir = "./incremental"
 pypi_url = "https://pypi.org"
+# 可选：备用镜像池，按顺序 fallback，每个镜像失败后再重试一次
+# pypi_urls = [
+#     "https://mirrors.ustc.edu.cn/pypi/simple",
+# ]
 index_url = "https://mirrors.ustc.edu.cn/pypi/simple"
 include_source = false
 resolve_workers = 8

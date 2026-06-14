@@ -30,6 +30,7 @@ fn minimal_config() -> Config {
         repository_dir: std::path::PathBuf::from("./packages"),
         incremental_dir: std::path::PathBuf::from("./incremental"),
         pypi_url: "https://pypi.org".to_string(),
+        pypi_urls: vec![],
         index_url: "https://mirrors.ustc.edu.cn/pypi/simple".to_string(),
         include_source: false,
         resolve_workers: 1,
