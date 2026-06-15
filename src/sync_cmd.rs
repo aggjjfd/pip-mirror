@@ -73,18 +73,17 @@ async fn perform_sync(
     verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     crate::progress::run_with_progress(verbose, |progress| async move {
-        let (_client, downloaded) = crate::sync::do_sync(
-            &config,
-            &pkgs,
-            no_deps,
-            true,
-            dry_run,
-            Some(progress.clone()),
-        )
-        .await?;
+        let client =
+            crate::sync::build_sync_client(config.effective_mirrors())?;
+        let outcome = crate::sync::SyncPipeline::new(&config, client, &pkgs)
+            .no_deps(no_deps)
+            .dry_run(dry_run)
+            .download_python_builds(true)
+            .run(Some(progress.clone()))
+            .await?;
 
         if !dry_run {
-            do_incremental_pack(&config, downloaded).await?;
+            do_incremental_pack(&config, outcome.downloaded).await?;
         }
         Ok::<(), Box<dyn std::error::Error>>(())
     })
@@ -105,6 +104,29 @@ pub async fn cmd_sync(
     perform_sync(config, pkgs, no_deps, dry_run, verbose).await
 }
 
+async fn run_sync_full_inner(
+    config: Config,
+    pkgs: Vec<PackageSpec>,
+    no_deps: bool,
+    dry_run: bool,
+    progress: crate::progress::ProgressHandle,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !dry_run {
+        crate::sync::clean_repo(&config.repository_dir)?;
+    }
+    let client = crate::sync::build_sync_client(config.effective_mirrors())?;
+    let _outcome = crate::sync::SyncPipeline::new(&config, client, &pkgs)
+        .no_deps(no_deps)
+        .dry_run(dry_run)
+        .download_python_builds(true)
+        .run(Some(progress))
+        .await?;
+    if !dry_run {
+        crate::sync::finalize_mirror(&config.repository_dir).await?;
+    }
+    Ok(())
+}
+
 async fn perform_sync_full(
     config: Config,
     pkgs: Vec<PackageSpec>,
@@ -113,30 +135,7 @@ async fn perform_sync_full(
     verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     crate::progress::run_with_progress(verbose, |progress| async move {
-        if dry_run {
-            let (_client, _downloaded) = crate::sync::do_sync(
-                &config,
-                &pkgs,
-                no_deps,
-                true,
-                true,
-                Some(progress.clone()),
-            )
-            .await?;
-            return Ok::<(), Box<dyn std::error::Error>>(());
-        }
-        crate::sync::clean_repo(&config.repository_dir)?;
-        let (_client, _downloaded) = crate::sync::do_sync(
-            &config,
-            &pkgs,
-            no_deps,
-            true,
-            false,
-            Some(progress.clone()),
-        )
-        .await?;
-        crate::sync::finalize_mirror(&config.repository_dir).await?;
-        Ok::<(), Box<dyn std::error::Error>>(())
+        run_sync_full_inner(config, pkgs, no_deps, dry_run, progress).await
     })
     .await
 }

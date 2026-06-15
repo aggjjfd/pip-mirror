@@ -5,7 +5,8 @@ use pip_mirror::downloader::FileInfo;
 use pip_mirror::filters::redact_url_for_display;
 use pip_mirror::http::HttpClient;
 use pip_mirror::resolver::resolve::ResolveError;
-use pip_mirror::sync::create_sync_plan;
+use pip_mirror::sync::SyncError;
+use pip_mirror::sync::phases::PlanPhase;
 use pip_mirror::sync::url_wheel::*;
 
 fn test_client() -> HttpClient {
@@ -65,7 +66,7 @@ async fn test_create_sync_plan_with_url_wheel_no_deps() {
         sha256: Some("abc".to_string()),
     })];
 
-    let plan = create_sync_plan(&config, &client, &pkgs, true, None)
+    let plan = PlanPhase::run(&config, &client, &pkgs, true, None)
         .await
         .expect("plan should succeed");
 
@@ -88,11 +89,11 @@ async fn test_create_sync_plan_url_wheel_invalid_extension() {
         sha256: None,
     })];
 
-    let err = create_sync_plan(&config, &client, &pkgs, true, None)
+    let err = PlanPhase::run(&config, &client, &pkgs, true, None)
         .await
         .expect_err("should fail");
     assert!(
-        matches!(err, ResolveError::Config(_)),
+        matches!(err, SyncError::Resolve(ResolveError::Config(_))),
         "expected Config error, got {err}"
     );
 }
@@ -113,7 +114,7 @@ async fn test_create_sync_plan_dedupes_duplicate_url_wheels() {
         }),
     ];
 
-    let plan = create_sync_plan(&config, &client, &pkgs, true, None)
+    let plan = PlanPhase::run(&config, &client, &pkgs, true, None)
         .await
         .expect("plan should succeed");
 
@@ -136,7 +137,7 @@ Version: 1.0
     let client = test_client();
     let pkgs = vec![PackageSpec::Url(PackageUrlSpec { url, sha256: None })];
 
-    let plan = create_sync_plan(&config, &client, &pkgs, false, None)
+    let plan = PlanPhase::run(&config, &client, &pkgs, false, None)
         .await
         .expect("plan should succeed");
 
@@ -202,7 +203,7 @@ Requires-Dist: typing-extensions
 
     let config = minimal_config();
     let client = test_client();
-    let plan = create_sync_plan(&config, &client, &pkgs, false, None)
+    let plan = PlanPhase::run(&config, &client, &pkgs, false, None)
         .await
         .expect("plan should succeed");
 
