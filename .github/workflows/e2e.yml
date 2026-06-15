@@ -50,7 +50,7 @@ jobs:
           set -euo pipefail
           rustup default stable
           cargo build --release
-          echo "PIP_MIRROR_BIN=$(pwd)/target/release/pip-mirror" >> "$GITHUB_ENV"
+          echo "PIP_MIRROR_BIN=$(pwd)/target/x86_64-unknown-linux-gnu/release/pip-mirror" >> "$GITHUB_ENV"
 
       - name: '生成三机配置（外网全量 / 外网增量 / 内网 serve）'
         run: |
