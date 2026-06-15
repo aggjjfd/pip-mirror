@@ -38,6 +38,32 @@ where
     arc_result
 }
 
+fn map_http_err(
+    e: HttpError,
+    package: &str,
+    version: Option<&str>,
+) -> MetadataError {
+    match e {
+        HttpError::Json { source, .. } => MetadataError::Json {
+            package: package.to_string(),
+            version: version.map(String::from),
+            msg: source,
+        },
+        HttpError::Http { status, .. } => MetadataError::Http {
+            package: package.to_string(),
+            version: version.map(String::from),
+            status,
+            source: format!("HTTP {}", status),
+        },
+        _ => MetadataError::Http {
+            package: package.to_string(),
+            version: version.map(String::from),
+            status: 0,
+            source: e.to_string(),
+        },
+    }
+}
+
 /// Shared cache for package and version metadata, with in-flight deduplication.
 pub struct MetadataCache {
     http: HttpClient,
@@ -136,46 +162,6 @@ impl MetadataCache {
         get_or_fetch(&shared, || self.fetch_version_metadata(&normalized, ver))
             .await
     }
-
-    async fn fetch_json(
-        &self,
-        url: &str,
-        package: &str,
-        version: Option<&str>,
-    ) -> Result<serde_json::Value, MetadataError> {
-        let _permit = self.sem.acquire().await.expect("semaphore not closed");
-        self.fetch_json_once(url, package, version).await
-    }
-
-    async fn fetch_json_once(
-        &self,
-        url: &str,
-        package: &str,
-        version: Option<&str>,
-    ) -> Result<serde_json::Value, MetadataError> {
-        self.http.get_json(url).await.map_err(|e| match e {
-            HttpError::Json { source, .. } => MetadataError::Json {
-                package: package.to_string(),
-                version: version.map(String::from),
-                msg: source,
-            },
-            HttpError::Http { status, .. } => MetadataError::Http {
-                package: package.to_string(),
-                version: version.map(String::from),
-                status,
-                source: format!("HTTP {}", status),
-            },
-            HttpError::Timeout
-            | HttpError::Connect
-            | HttpError::AllMirrorsFailed { .. }
-            | HttpError::Sha256Mismatch { .. } => MetadataError::Http {
-                package: package.to_string(),
-                version: version.map(String::from),
-                status: 0,
-                source: e.to_string(),
-            },
-        })
-    }
 }
 
 impl MetadataCache {
@@ -188,7 +174,12 @@ impl MetadataCache {
             self.base_url.trim_end_matches('/'),
             pkg
         );
-        let json = self.fetch_json(&url, pkg, None).await?;
+        let _permit = self.sem.acquire().await.expect("semaphore not closed");
+        let json = self
+            .http
+            .get_json(&url)
+            .await
+            .map_err(|e| map_http_err(e, pkg, None))?;
 
         let releases = json
             .get("releases")
@@ -222,7 +213,12 @@ impl MetadataCache {
             pkg,
             ver_str
         );
-        let json = self.fetch_json(&url, pkg, Some(&ver_str)).await?;
+        let _permit = self.sem.acquire().await.expect("semaphore not closed");
+        let json = self
+            .http
+            .get_json(&url)
+            .await
+            .map_err(|e| map_http_err(e, pkg, Some(&ver_str)))?;
 
         let info =
             json.get("info")
@@ -283,7 +279,12 @@ impl MetadataCache {
             pkg,
             ver_str
         );
-        let json = self.fetch_json(&url, pkg, Some(&ver_str)).await?;
+        let _permit = self.sem.acquire().await.expect("semaphore not closed");
+        let json = self
+            .http
+            .get_json(&url)
+            .await
+            .map_err(|e| map_http_err(e, pkg, Some(&ver_str)))?;
         super::build_requires::probe_build_requires_from_version_json(
             self.http.inner(),
             &json,
