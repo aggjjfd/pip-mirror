@@ -174,17 +174,17 @@ fn is_pyproject_entry(path: &str) -> bool {
 fn parse_build_requires_from_pyproject(
     pyproject_text: &str,
 ) -> Result<Vec<String>, String> {
-    let value: toml::Value = pyproject_text
+    let table: toml::Table = pyproject_text
         .parse()
         .map_err(|e| format!("解析 pyproject.toml 失败: {e}"))?;
-    let array = extract_build_system_requires(&value)?;
+    let array = extract_build_system_requires(&table)?;
     collect_string_items(&array)
 }
 
 fn extract_build_system_requires(
-    value: &toml::Value,
+    table: &toml::Table,
 ) -> Result<Vec<toml::Value>, String> {
-    let Some(build_system) = value.get("build-system") else {
+    let Some(build_system) = table.get("build-system") else {
         return Ok(Vec::new());
     };
     let build_system = build_system
@@ -305,5 +305,91 @@ async fn handle_planned_sdist(
             Ok(None)
         }
         Err(err) => Err(err.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_build_requires_with_tool_table_only() {
+        let content = "[tool.black]\nline-length = 88\n";
+        let requires = parse_build_requires_from_pyproject(content).unwrap();
+        assert!(requires.is_empty());
+    }
+
+    #[test]
+    fn test_parse_build_requires_with_comment_only() {
+        let content = "# SPDX-FileCopyrightText: 2023 Example\n";
+        let requires = parse_build_requires_from_pyproject(content).unwrap();
+        assert!(requires.is_empty());
+    }
+
+    #[test]
+    fn test_parse_build_requires_with_empty_build_system_table() {
+        let content = "[build-system]\n";
+        let err = parse_build_requires_from_pyproject(content).unwrap_err();
+        assert!(
+            err.contains("build-system.requires 缺失"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_build_requires_with_normal_build_system() {
+        let content = r#"
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+"#;
+        let requires = parse_build_requires_from_pyproject(content).unwrap();
+        assert_eq!(requires, vec!["setuptools", "wheel"]);
+    }
+
+    #[test]
+    fn test_parse_build_requires_requires_not_array() {
+        let content = r#"
+[build-system]
+requires = "setuptools"
+"#;
+        let err = parse_build_requires_from_pyproject(content).unwrap_err();
+        assert!(
+            err.contains("build-system.requires 不是数组"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_build_requires_non_string_item() {
+        let content = r#"
+[build-system]
+requires = ["setuptools", 123]
+"#;
+        let err = parse_build_requires_from_pyproject(content).unwrap_err();
+        assert!(
+            err.contains("build-system.requires 存在非字符串项"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_build_requires_invalid_toml() {
+        let content = "[build-system";
+        let err = parse_build_requires_from_pyproject(content).unwrap_err();
+        assert!(
+            err.contains("解析 pyproject.toml 失败"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_build_requires_build_system_not_table() {
+        let content = "build-system = \"setuptools\"\n";
+        let err = parse_build_requires_from_pyproject(content).unwrap_err();
+        assert!(
+            err.contains("build-system 不是表"),
+            "unexpected error: {err}"
+        );
     }
 }

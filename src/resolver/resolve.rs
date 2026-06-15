@@ -51,6 +51,13 @@ pub(crate) async fn solve_all_targets(
     let completed = Arc::new(AtomicU64::new(0));
     let total_jobs = jobs.len() as u64;
 
+    if let Some(p) = progress {
+        p.emit(SyncEvent::PhaseStarted {
+            phase: "resolve",
+            total: Some(total_jobs),
+        });
+    }
+
     let mut solved = stream::iter(jobs)
         .map(|job| {
             let progress = progress.clone();

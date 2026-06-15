@@ -249,4 +249,60 @@ mod tests {
     fn test_truncate_zero() {
         assert_eq!(truncate("hello", 0), "…");
     }
+
+    #[test]
+    fn test_resolve_total_sync_to_filtered() {
+        use indicatif::ProgressDrawTarget;
+
+        let multi =
+            MultiProgress::with_draw_target(ProgressDrawTarget::hidden());
+        let bar = ProgressBar::new(0);
+        let mut phase_totals: HashMap<&'static str, u64> = HashMap::new();
+        let mut state = RenderState {
+            bar: &bar,
+            phase_totals: &mut phase_totals,
+        };
+
+        process_event(
+            &multi,
+            &mut state,
+            20,
+            SyncEvent::PhaseStarted {
+                phase: "resolve",
+                total: Some(399),
+            },
+        );
+        process_event(
+            &multi,
+            &mut state,
+            20,
+            SyncEvent::PhaseProgress {
+                phase: "resolve",
+                current: 310,
+                message: "依赖求解中".into(),
+            },
+        );
+        process_event(
+            &multi,
+            &mut state,
+            20,
+            SyncEvent::PhaseStarted {
+                phase: "resolve",
+                total: Some(310),
+            },
+        );
+        process_event(
+            &multi,
+            &mut state,
+            20,
+            SyncEvent::PhaseProgress {
+                phase: "resolve",
+                current: 310,
+                message: "依赖求解完成".into(),
+            },
+        );
+
+        assert_eq!(bar.position(), 310);
+        assert_eq!(bar.length(), Some(310));
+    }
 }
