@@ -13,6 +13,7 @@ use url::Url;
 use crate::http::error::HttpError;
 use crate::http::middleware::{MirrorRetryError, MirrorRetryMiddleware};
 use crate::http::policy::RetryPolicy;
+use crate::redact::redact_url_for_display;
 
 /// 构建 HTTP 客户端时发生的错误。
 #[derive(Debug)]
@@ -38,7 +39,7 @@ impl std::error::Error for HttpClientError {}
 
 /// 构建 [`HttpClient`] 的配置器。
 pub struct HttpClientBuilder {
-    mirrors: Vec<String>,
+    mirrors: Vec<Url>,
     timeout_secs: u64,
     policy: RetryPolicy,
 }
@@ -58,10 +59,7 @@ impl HttpClientBuilder {
         mut self,
         mirrors: Vec<String>,
     ) -> Result<Self, HttpClientError> {
-        for url in &mirrors {
-            validate_mirror_url(url)?;
-        }
-        self.mirrors = mirrors;
+        self.mirrors = parse_mirror_urls(&mirrors)?;
         Ok(self)
     }
 
@@ -79,15 +77,16 @@ impl HttpClientBuilder {
 
     /// 构建 [`HttpClient`]。
     pub fn build(self) -> Result<HttpClient, HttpClientError> {
-        let origins = parse_mirror_origins(&self.mirrors)?;
-
         let inner = reqwest::Client::builder()
             .timeout(Duration::from_secs(self.timeout_secs))
             .build()
             .map_err(HttpClientError::Build)?;
 
         let client = MiddlewareClientBuilder::new(inner)
-            .with(MirrorRetryMiddleware::new(origins, self.policy.clone()))
+            .with(MirrorRetryMiddleware::new(
+                self.mirrors,
+                self.policy.clone(),
+            ))
             .build();
 
         Ok(HttpClient {
@@ -103,20 +102,18 @@ impl Default for HttpClientBuilder {
     }
 }
 
-fn validate_mirror_url(url: &str) -> Result<(), HttpClientError> {
-    Url::parse(url)
-        .map(|_| ())
-        .map_err(|e| HttpClientError::InvalidMirror(format!("{url}: {e}")))
-}
-
-fn parse_mirror_origins(
-    mirrors: &[String],
-) -> Result<Vec<Url>, HttpClientError> {
+fn parse_mirror_urls(mirrors: &[String]) -> Result<Vec<Url>, HttpClientError> {
     mirrors
         .iter()
-        .map(|s| Url::parse(s))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| HttpClientError::InvalidMirror(e.to_string()))
+        .map(|s| {
+            Url::parse(s).map_err(|e| {
+                HttpClientError::InvalidMirror(format!(
+                    "{}: {e}",
+                    redact_url_for_display(s)
+                ))
+            })
+        })
+        .collect()
 }
 
 /// 统一 HTTP 客户端，内置镜像重试中间件。
@@ -132,9 +129,20 @@ impl HttpClient {
         HttpClientBuilder::new()
     }
 
+    /// 从已构造好的 ClientWithMiddleware 与策略创建 HttpClient。
+    /// 用于测试注入 mock middleware，也允许调用方完全自定义 transport。
+    pub fn from_client_with_policy(
+        client: ClientWithMiddleware,
+        policy: RetryPolicy,
+    ) -> Self {
+        Self { client, policy }
+    }
+
     /// 发送 GET 请求并解析为 JSON。
     ///
-    /// 若响应体 JSON 解析失败且策略允许，会按 `RetryPolicy` 进行重试。
+    /// 底层 `MirrorRetryMiddleware` 会先处理镜像切换与 HTTP 层重试；
+    /// 当响应体 JSON 解析失败且策略允许时，本方法会在应用层按 `RetryPolicy` 再次重试，
+    /// 每次重试都会重新进入中间件链路。调用方应将 `RetryPolicy` 视为整体上限而非精确次数。
     pub async fn get_json(&self, url: &str) -> Result<Value, HttpError> {
         for attempt in 0..self.policy.max_attempts {
             match self.try_get_json_once(url, attempt).await? {
@@ -143,9 +151,8 @@ impl HttpClient {
             }
         }
 
-        // max_attempts 为 0 时循环体不会执行，安全兜底。
-        Err(HttpError::Http {
-            status: 0,
+        // max_attempts 为 0 时循环体不会执行；循环正常耗尽也走到这里。
+        Err(HttpError::RetryExhausted {
             url: url.to_string(),
         })
     }
@@ -254,6 +261,10 @@ fn map_middleware_error(url: &str, err: MiddlewareError) -> HttpError {
 }
 
 fn map_mirror_retry_error(url: &str, err: &anyhow::Error) -> HttpError {
+    if let Some(http_err) = err.downcast_ref::<HttpError>() {
+        return http_err.clone();
+    }
+
     if let Some(MirrorRetryError::AllMirrorsFailed { urls, last_status }) =
         err.downcast_ref()
     {
