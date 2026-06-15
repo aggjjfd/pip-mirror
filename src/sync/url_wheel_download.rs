@@ -199,7 +199,7 @@ pub async fn collect_url_wheel_deps(
 }
 
 pub async fn maybe_collect_url_wheel_deps(
-    _client: &HttpClient,
+    client: &HttpClient,
     url_pkgs: &[crate::config::PackageUrlSpec],
     no_deps: bool,
     name_pkgs: &mut Vec<String>,
@@ -207,15 +207,8 @@ pub async fn maybe_collect_url_wheel_deps(
     if no_deps || url_pkgs.is_empty() {
         return Ok(PrefetchedFiles::new());
     }
-    let client =
-        HttpClient::builder()
-            .with_timeout(300)
-            .build()
-            .map_err(|e| {
-                ResolveError::Config(format!("创建显式 URL 客户端失败: {e}"))
-            })?;
     let (url_dep_names, prefetched) =
-        collect_url_wheel_deps(&client, url_pkgs).await?;
+        collect_url_wheel_deps(client, url_pkgs).await?;
     merge_unique_dep_names(name_pkgs, url_dep_names);
     Ok(prefetched)
 }
