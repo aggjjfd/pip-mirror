@@ -1,3 +1,4 @@
+use pip_mirror::config::validator::{ConfigError, ConfigValidator};
 use pip_mirror::config::{Config, PackageSpec, PackageUrlSpec};
 
 #[test]
@@ -197,4 +198,110 @@ fn test_config_validate_non_whl_url_does_not_leak_credentials() {
         "error leaked credentials: {msg}"
     );
     assert!(!msg.contains("token=secret"), "error leaked token: {msg}");
+}
+
+#[test]
+fn test_config_validator_accepts_valid_package_urls() {
+    let urls = [
+        "https://example.com/foo-1.0-py3-none-any.whl",
+        "http://example.com/foo-1.0-py3-none-any.whl",
+        "file:///opt/wheels/bar-1.0-py3-none-any.whl",
+    ];
+    for url in urls {
+        let spec = PackageUrlSpec {
+            url: url.to_string(),
+            sha256: None,
+        };
+        assert!(
+            ConfigValidator::validate_package_url(&spec).is_ok(),
+            "should accept {url}"
+        );
+    }
+}
+
+#[test]
+fn test_config_validator_rejects_ftp_package_url() {
+    let spec = PackageUrlSpec {
+        url: "ftp://example.com/foo.whl".to_string(),
+        sha256: None,
+    };
+    let err =
+        ConfigValidator::validate_package_url(&spec).expect_err("should fail");
+    assert!(
+        matches!(err, ConfigError::InvalidPackageUrl { .. }),
+        "unexpected error variant: {err}"
+    );
+}
+
+#[test]
+fn test_config_validator_rejects_non_whl_url() {
+    let spec = PackageUrlSpec {
+        url: "https://example.com/foo.tar.gz".to_string(),
+        sha256: None,
+    };
+    let err =
+        ConfigValidator::validate_package_url(&spec).expect_err("should fail");
+    assert!(
+        matches!(err, ConfigError::InvalidPackageUrl { .. }),
+        "unexpected error variant: {err}"
+    );
+}
+
+#[test]
+fn test_config_validator_redacts_credentials_in_package_url_error() {
+    let spec = PackageUrlSpec {
+        url: "ftp://user:pass@example.com/foo.whl?token=secret".to_string(),
+        sha256: None,
+    };
+    let msg = ConfigValidator::validate_package_url(&spec)
+        .expect_err("should fail")
+        .to_string();
+    assert!(
+        !msg.contains("user:pass"),
+        "error leaked credentials: {msg}"
+    );
+    assert!(!msg.contains("token=secret"), "error leaked token: {msg}");
+}
+
+#[test]
+fn test_config_validator_validate_mirrors() {
+    assert!(
+        ConfigValidator::validate_mirrors(&[
+            "https://pypi.org".to_string(),
+            "http://mirror.example.com".to_string(),
+        ])
+        .is_ok()
+    );
+
+    let err = ConfigValidator::validate_mirrors(&[
+        "ftp://mirror.example.com".to_string()
+    ])
+    .expect_err("should reject ftp");
+    assert!(
+        matches!(err, ConfigError::InvalidMirror { .. }),
+        "unexpected error variant: {err}"
+    );
+
+    let err =
+        ConfigValidator::validate_mirrors(&["file:///opt/mirror".to_string()])
+            .expect_err("should reject file");
+    assert!(
+        matches!(err, ConfigError::InvalidMirror { .. }),
+        "unexpected error variant: {err}"
+    );
+}
+
+#[test]
+fn test_config_validator_looks_like_url() {
+    assert!(ConfigValidator::looks_like_url(
+        "https://example.com/foo.whl"
+    ));
+    assert!(ConfigValidator::looks_like_url(
+        "HTTP://example.com/foo.whl"
+    ));
+    assert!(ConfigValidator::looks_like_url(
+        "file:///opt/wheels/foo.whl"
+    ));
+    assert!(!ConfigValidator::looks_like_url("requests"));
+    assert!(!ConfigValidator::looks_like_url(""));
 }

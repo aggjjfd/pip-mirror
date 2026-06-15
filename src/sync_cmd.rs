@@ -2,6 +2,7 @@ use std::path::Path;
 
 use tracing::info;
 
+use crate::config::validator::{ConfigError, ConfigValidator};
 use crate::config::{Config, PackageSpec};
 use crate::downloader::FileInfo;
 
@@ -30,13 +31,6 @@ async fn do_incremental_pack(
     Ok(())
 }
 
-fn looks_like_url(s: &str) -> bool {
-    let lower = s.trim().to_ascii_lowercase();
-    lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.starts_with("file://")
-}
-
 pub fn cli_packages_to_specs(
     packages: Option<Vec<String>>,
 ) -> Result<Vec<PackageSpec>, String> {
@@ -44,11 +38,10 @@ pub fn cli_packages_to_specs(
         return Ok(Vec::new());
     };
     for name in &p {
-        if looks_like_url(name) {
-            let safe = crate::filters::redact_url_for_display(name);
-            return Err(format!(
-                "命令行包名 `{safe}` 看起来像 URL。如需指定 whl URL，请使用配置文件中的 `{{ url = \"{safe}\" }}` 表格式。"
-            ));
+        if ConfigValidator::looks_like_url(name) {
+            return Err(
+                ConfigError::UrlMistakenForName(name.to_string()).to_string()
+            );
         }
     }
     Ok(p.into_iter().map(PackageSpec::Name).collect())

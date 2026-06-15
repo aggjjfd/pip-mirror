@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use url::Url;
+
+pub mod validator;
 
 const DEFAULT_INCLUDE_SOURCE: bool = false;
 const DEFAULT_RESOLVE_WORKERS: usize = 8;
@@ -269,83 +270,8 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        self.validate_no_url_names()?;
-        self.validate_pypi_urls()?;
-        self.validate_url_specs()
+        validator::ConfigValidator::validate(self).map_err(|e| e.to_string())
     }
-
-    fn validate_no_url_names(&self) -> Result<(), String> {
-        let looks_like_url = |s: &str| {
-            let lower = s.trim().to_ascii_lowercase();
-            lower.starts_with("http://")
-                || lower.starts_with("https://")
-                || lower.starts_with("file://")
-        };
-        if let Some(name) = self
-            .packages
-            .iter()
-            .filter_map(|s| s.as_name())
-            .find(|s| looks_like_url(s))
-        {
-            let safe = crate::filters::redact_url_for_display(name);
-            return Err(format!(
-                "包名 `{safe}` 看起来像 URL。如需指定 whl URL，请使用 `{{ url = \"{safe}\" }}` 表格式。"
-            ));
-        }
-        Ok(())
-    }
-
-    fn validate_url_specs(&self) -> Result<(), String> {
-        if let Some(err) = self
-            .packages
-            .iter()
-            .filter_map(|spec| match spec {
-                PackageSpec::Url(u) => validate_url_spec(u),
-                _ => None,
-            })
-            .next()
-        {
-            return Err(err);
-        }
-        Ok(())
-    }
-
-    fn validate_pypi_urls(&self) -> Result<(), String> {
-        for url in &self.effective_mirrors() {
-            validate_mirror_url(url)?;
-        }
-        Ok(())
-    }
-}
-
-fn validate_mirror_url(url: &str) -> Result<(), String> {
-    let safe = crate::filters::redact_url_for_display(url);
-    let parsed = Url::parse(url)
-        .map_err(|e| format!("镜像地址解析失败 ({safe}): {e}"))?;
-    let scheme = parsed.scheme().to_ascii_lowercase();
-    if scheme != "http" && scheme != "https" {
-        return Err(format!("镜像地址只支持 http/https 协议: {safe}"));
-    }
-    Ok(())
-}
-
-fn validate_url_spec(u: &PackageUrlSpec) -> Option<String> {
-    let lower = u.url.to_ascii_lowercase();
-    let safe = crate::filters::redact_url_for_display(&u.url);
-    if !lower.starts_with("http://")
-        && !lower.starts_with("https://")
-        && !lower.starts_with("file://")
-    {
-        return Some(format!("URL whl 只支持 http/https/file 协议: {safe}"));
-    }
-    let parsed = match Url::parse(&u.url) {
-        Ok(p) => p,
-        Err(_) => return Some(format!("无法解析 URL: {safe}")),
-    };
-    if !parsed.path().to_ascii_lowercase().ends_with(".whl") {
-        return Some(format!("URL whl 必须以 .whl 结尾: {safe}"));
-    }
-    None
 }
 
 impl Default for Config {
