@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures::{StreamExt, stream};
-use reqwest_middleware::ClientWithMiddleware;
 
 use crate::downloader::{
     DownloadResult, Downloadable, DownloadableItem, PrefetchedFiles,
@@ -60,7 +59,7 @@ impl BatchDownloader {
             &mut result,
         );
         let outcomes = run_download_tasks(
-            self.client.inner(),
+            &self.client,
             &self.repo,
             &store,
             prefetched,
@@ -110,7 +109,7 @@ fn collect_pending_downloads(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_download_tasks(
-    client: &ClientWithMiddleware,
+    client: &HttpClient,
     repo: &Path,
     store: &Option<Arc<DownloadStore>>,
     prefetched_files: &PrefetchedFiles,
@@ -174,7 +173,7 @@ fn sort_download_result(result: &mut DownloadResult) {
 
 #[allow(clippy::too_many_arguments)]
 async fn try_download(
-    client: &ClientWithMiddleware,
+    client: &HttpClient,
     store: &Option<Arc<DownloadStore>>,
     prefetched_files: &PrefetchedFiles,
     fi: &DownloadableItem,
@@ -234,7 +233,7 @@ async fn try_prefetched_write(
 }
 
 async fn try_network_download(
-    client: &ClientWithMiddleware,
+    client: &HttpClient,
     fi: &DownloadableItem,
     dest: &Path,
     store: &Option<Arc<DownloadStore>>,

@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use bytes::Bytes;
+use futures::{Stream, StreamExt};
 use reqwest::Response;
 use reqwest_middleware::{
     ClientBuilder as MiddlewareClientBuilder, ClientWithMiddleware,
@@ -130,13 +132,6 @@ impl HttpClient {
         HttpClientBuilder::new()
     }
 
-    /// 访问底层带中间件的 reqwest 客户端。
-    ///
-    /// 用于需要直接操作响应流或保持现有接口（如 [`MetadataCache`]）的场景。
-    pub(crate) fn inner(&self) -> &ClientWithMiddleware {
-        &self.client
-    }
-
     /// 发送 GET 请求并解析为 JSON。
     ///
     /// 若响应体 JSON 解析失败且策略允许，会按 `RetryPolicy` 进行重试。
@@ -194,6 +189,24 @@ impl HttpClient {
         let resp = self.send_get(url).await?;
         check_success_status(url, resp.status())?;
         resp.text().await.map_err(|e| map_reqwest_error(url, e))
+    }
+
+    /// 发送 GET 请求并返回响应流，同时提供声明的 Content-Length（如有）。
+    pub async fn get_stream(
+        &self,
+        url: &str,
+    ) -> Result<
+        (Option<u64>, impl Stream<Item = Result<Bytes, HttpError>>),
+        HttpError,
+    > {
+        let resp = self.send_get(url).await?;
+        check_success_status(url, resp.status())?;
+        let content_length = resp.content_length();
+        let url = url.to_string();
+        let stream = resp
+            .bytes_stream()
+            .map(move |r| r.map_err(|e| map_reqwest_error(&url, e)));
+        Ok((content_length, stream))
     }
 
     async fn send_get(&self, url: &str) -> Result<Response, HttpError> {

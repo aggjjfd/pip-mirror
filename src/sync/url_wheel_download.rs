@@ -14,20 +14,6 @@ pub fn sha256_matches(bytes: &[u8], expected: &str) -> bool {
     actual.eq_ignore_ascii_case(expected)
 }
 
-fn check_response_status(
-    url: &str,
-    status: reqwest::StatusCode,
-) -> Result<(), ResolveError> {
-    if !status.is_success() {
-        return Err(ResolveError::Config(format!(
-            "下载 {} 失败: HTTP {}",
-            crate::filters::redact_url_for_display(url),
-            status
-        )));
-    }
-    Ok(())
-}
-
 fn check_content_length(url: &str, len: u64) -> Result<(), ResolveError> {
     if len > MAX_REMOTE_WHEEL_BYTES {
         return Err(ResolveError::Config(format!(
@@ -56,13 +42,12 @@ fn check_sha256(
 fn append_chunk(
     bytes: &mut Vec<u8>,
     url: &str,
-    chunk: Result<bytes::Bytes, reqwest::Error>,
+    chunk: Result<bytes::Bytes, HttpError>,
 ) -> Result<(), ResolveError> {
     let chunk = chunk.map_err(|e| {
         ResolveError::Config(format!(
-            "读取 {} 响应失败: {}",
-            crate::filters::redact_url_for_display(url),
-            e.without_url()
+            "读取 {} 响应失败: {e}",
+            crate::filters::redact_url_for_display(url)
         ))
     })?;
     if bytes.len() as u64 + chunk.len() as u64 > MAX_REMOTE_WHEEL_BYTES {
@@ -76,30 +61,18 @@ fn append_chunk(
     Ok(())
 }
 
-async fn fetch_response(
+async fn read_stream_to_vec(
     client: &HttpClient,
     url: &str,
-) -> Result<reqwest::Response, ResolveError> {
-    let resp = client.inner().get(url).send().await.map_err(|e| {
-        ResolveError::Config(format!(
-            "下载 {} 失败: {}",
-            crate::filters::redact_url_for_display(url),
-            e.without_url()
-        ))
-    })?;
-    check_response_status(url, resp.status())?;
-    Ok(resp)
-}
-
-async fn read_stream_to_vec(
-    resp: reqwest::Response,
-    url: &str,
 ) -> Result<Vec<u8>, ResolveError> {
-    if let Some(len) = resp.content_length() {
+    let (content_length, mut stream) = client
+        .get_stream(url)
+        .await
+        .map_err(|e| ResolveError::Config(e.to_string()))?;
+    if let Some(len) = content_length {
         check_content_length(url, len)?;
     }
     let mut bytes = Vec::new();
-    let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         append_chunk(&mut bytes, url, chunk)?;
     }
@@ -111,8 +84,7 @@ pub async fn download_wheel_bytes(
     url: &str,
     expected_sha256: Option<&str>,
 ) -> Result<Vec<u8>, ResolveError> {
-    let resp = fetch_response(client, url).await?;
-    let bytes = read_stream_to_vec(resp, url).await?;
+    let bytes = read_stream_to_vec(client, url).await?;
     check_sha256(url, &bytes, expected_sha256)
         .map_err(|e| ResolveError::Config(e.to_string()))?;
     Ok(bytes)

@@ -1,17 +1,10 @@
-use std::time::Duration;
-
+use pip_mirror::http::HttpClient;
 use pip_mirror::resolver::build_requires::{
     download_sdist, probe_build_requires_from_version_json,
 };
 
-fn test_client() -> reqwest_middleware::ClientWithMiddleware {
-    reqwest_middleware::ClientBuilder::new(
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap(),
-    )
-    .build()
+fn test_client() -> HttpClient {
+    HttpClient::builder().with_timeout(5).build().unwrap()
 }
 
 #[tokio::test]

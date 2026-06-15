@@ -5,8 +5,8 @@ mod select;
 
 use crate::filters::{is_accepted_wheel, platform_to_target};
 use crate::hex_digest;
+use crate::http::HttpClient;
 use dashmap::DashMap;
-use reqwest_middleware::ClientWithMiddleware;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -94,7 +94,7 @@ async fn write_atomic(dest_path: &Path, bytes: &[u8]) -> (bool, String) {
 
 /// Download a single file (HTTP/HTTPS) or copy a local file (file://).
 pub async fn download_file(
-    client: &ClientWithMiddleware,
+    client: &HttpClient,
     fi: &dyn Downloadable,
     dest: &Path,
 ) -> (bool, String) {
@@ -105,14 +105,9 @@ pub async fn download_file(
     {
         return local::copy_local_wheel(url, fi, dest).await;
     }
-    let Ok(resp) = client.get(url).send().await else {
-        return (false, "网络错误".into());
-    };
-    if !resp.status().is_success() {
-        return (false, format!("HTTP {}", resp.status()));
-    }
-    let Ok(bytes) = resp.bytes().await else {
-        return (false, "读取失败".into());
+    let bytes = match client.get_bytes(url).await {
+        Ok(b) => b,
+        Err(e) => return (false, e.to_string()),
     };
     if fi.sha256().is_some_and(|expected| {
         let mut h = Sha256::new();

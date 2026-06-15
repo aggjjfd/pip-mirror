@@ -5,8 +5,8 @@ use pip_mirror::downloader::{
 };
 use pip_mirror::http::HttpClient;
 
-fn test_client() -> reqwest_middleware::ClientWithMiddleware {
-    reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build()
+fn test_client() -> HttpClient {
+    HttpClient::builder().build().unwrap()
 }
 
 #[test]

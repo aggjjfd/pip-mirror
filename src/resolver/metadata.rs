@@ -286,8 +286,7 @@ impl MetadataCache {
             .await
             .map_err(|e| map_http_err(e, pkg, Some(&ver_str)))?;
         super::build_requires::probe_build_requires_from_version_json(
-            self.http.inner(),
-            &json,
+            &self.http, &json,
         )
         .await
         .map_err(|detail| MetadataError::SdistBuildRequires {

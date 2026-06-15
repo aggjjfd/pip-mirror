@@ -4,9 +4,8 @@ use std::io::{Cursor, Read};
 use futures::{StreamExt, stream};
 use pep440_rs::Version;
 
-use reqwest_middleware::ClientWithMiddleware;
-
 use crate::downloader::DownloadableItem;
+use crate::http::HttpClient;
 
 use super::error::ResolveError;
 use super::metadata::MetadataCache;
@@ -34,7 +33,7 @@ struct SdistCandidate {
 }
 
 pub async fn probe_build_requires_from_version_json(
-    client: &ClientWithMiddleware,
+    client: &HttpClient,
     version_json: &serde_json::Value,
 ) -> Result<BuildRequiresProbe, String> {
     let Some(candidate) = find_sdist_candidate(version_json) else {
@@ -87,22 +86,13 @@ fn find_sdist_candidate(
 }
 
 pub async fn download_sdist(
-    client: &ClientWithMiddleware,
+    client: &HttpClient,
     url: &str,
 ) -> Result<Vec<u8>, String> {
-    let resp = client
-        .get(url)
-        .send()
+    client
+        .get_bytes(url)
         .await
-        .map_err(|e| format!("下载源码包失败: {}", e.without_url()))?;
-    if !resp.status().is_success() {
-        return Err(format!("下载源码包失败: HTTP {}", resp.status()));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("读取源码包失败: {}", e.without_url()))?;
-    Ok(bytes.to_vec())
+        .map_err(|e| format!("下载源码包失败: {e}"))
 }
 
 fn extract_pyproject_from_sdist(
