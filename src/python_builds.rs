@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::hex_digest;
+use crate::http::HttpClient;
 use crate::progress::{FileStatus, ProgressHandle, SyncEvent};
-use reqwest::Client;
 use sha2::{Digest, Sha256};
 use tracing::{debug, info};
 use type_state_builder::TypeStateBuilder;
@@ -37,11 +37,10 @@ pub struct PythonBuildEntry {
 
 /// Fetch uv's Python build metadata, filter to target platforms, keep latest build per group.
 pub async fn fetch_python_builds(
-    client: &Client,
+    client: &HttpClient,
 ) -> Result<Vec<PythonBuildEntry>, Box<dyn std::error::Error>> {
     info!("获取 uv metadata: {UV_METADATA_URL}");
-    let resp: serde_json::Value =
-        client.get(UV_METADATA_URL).send().await?.json().await?;
+    let resp: serde_json::Value = client.get_json(UV_METADATA_URL).await?;
     let target_entries: Vec<_> = resp
         .as_object()
         .map(|obj| {
@@ -229,18 +228,18 @@ fn verify_sha256(
 }
 
 async fn fetch_and_verify(
-    client: &Client,
+    client: &HttpClient,
     entry: &PythonBuildEntry,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let bytes = client.get(&entry.url).send().await?.bytes().await?;
+    let bytes = client.get_bytes(&entry.url).await?;
     if let Some(e) = &entry.sha256 {
         verify_sha256(&bytes, e, &entry.filename)?;
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 pub async fn download_python_build(
-    client: &Client,
+    client: &HttpClient,
     entry: &PythonBuildEntry,
     dest_dir: &Path,
 ) -> Result<(PathBuf, bool), Box<dyn std::error::Error>> {
@@ -259,7 +258,7 @@ pub async fn download_python_build(
 }
 
 async fn download_one_build(
-    client: &Client,
+    client: &HttpClient,
     entry: &PythonBuildEntry,
     dir: &Path,
     progress: &Option<ProgressHandle>,
@@ -294,7 +293,7 @@ async fn download_one_build(
 }
 
 pub async fn download_python_builds_batch(
-    client: &Client,
+    client: &HttpClient,
     repo: &Path,
     workers: usize,
     progress: Option<ProgressHandle>,

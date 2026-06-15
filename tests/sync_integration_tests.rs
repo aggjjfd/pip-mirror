@@ -3,16 +3,17 @@ use std::io::Write;
 use pip_mirror::config::{Config, PackageSpec, PackageUrlSpec, UvEmbedConfig};
 use pip_mirror::downloader::FileInfo;
 use pip_mirror::filters::redact_url_for_display;
+use pip_mirror::http::HttpClient;
 use pip_mirror::resolver::resolve::ResolveError;
 use pip_mirror::sync::create_sync_plan;
 use pip_mirror::sync::url_wheel::*;
 
-fn test_client() -> reqwest_middleware::ClientWithMiddleware {
-    reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build()
+fn test_client() -> HttpClient {
+    HttpClient::builder().build().unwrap()
 }
 
-fn raw_test_client() -> reqwest::Client {
-    reqwest::Client::new()
+fn raw_test_client() -> HttpClient {
+    HttpClient::builder().build().unwrap()
 }
 
 fn build_test_wheel(metadata: &str, filename_hint: &str) -> Vec<u8> {
@@ -747,12 +748,7 @@ fn test_redact_url_for_display_strips_secrets() {
 
 #[tokio::test]
 async fn test_download_wheel_bytes_reqwest_error_does_not_leak_credentials() {
-    use std::time::Duration;
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client = HttpClient::builder().with_timeout(5).build().unwrap();
     let url =
         "http://user:pass@127.0.0.1:1/secret-1.0-py3-none-any.whl?token=abc";
 
@@ -793,8 +789,6 @@ async fn start_partial_http_server(response_prefix: Vec<u8>) -> u16 {
 
 #[tokio::test]
 async fn test_download_wheel_bytes_stream_error_does_not_leak_credentials() {
-    use std::time::Duration;
-
     let response = b"HTTP/1.1 200 OK\r\n\
         Content-Type: application/zip\r\n\
         Content-Length: 100000\r\n\r\n\
@@ -802,10 +796,7 @@ async fn test_download_wheel_bytes_stream_error_does_not_leak_credentials() {
         .to_vec();
     let port = start_partial_http_server(response).await;
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client = HttpClient::builder().with_timeout(5).build().unwrap();
     let url = format!(
         "http://user:pass@127.0.0.1:{}/secret-1.0-py3-none-any.whl?token=abc",
         port

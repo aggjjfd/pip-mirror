@@ -145,28 +145,7 @@ impl MetadataCache {
         version: Option<&str>,
     ) -> Result<serde_json::Value, MetadataError> {
         let _permit = self.sem.acquire().await.expect("semaphore not closed");
-
-        let mut last_error: Option<MetadataError> = None;
-        for attempt in 0..3 {
-            let result = self.fetch_json_once(url, package, version).await;
-            match update_fetch_attempt(
-                result,
-                package,
-                version,
-                attempt,
-                &mut last_error,
-            ) {
-                Some(json) => return Ok(json),
-                None => continue,
-            }
-        }
-
-        Err(last_error.unwrap_or_else(|| MetadataError::Http {
-            package: package.to_string(),
-            version: version.map(String::from),
-            status: 0,
-            source: "未知错误".to_string(),
-        }))
+        self.fetch_json_once(url, package, version).await
     }
 
     async fn fetch_json_once(
@@ -199,29 +178,6 @@ impl MetadataCache {
             version: version.map(String::from),
             msg: e.without_url().to_string(),
         })
-    }
-}
-
-fn update_fetch_attempt(
-    result: Result<serde_json::Value, MetadataError>,
-    package: &str,
-    version: Option<&str>,
-    attempt: usize,
-    last_error: &mut Option<MetadataError>,
-) -> Option<serde_json::Value> {
-    match result {
-        Ok(json) => Some(json),
-        Err(err) => {
-            tracing::warn!(
-                "获取 {} {} 元数据失败（尝试 {}）: {}",
-                package,
-                version.unwrap_or("(all versions)"),
-                attempt + 1,
-                err
-            );
-            *last_error = Some(err);
-            None
-        }
     }
 }
 

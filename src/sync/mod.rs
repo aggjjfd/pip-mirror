@@ -1,12 +1,11 @@
 use std::path::Path;
-use std::time::Duration;
 
 use tracing::info;
 
-use crate::downloader::client::MirrorRetryMiddleware;
 use crate::downloader::{
     FileInfo, PrefetchedFiles, download_pkg_files_with_prefetched,
 };
+use crate::http::HttpClient;
 use crate::progress::{ProgressHandle, SyncEvent};
 use crate::resolver::plan::{
     DependencyPlan, PlanParams, build_dependency_plan,
@@ -119,10 +118,7 @@ pub async fn do_sync(
     download_python_builds: bool,
     dry_run: bool,
     progress: Option<ProgressHandle>,
-) -> Result<
-    (reqwest_middleware::ClientWithMiddleware, Vec<FileInfo>),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<(HttpClient, Vec<FileInfo>), Box<dyn std::error::Error>> {
     let repo = &config.repository_dir;
     let client = build_sync_client(config.effective_mirrors())?;
 
@@ -134,7 +130,7 @@ pub async fn do_sync(
     let (pending, prefetched) = prepare_pending_files(repo, plan, &progress)?;
     let params = DownloadPhaseParams {
         config,
-        client: &client,
+        client: client.inner(),
         repo,
         pending: &pending,
         prefetched: &prefetched,
@@ -167,21 +163,11 @@ fn emit_phase_finished(
 
 pub fn build_sync_client(
     mirrors: Vec<String>,
-) -> Result<reqwest_middleware::ClientWithMiddleware, Box<dyn std::error::Error>>
-{
-    let inner = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .build()?;
-
-    let origins = mirrors
-        .into_iter()
-        .map(|s| reqwest::Url::parse(&s))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("镜像地址解析失败: {e}"))?;
-
-    Ok(reqwest_middleware::ClientBuilder::new(inner)
-        .with(MirrorRetryMiddleware::new(origins))
-        .build())
+) -> Result<HttpClient, Box<dyn std::error::Error>> {
+    Ok(HttpClient::builder()
+        .with_timeout(300)
+        .with_mirrors(mirrors)?
+        .build()?)
 }
 
 fn prepare_pending_files(
@@ -288,13 +274,14 @@ fn add_url_wheel_to_plan(
 
 async fn build_plan(
     config: &crate::config::Config,
-    client: &reqwest_middleware::ClientWithMiddleware,
+    client: &HttpClient,
     name_pkgs: &[String],
     no_deps: bool,
     progress: Option<ProgressHandle>,
 ) -> Result<DependencyPlan, ResolveError> {
     if no_deps {
-        return plan::build_top_only_plan(config, client, name_pkgs).await;
+        return plan::build_top_only_plan(config, client.inner(), name_pkgs)
+            .await;
     }
     let params = PlanParams {
         top_packages: name_pkgs,
@@ -308,12 +295,12 @@ async fn build_plan(
         metadata_workers: config.metadata_workers,
         targets: crate::resolver::types::TargetEnv::from_specs(&config.targets),
     };
-    build_dependency_plan(&params, client, progress).await
+    build_dependency_plan(&params, client.inner(), progress).await
 }
 
 pub async fn create_sync_plan(
     config: &crate::config::Config,
-    client: &reqwest_middleware::ClientWithMiddleware,
+    client: &HttpClient,
     pkgs: &[crate::config::PackageSpec],
     no_deps: bool,
     progress: Option<ProgressHandle>,

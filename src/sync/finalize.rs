@@ -1,8 +1,8 @@
 use std::path::Path;
-use std::time::Duration;
 
 use tracing::info;
 
+use crate::http::HttpClient;
 use crate::indexer::generate_index;
 use crate::progress::{ProgressHandle, SyncEvent};
 use crate::python_builds::{
@@ -51,9 +51,7 @@ async fn maybe_download_python_builds(
     if !enabled {
         return Ok(None);
     }
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .build()?;
+    let client = HttpClient::builder().with_timeout(300).build()?;
     let entries =
         download_python_builds_batch(&client, repo, workers, progress).await?;
     info!("已下载 Python 解释器，开始生成 python-builds/index.json");

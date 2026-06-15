@@ -1,9 +1,8 @@
-use std::time::Duration;
-
 use futures::StreamExt;
 
 use crate::downloader::PrefetchedFiles;
 use crate::hex_digest;
+use crate::http::{HttpClient, HttpError};
 use crate::resolver::resolve::ResolveError;
 use crate::sync::url_wheel::{MAX_REMOTE_WHEEL_BYTES, read_local_wheel_deps};
 
@@ -45,12 +44,11 @@ fn check_sha256(
     url: &str,
     bytes: &[u8],
     expected: Option<&str>,
-) -> Result<(), ResolveError> {
+) -> Result<(), HttpError> {
     if expected.is_some_and(|exp| !sha256_matches(bytes, exp)) {
-        return Err(ResolveError::Config(format!(
-            "{} 的 sha256 校验失败",
-            crate::filters::redact_url_for_display(url)
-        )));
+        return Err(HttpError::Sha256Mismatch {
+            url: url.to_string(),
+        });
     }
     Ok(())
 }
@@ -78,17 +76,11 @@ fn append_chunk(
     Ok(())
 }
 
-fn build_explicit_url_client() -> Result<reqwest::Client, reqwest::Error> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
-        .build()
-}
-
 async fn fetch_response(
-    client: &reqwest::Client,
+    client: &HttpClient,
     url: &str,
 ) -> Result<reqwest::Response, ResolveError> {
-    let resp = client.get(url).send().await.map_err(|e| {
+    let resp = client.inner().get(url).send().await.map_err(|e| {
         ResolveError::Config(format!(
             "下载 {} 失败: {}",
             crate::filters::redact_url_for_display(url),
@@ -115,13 +107,14 @@ async fn read_stream_to_vec(
 }
 
 pub async fn download_wheel_bytes(
-    client: &reqwest::Client,
+    client: &HttpClient,
     url: &str,
     expected_sha256: Option<&str>,
 ) -> Result<Vec<u8>, ResolveError> {
     let resp = fetch_response(client, url).await?;
     let bytes = read_stream_to_vec(resp, url).await?;
-    check_sha256(url, &bytes, expected_sha256)?;
+    check_sha256(url, &bytes, expected_sha256)
+        .map_err(|e| ResolveError::Config(e.to_string()))?;
     Ok(bytes)
 }
 
@@ -163,7 +156,7 @@ pub fn merge_unique_dep_names(into: &mut Vec<String>, names: Vec<String>) {
 }
 
 async fn process_single_url_wheel(
-    client: &reqwest::Client,
+    client: &HttpClient,
     spec: &crate::config::PackageUrlSpec,
     prefetched: &mut PrefetchedFiles,
 ) -> Result<Vec<String>, ResolveError> {
@@ -205,7 +198,7 @@ async fn process_single_url_wheel(
 /// Extract dependency package names from explicit URL wheels and prefetch
 /// remote wheels so the download phase can reuse them.
 pub async fn collect_url_wheel_deps(
-    client: &reqwest::Client,
+    client: &HttpClient,
     url_pkgs: &[crate::config::PackageUrlSpec],
 ) -> Result<(Vec<String>, PrefetchedFiles), ResolveError> {
     let mut dep_names = Vec::new();
@@ -234,7 +227,7 @@ pub async fn collect_url_wheel_deps(
 }
 
 pub async fn maybe_collect_url_wheel_deps(
-    _client: &reqwest_middleware::ClientWithMiddleware,
+    _client: &HttpClient,
     url_pkgs: &[crate::config::PackageUrlSpec],
     no_deps: bool,
     name_pkgs: &mut Vec<String>,
@@ -242,9 +235,13 @@ pub async fn maybe_collect_url_wheel_deps(
     if no_deps || url_pkgs.is_empty() {
         return Ok(PrefetchedFiles::new());
     }
-    let client = build_explicit_url_client().map_err(|e| {
-        ResolveError::Config(format!("创建显式 URL 客户端失败: {e}"))
-    })?;
+    let client =
+        HttpClient::builder()
+            .with_timeout(300)
+            .build()
+            .map_err(|e| {
+                ResolveError::Config(format!("创建显式 URL 客户端失败: {e}"))
+            })?;
     let (url_dep_names, prefetched) =
         collect_url_wheel_deps(&client, url_pkgs).await?;
     merge_unique_dep_names(name_pkgs, url_dep_names);

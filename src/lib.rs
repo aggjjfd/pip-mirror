@@ -2,6 +2,7 @@ pub mod access_log;
 pub mod config;
 pub mod downloader;
 pub mod filters;
+pub mod http;
 pub mod index_page;
 pub mod indexer;
 pub mod installer;
