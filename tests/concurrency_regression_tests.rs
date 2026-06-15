@@ -200,8 +200,8 @@ fn linux_target() -> TargetEnv {
     TargetEnv::test_env("linux", "x86_64", "3.12")
 }
 
-fn test_client() -> reqwest_middleware::ClientWithMiddleware {
-    reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build()
+fn test_client() -> HttpClient {
+    HttpClient::builder().build().unwrap()
 }
 
 fn metadata_cache(base_url: &str) -> MetadataCache {

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use pep440_rs::Version;
+use pip_mirror::http::HttpClient;
 use pip_mirror::resolver::eligibility::{SolveContext, version_matches_target};
 use pip_mirror::resolver::metadata::MetadataCache;
 use pip_mirror::resolver::plan::{PlanParams, build_dependency_plan};
@@ -73,8 +74,7 @@ async fn solve_exact_target(
     package_ref: &str,
     target: &TargetEnv,
 ) -> (Version, HashSet<String>) {
-    let client =
-        reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build();
+    let client = HttpClient::builder().build().unwrap();
     let cache = MetadataCache::new(
         client,
         pypi_urls()[0].clone(),
@@ -148,8 +148,7 @@ async fn test_solve_one_target_matches_uv_for_requests_linux_py312() {
 #[ignore = "e2e network test: runs ~2.5 min against PyPI"]
 async fn test_build_dependency_plan_e2e_smoke() {
     pip_mirror::logging::init(false);
-    let client =
-        reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build();
+    let client = HttpClient::builder().build().unwrap();
     let e2e_packages = [
         "openai",
         "gradio",

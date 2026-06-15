@@ -2,9 +2,8 @@ use dashmap::DashMap;
 use pep440_rs::Version;
 use type_state_builder::TypeStateBuilder;
 
-use reqwest_middleware::ClientWithMiddleware;
-
 use crate::downloader::{FileInfo, PrefetchedFiles};
+use crate::http::HttpClient;
 use crate::resolver::metadata::MetadataCache;
 use crate::resolver::plan::{DependencyPlan, select_top_versions};
 use crate::resolver::pubgrub::bare_name;
@@ -42,7 +41,7 @@ impl<'a> FileSelector<'a> {
 
 pub async fn build_top_only_plan(
     config: &crate::config::Config,
-    client: &ClientWithMiddleware,
+    client: &HttpClient,
     pkgs: &[String],
 ) -> Result<DependencyPlan, ResolveError> {
     let base_url = config

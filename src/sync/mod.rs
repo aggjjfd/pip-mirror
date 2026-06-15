@@ -273,8 +273,7 @@ async fn build_plan(
     progress: Option<ProgressHandle>,
 ) -> Result<DependencyPlan, ResolveError> {
     if no_deps {
-        return plan::build_top_only_plan(config, client.inner(), name_pkgs)
-            .await;
+        return plan::build_top_only_plan(config, client, name_pkgs).await;
     }
     let params = PlanParams {
         top_packages: name_pkgs,
@@ -288,7 +287,7 @@ async fn build_plan(
         metadata_workers: config.metadata_workers,
         targets: crate::resolver::types::TargetEnv::from_specs(&config.targets),
     };
-    build_dependency_plan(&params, client.inner(), progress).await
+    build_dependency_plan(&params, client, progress).await
 }
 
 pub async fn create_sync_plan(

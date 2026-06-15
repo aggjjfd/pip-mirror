@@ -6,6 +6,7 @@ use pep440_rs::Version;
 use tracing::{debug, info};
 
 use crate::downloader::FileInfo;
+use crate::http::HttpClient;
 use crate::progress::{ProgressHandle, SyncEvent};
 
 use super::eligibility::ParsedDepsCacheKey;
@@ -17,7 +18,6 @@ use super::resolve::{build_solve_jobs, solve_all_targets};
 use super::solve::SolveResult;
 use super::solve_cache::{SolveCaches, SolveResultCache};
 use super::types::TargetEnv;
-use reqwest_middleware::ClientWithMiddleware;
 
 mod expand;
 use expand::expand_solved_versions;
@@ -44,7 +44,7 @@ pub struct DependencyPlan {
 
 pub async fn build_dependency_plan(
     params: &PlanParams<'_>,
-    client: &ClientWithMiddleware,
+    client: &HttpClient,
     progress: Option<ProgressHandle>,
 ) -> Result<DependencyPlan, ResolveError> {
     let (plan, solution_count) =
@@ -66,7 +66,7 @@ pub async fn build_dependency_plan(
 
 async fn build_dependency_plan_inner(
     params: &PlanParams<'_>,
-    client: &ClientWithMiddleware,
+    client: &HttpClient,
     progress: &Option<ProgressHandle>,
 ) -> Result<(DependencyPlan, usize), ResolveError> {
     let base_url = params

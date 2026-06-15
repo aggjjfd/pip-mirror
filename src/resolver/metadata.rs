@@ -3,12 +3,11 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use pep440_rs::Version;
 
-use reqwest_middleware::ClientWithMiddleware;
-
 use super::metadata_types::{
     MetadataError, PackageIndex, VersionMetadata, collect_files_by_version,
 };
 use crate::downloader::FileInfo;
+use crate::http::{HttpClient, HttpError};
 
 type InFlight<T> =
     Arc<tokio::sync::Mutex<Option<Result<Arc<T>, MetadataError>>>>;
@@ -41,7 +40,7 @@ where
 
 /// Shared cache for package and version metadata, with in-flight deduplication.
 pub struct MetadataCache {
-    client: ClientWithMiddleware,
+    http: HttpClient,
     base_url: String,
     sem: tokio::sync::Semaphore,
     package_index: DashMap<String, InFlight<PackageIndex>>,
@@ -54,12 +53,12 @@ pub struct MetadataCache {
 
 impl MetadataCache {
     pub fn new(
-        client: ClientWithMiddleware,
+        client: HttpClient,
         base_url: String,
         metadata_workers: usize,
     ) -> Self {
         Self {
-            client,
+            http: client,
             base_url,
             sem: tokio::sync::Semaphore::new(metadata_workers),
             package_index: DashMap::new(),
@@ -154,29 +153,27 @@ impl MetadataCache {
         package: &str,
         version: Option<&str>,
     ) -> Result<serde_json::Value, MetadataError> {
-        let resp = self.client.get(url).send().await.map_err(|e| {
-            MetadataError::Http {
+        self.http.get_json(url).await.map_err(|e| match e {
+            HttpError::Json { source, .. } => MetadataError::Json {
                 package: package.to_string(),
                 version: version.map(String::from),
-                status: 0,
-                source: e.without_url().to_string(),
-            }
-        })?;
-
-        let status = resp.status().as_u16();
-        if !resp.status().is_success() {
-            return Err(MetadataError::Http {
+                msg: source,
+            },
+            HttpError::Http { status, .. } => MetadataError::Http {
                 package: package.to_string(),
                 version: version.map(String::from),
                 status,
-                source: "HTTP error response".to_string(),
-            });
-        }
-
-        resp.json().await.map_err(|e| MetadataError::Json {
-            package: package.to_string(),
-            version: version.map(String::from),
-            msg: e.without_url().to_string(),
+                source: format!("HTTP {}", status),
+            },
+            HttpError::Timeout
+            | HttpError::Connect
+            | HttpError::AllMirrorsFailed { .. }
+            | HttpError::Sha256Mismatch { .. } => MetadataError::Http {
+                package: package.to_string(),
+                version: version.map(String::from),
+                status: 0,
+                source: e.to_string(),
+            },
         })
     }
 }
@@ -288,7 +285,7 @@ impl MetadataCache {
         );
         let json = self.fetch_json(&url, pkg, Some(&ver_str)).await?;
         super::build_requires::probe_build_requires_from_version_json(
-            &self.client,
+            self.http.inner(),
             &json,
         )
         .await

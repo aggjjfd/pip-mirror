@@ -88,7 +88,10 @@ impl HttpClientBuilder {
             .with(MirrorRetryMiddleware::new(origins, self.policy.clone()))
             .build();
 
-        Ok(HttpClient { client })
+        Ok(HttpClient {
+            client,
+            policy: self.policy,
+        })
     }
 }
 
@@ -118,6 +121,7 @@ fn parse_mirror_origins(
 #[derive(Clone)]
 pub struct HttpClient {
     client: ClientWithMiddleware,
+    policy: RetryPolicy,
 }
 
 impl HttpClient {
@@ -134,12 +138,41 @@ impl HttpClient {
     }
 
     /// 发送 GET 请求并解析为 JSON。
+    ///
+    /// 若响应体 JSON 解析失败且策略允许，会按 `RetryPolicy` 进行重试。
     pub async fn get_json(&self, url: &str) -> Result<Value, HttpError> {
+        for attempt in 0..self.policy.max_attempts {
+            match self.try_get_json_once(url, attempt).await? {
+                std::ops::ControlFlow::Continue(()) => continue,
+                std::ops::ControlFlow::Break(value) => return Ok(value),
+            }
+        }
+
+        unreachable!()
+    }
+
+    async fn try_get_json_once(
+        &self,
+        url: &str,
+        attempt: usize,
+    ) -> Result<std::ops::ControlFlow<Value, ()>, HttpError> {
         let resp = self.send_get(url).await?;
         check_success_status(url, resp.status())?;
-        resp.json().await.map_err(|e| HttpError::Json {
-            url: url.to_string(),
-            source: e.to_string(),
+        let bytes =
+            resp.bytes().await.map_err(|e| map_reqwest_error(url, e))?;
+
+        let parsed = serde_json::from_slice::<Value>(&bytes);
+        if should_retry_json_error(&parsed, attempt, &self.policy) {
+            tokio::time::sleep(Duration::from_millis(self.policy.backoff_ms))
+                .await;
+            return Ok(std::ops::ControlFlow::Continue(()));
+        }
+
+        parsed.map(std::ops::ControlFlow::Break).map_err(|err| {
+            HttpError::Json {
+                url: url.to_string(),
+                source: err.to_string(),
+            }
         })
     }
 
@@ -165,6 +198,20 @@ impl HttpClient {
             .send()
             .await
             .map_err(|e| map_middleware_error(url, e))
+    }
+}
+
+fn should_retry_json_error(
+    parsed: &Result<Value, serde_json::Error>,
+    attempt: usize,
+    policy: &RetryPolicy,
+) -> bool {
+    match parsed {
+        Ok(_) => false,
+        Err(err) => {
+            attempt + 1 < policy.max_attempts
+                && (policy.retry_on_body_error)(err)
+        }
     }
 }
 

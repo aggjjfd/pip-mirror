@@ -15,6 +15,7 @@ use futures::future::join_all;
 use pep440_rs::Version;
 use pip_mirror::downloader::FileInfo;
 use pip_mirror::filters::version_is_installable_for_target;
+use pip_mirror::http::HttpClient;
 use pip_mirror::resolver::eligibility::{ParsedDepsCacheKey, SolveContext};
 use pip_mirror::resolver::markers::parse_requires_dist;
 use pip_mirror::resolver::metadata::MetadataCache;
@@ -23,8 +24,8 @@ use pip_mirror::resolver::solve::solve_one_target;
 use pip_mirror::resolver::types::TargetEnv;
 use serde_json::{Value, json};
 
-fn test_client() -> reqwest_middleware::ClientWithMiddleware {
-    reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build()
+fn test_client() -> HttpClient {
+    HttpClient::builder().build().unwrap()
 }
 
 fn linux_target() -> TargetEnv {
@@ -481,15 +482,7 @@ async fn test_prefilter_skips_incompatible_versions() {
 
 #[tokio::test]
 async fn test_metadata_cache_fetch_json_error_does_not_leak_credentials() {
-    use std::time::Duration;
-
-    let client = reqwest_middleware::ClientBuilder::new(
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap(),
-    )
-    .build();
+    let client = HttpClient::builder().with_timeout(5).build().unwrap();
     let cache = MetadataCache::new(
         client,
         "http://user:pass@127.0.0.1:1".to_string(),
@@ -530,8 +523,6 @@ async fn start_raw_http_server(response: Vec<u8>) -> u16 {
 
 #[tokio::test]
 async fn test_metadata_cache_json_error_does_not_leak_credentials() {
-    use std::time::Duration;
-
     let body = b"hello";
     let response = format!(
         "HTTP/1.1 200 OK\r\n\
@@ -544,13 +535,7 @@ async fn test_metadata_cache_json_error_does_not_leak_credentials() {
     full_response.extend_from_slice(body);
     let port = start_raw_http_server(full_response).await;
 
-    let client = reqwest_middleware::ClientBuilder::new(
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap(),
-    )
-    .build();
+    let client = HttpClient::builder().with_timeout(5).build().unwrap();
     let cache = MetadataCache::new(
         client,
         format!("http://user:pass@127.0.0.1:{port}"),
