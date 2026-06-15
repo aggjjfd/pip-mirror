@@ -9,12 +9,10 @@ pub use plan::PlanPhase;
 pub use record::RecordPhase;
 
 use crate::downloader::DownloadableItem;
-use crate::http::HttpClient;
 use crate::progress::{ProgressHandle, SyncEvent};
 
 /// 同步流水线执行结果。
 pub struct SyncOutcome {
-    pub client: HttpClient,
     pub downloaded: Vec<DownloadableItem>,
     pub skipped: Vec<DownloadableItem>,
     pub failed: Vec<(DownloadableItem, String)>,

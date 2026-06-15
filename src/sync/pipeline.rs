@@ -132,7 +132,6 @@ impl SyncPipeline {
         }
 
         Ok(SyncOutcome {
-            client: self.client,
             downloaded: result.downloaded,
             skipped: result.skipped,
             failed: result.failed,

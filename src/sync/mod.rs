@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use crate::http::HttpClient;
-
 pub mod finalize;
 pub mod phases;
 pub mod pipeline;
@@ -33,13 +31,4 @@ pub fn clean_repo(repo: &Path) -> Result<(), Box<dyn std::error::Error>> {
     }
     std::fs::create_dir_all(repo)?;
     Ok(())
-}
-
-pub fn build_sync_client(
-    mirrors: Vec<String>,
-) -> Result<HttpClient, Box<dyn std::error::Error>> {
-    Ok(HttpClient::builder()
-        .with_timeout(300)
-        .with_mirrors(mirrors)?
-        .build()?)
 }

@@ -58,6 +58,32 @@ pub fn load_packages(
     }
 }
 
+fn build_sync_client(
+    config: &Config,
+) -> Result<crate::http::HttpClient, Box<dyn std::error::Error>> {
+    Ok(crate::http::HttpClient::builder()
+        .with_timeout(300)
+        .with_mirrors(config.effective_mirrors())?
+        .build()?)
+}
+
+async fn run_sync_pipeline(
+    config: &Config,
+    pkgs: &[PackageSpec],
+    no_deps: bool,
+    dry_run: bool,
+    progress: crate::progress::ProgressHandle,
+) -> Result<crate::sync::phases::SyncOutcome, Box<dyn std::error::Error>> {
+    let client = build_sync_client(config)?;
+    crate::sync::SyncPipeline::new(config, client, pkgs)
+        .no_deps(no_deps)
+        .dry_run(dry_run)
+        .download_python_builds(true)
+        .run(Some(progress))
+        .await
+        .map_err(Into::into)
+}
+
 async fn perform_sync(
     config: Config,
     pkgs: Vec<PackageSpec>,
@@ -66,14 +92,14 @@ async fn perform_sync(
     verbose: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     crate::progress::run_with_progress(verbose, |progress| async move {
-        let client =
-            crate::sync::build_sync_client(config.effective_mirrors())?;
-        let outcome = crate::sync::SyncPipeline::new(&config, client, &pkgs)
-            .no_deps(no_deps)
-            .dry_run(dry_run)
-            .download_python_builds(true)
-            .run(Some(progress.clone()))
-            .await?;
+        let outcome = run_sync_pipeline(
+            &config,
+            &pkgs,
+            no_deps,
+            dry_run,
+            progress.clone(),
+        )
+        .await?;
 
         if !dry_run {
             do_incremental_pack(&config, outcome.downloaded).await?;
@@ -107,13 +133,8 @@ async fn run_sync_full_inner(
     if !dry_run {
         crate::sync::clean_repo(&config.repository_dir)?;
     }
-    let client = crate::sync::build_sync_client(config.effective_mirrors())?;
-    let _outcome = crate::sync::SyncPipeline::new(&config, client, &pkgs)
-        .no_deps(no_deps)
-        .dry_run(dry_run)
-        .download_python_builds(true)
-        .run(Some(progress))
-        .await?;
+    let _outcome =
+        run_sync_pipeline(&config, &pkgs, no_deps, dry_run, progress).await?;
     if !dry_run {
         crate::sync::finalize_mirror(&config.repository_dir).await?;
     }
