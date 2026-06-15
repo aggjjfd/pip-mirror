@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use futures::StreamExt;
 
 use crate::downloader::PrefetchedFiles;
@@ -74,6 +76,12 @@ fn append_chunk(
     }
     bytes.extend_from_slice(&chunk);
     Ok(())
+}
+
+fn build_explicit_url_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .build()
 }
 
 async fn fetch_response(
@@ -226,7 +234,7 @@ pub async fn collect_url_wheel_deps(
 }
 
 pub async fn maybe_collect_url_wheel_deps(
-    client: &reqwest::Client,
+    _client: &reqwest_middleware::ClientWithMiddleware,
     url_pkgs: &[crate::config::PackageUrlSpec],
     no_deps: bool,
     name_pkgs: &mut Vec<String>,
@@ -234,8 +242,11 @@ pub async fn maybe_collect_url_wheel_deps(
     if no_deps || url_pkgs.is_empty() {
         return Ok(PrefetchedFiles::new());
     }
+    let client = build_explicit_url_client().map_err(|e| {
+        ResolveError::Config(format!("创建显式 URL 客户端失败: {e}"))
+    })?;
     let (url_dep_names, prefetched) =
-        collect_url_wheel_deps(client, url_pkgs).await?;
+        collect_url_wheel_deps(&client, url_pkgs).await?;
     merge_unique_dep_names(name_pkgs, url_dep_names);
     Ok(prefetched)
 }

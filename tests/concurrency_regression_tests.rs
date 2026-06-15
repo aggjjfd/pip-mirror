@@ -197,8 +197,12 @@ fn linux_target() -> TargetEnv {
     TargetEnv::test_env("linux", "x86_64", "3.12")
 }
 
+fn test_client() -> reqwest_middleware::ClientWithMiddleware {
+    reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build()
+}
+
 fn metadata_cache(base_url: &str) -> MetadataCache {
-    MetadataCache::new(reqwest::Client::new(), base_url.to_string(), 8)
+    MetadataCache::new(test_client(), base_url.to_string(), 8)
 }
 
 #[tokio::test]
@@ -223,10 +227,11 @@ async fn test_build_dependency_plan_fetches_metadata_concurrently() {
         ])),
     };
     let base_url = spawn_metadata_server(state).await;
+    let base_urls = vec![base_url];
     let top_packages = vec!["demo-a".to_string(), "demo-b".to_string()];
     let params = PlanParams {
         top_packages: &top_packages,
-        pypi_url: &base_url,
+        pypi_urls: &base_urls,
         top_versions_per_package: 1,
         adjacent_versions_per_side: 0,
         allow_prerelease: false,
@@ -238,7 +243,7 @@ async fn test_build_dependency_plan_fetches_metadata_concurrently() {
         ),
     };
 
-    let plan = build_dependency_plan(&params, &reqwest::Client::new(), None)
+    let plan = build_dependency_plan(&params, &test_client(), None)
         .await
         .unwrap();
     assert!(!plan.planned_files.is_empty());
@@ -269,14 +274,8 @@ async fn test_download_pkg_files_runs_concurrently() {
         .map(|filename| download_file(filename, &base_url))
         .collect::<Vec<_>>();
 
-    let result = download_pkg_files(
-        &reqwest::Client::new(),
-        repo.path(),
-        &files,
-        false,
-        4,
-    )
-    .await;
+    let result =
+        download_pkg_files(&test_client(), repo.path(), &files, false, 4).await;
 
     assert!(result.failed.is_empty());
     assert_eq!(result.downloaded.len(), filenames.len());

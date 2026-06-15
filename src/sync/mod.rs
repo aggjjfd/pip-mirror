@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use tracing::info;
 
+use crate::downloader::client::MirrorRetryMiddleware;
 use crate::downloader::{
     FileInfo, PrefetchedFiles, download_pkg_files_with_prefetched,
 };
@@ -54,7 +55,7 @@ fn log_dry_run(pending: &[FileInfo]) {
 
 struct DownloadPhaseParams<'a> {
     config: &'a crate::config::Config,
-    client: &'a reqwest::Client,
+    client: &'a reqwest_middleware::ClientWithMiddleware,
     repo: &'a Path,
     pending: &'a [FileInfo],
     prefetched: &'a PrefetchedFiles,
@@ -101,7 +102,6 @@ async fn execute_download_phase(
 
     record::record_download_results(p.repo, &result).await?;
     finalize::finalize_sync(
-        p.client,
         p.repo,
         p.download_python_builds,
         p.config.download_workers,
@@ -119,9 +119,12 @@ pub async fn do_sync(
     download_python_builds: bool,
     dry_run: bool,
     progress: Option<ProgressHandle>,
-) -> Result<(reqwest::Client, Vec<FileInfo>), Box<dyn std::error::Error>> {
+) -> Result<
+    (reqwest_middleware::ClientWithMiddleware, Vec<FileInfo>),
+    Box<dyn std::error::Error>,
+> {
     let repo = &config.repository_dir;
-    let client = build_sync_client()?;
+    let client = build_sync_client(config.effective_mirrors())?;
 
     emit_phase_started(&progress, "plan", Some(pkgs.len() as u64));
 
@@ -162,10 +165,23 @@ fn emit_phase_finished(
     }
 }
 
-pub fn build_sync_client() -> Result<reqwest::Client, reqwest::Error> {
-    reqwest::Client::builder()
+pub fn build_sync_client(
+    mirrors: Vec<String>,
+) -> Result<reqwest_middleware::ClientWithMiddleware, Box<dyn std::error::Error>>
+{
+    let inner = reqwest::Client::builder()
         .timeout(Duration::from_secs(300))
-        .build()
+        .build()?;
+
+    let origins = mirrors
+        .into_iter()
+        .map(|s| reqwest::Url::parse(&s))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("镜像地址解析失败: {e}"))?;
+
+    Ok(reqwest_middleware::ClientBuilder::new(inner)
+        .with(MirrorRetryMiddleware::new(origins))
+        .build())
 }
 
 fn prepare_pending_files(
@@ -203,7 +219,7 @@ fn log_pending_files(pending_count: usize, planned_count: usize) {
 #[allow(clippy::too_many_arguments)]
 async fn run_downloads(
     config: &crate::config::Config,
-    client: &reqwest::Client,
+    client: &reqwest_middleware::ClientWithMiddleware,
     repo: &Path,
     pending: &[FileInfo],
     prefetched: &PrefetchedFiles,
@@ -272,7 +288,7 @@ fn add_url_wheel_to_plan(
 
 async fn build_plan(
     config: &crate::config::Config,
-    client: &reqwest::Client,
+    client: &reqwest_middleware::ClientWithMiddleware,
     name_pkgs: &[String],
     no_deps: bool,
     progress: Option<ProgressHandle>,
@@ -282,7 +298,7 @@ async fn build_plan(
     }
     let params = PlanParams {
         top_packages: name_pkgs,
-        pypi_url: &config.pypi_url,
+        pypi_urls: &config.effective_mirrors(),
         top_versions_per_package: config.top_versions_per_package,
         adjacent_versions_per_side: config.adjacent_versions_per_side,
         allow_prerelease: config.allow_prerelease,
@@ -297,7 +313,7 @@ async fn build_plan(
 
 pub async fn create_sync_plan(
     config: &crate::config::Config,
-    client: &reqwest::Client,
+    client: &reqwest_middleware::ClientWithMiddleware,
     pkgs: &[crate::config::PackageSpec],
     no_deps: bool,
     progress: Option<ProgressHandle>,

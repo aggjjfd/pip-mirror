@@ -4,8 +4,16 @@ use pip_mirror::config::{Config, PackageSpec, PackageUrlSpec, UvEmbedConfig};
 use pip_mirror::downloader::FileInfo;
 use pip_mirror::filters::redact_url_for_display;
 use pip_mirror::resolver::resolve::ResolveError;
+use pip_mirror::sync::create_sync_plan;
 use pip_mirror::sync::url_wheel::*;
-use pip_mirror::sync::{build_sync_client, create_sync_plan};
+
+fn test_client() -> reqwest_middleware::ClientWithMiddleware {
+    reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build()
+}
+
+fn raw_test_client() -> reqwest::Client {
+    reqwest::Client::new()
+}
 
 fn build_test_wheel(metadata: &str, filename_hint: &str) -> Vec<u8> {
     let mut buf = Vec::new();
@@ -50,7 +58,7 @@ fn minimal_config() -> Config {
 #[tokio::test]
 async fn test_create_sync_plan_with_url_wheel_no_deps() {
     let config = minimal_config();
-    let client = reqwest::Client::new();
+    let client = test_client();
     let pkgs = vec![PackageSpec::Url(PackageUrlSpec {
         url: "https://example.com/mypkg-1.0-py3-none-any.whl".to_string(),
         sha256: Some("abc".to_string()),
@@ -73,7 +81,7 @@ async fn test_create_sync_plan_with_url_wheel_no_deps() {
 #[tokio::test]
 async fn test_create_sync_plan_url_wheel_invalid_extension() {
     let config = minimal_config();
-    let client = reqwest::Client::new();
+    let client = test_client();
     let pkgs = vec![PackageSpec::Url(PackageUrlSpec {
         url: "https://example.com/mypkg.tar.gz".to_string(),
         sha256: None,
@@ -91,7 +99,7 @@ async fn test_create_sync_plan_url_wheel_invalid_extension() {
 #[tokio::test]
 async fn test_create_sync_plan_dedupes_duplicate_url_wheels() {
     let config = minimal_config();
-    let client = reqwest::Client::new();
+    let client = test_client();
     let url = "https://example.com/mypkg-1.0-py3-none-any.whl";
     let pkgs = vec![
         PackageSpec::Url(PackageUrlSpec {
@@ -124,7 +132,7 @@ Version: 1.0
 
     let url = format!("file://{}", path.canonicalize().unwrap().display());
     let config = minimal_config();
-    let client = reqwest::Client::new();
+    let client = test_client();
     let pkgs = vec![PackageSpec::Url(PackageUrlSpec { url, sha256: None })];
 
     let plan = create_sync_plan(&config, &client, &pkgs, false, None)
@@ -166,7 +174,7 @@ Requires-Dist: click >=7.0
     let url = format!("file://{}", path.canonicalize().unwrap().display());
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = reqwest::Client::new();
+    let client = raw_test_client();
     let (names, prefetched) =
         collect_url_wheel_deps(&client, &specs).await.unwrap();
 
@@ -192,7 +200,7 @@ Requires-Dist: typing-extensions
     let pkgs = vec![PackageSpec::Url(PackageUrlSpec { url, sha256: None })];
 
     let config = minimal_config();
-    let client = reqwest::Client::new();
+    let client = test_client();
     let plan = create_sync_plan(&config, &client, &pkgs, false, None)
         .await
         .expect("plan should succeed");
@@ -329,7 +337,7 @@ Requires-Dist: urllib3
         format!("http://127.0.0.1:{}/remotepkg-2.0-py3-none-any.whl", port);
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let (names, prefetched) =
         collect_url_wheel_deps(&client, &specs).await.unwrap();
 
@@ -349,7 +357,7 @@ async fn test_collect_url_wheel_deps_http_404_fails() {
         format!("http://127.0.0.1:{}/remotepkg-2.0-py3-none-any.whl", port);
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -365,7 +373,7 @@ async fn test_collect_url_wheel_deps_bad_zip_fails() {
         format!("http://127.0.0.1:{}/remotepkg-2.0-py3-none-any.whl", port);
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -395,7 +403,7 @@ Version: 2.0
         ),
     }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -435,7 +443,7 @@ Version: 2.0
         },
     ];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let (names, prefetched) =
         collect_url_wheel_deps(&client, &specs).await.unwrap();
 
@@ -489,7 +497,7 @@ async fn test_collect_url_wheel_deps_content_length_too_large_fails() {
         format!("http://127.0.0.1:{}/remotepkg-2.0-py3-none-any.whl", port);
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -511,7 +519,7 @@ async fn test_collect_url_wheel_deps_chunked_body_too_large_fails() {
         format!("http://127.0.0.1:{}/remotepkg-2.0-py3-none-any.whl", port);
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -527,7 +535,7 @@ async fn test_collect_url_wheel_deps_missing_local_file_fails() {
     let url = "file:///tmp/nonexistent_pkg-1.0-py3-none-any.whl".to_string();
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -549,7 +557,7 @@ async fn test_resolve_file_url_parse_error_does_not_leak_credentials() {
         "file://user:pass@example.com:badport/foo.whl?token=secret".to_string();
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -563,7 +571,7 @@ async fn test_resolve_file_url_to_file_path_error_does_not_leak_credentials() {
         "file://user:pass@remotehost/tmp/foo.whl?token=secret".to_string();
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -578,7 +586,7 @@ async fn test_read_requires_dist_from_file_url_error_does_not_leak_credentials()
             .to_string();
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -591,7 +599,7 @@ async fn test_parse_wheel_url_failure_does_not_leak_credentials() {
         "https://user:pass@example.com/mypkg.tar.gz?token=secret".to_string();
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -607,7 +615,7 @@ async fn test_collect_url_wheel_deps_http_404_does_not_leak_credentials() {
     );
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -626,7 +634,7 @@ async fn test_collect_url_wheel_deps_bad_zip_does_not_leak_credentials() {
     );
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -659,7 +667,7 @@ Version: 2.0
         ),
     }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -690,7 +698,7 @@ async fn test_collect_url_wheel_deps_content_length_does_not_leak_credentials()
     );
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -714,7 +722,7 @@ async fn test_collect_url_wheel_deps_chunked_too_large_does_not_leak_credentials
     );
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -972,7 +980,7 @@ Version: 1.0
         ),
     }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -996,7 +1004,7 @@ async fn test_collect_url_wheel_deps_empty_file_fails() {
     let url = format!("file://{}", path.canonicalize().unwrap().display());
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -1032,7 +1040,7 @@ async fn test_collect_url_wheel_deps_truncated_zip_fails() {
     let url = format!("file://{}", path.canonicalize().unwrap().display());
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");
@@ -1055,7 +1063,7 @@ async fn test_collect_url_wheel_deps_file_url_oversized_fails() {
     let url = format!("file://{}", path.canonicalize().unwrap().display());
     let specs = vec![PackageUrlSpec { url, sha256: None }];
 
-    let client = build_sync_client().unwrap();
+    let client = raw_test_client();
     let err = collect_url_wheel_deps(&client, &specs)
         .await
         .expect_err("should fail");

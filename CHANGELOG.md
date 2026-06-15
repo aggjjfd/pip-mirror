@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+
+- 支持配置多个 PyPI 镜像（`pypi_urls`），自动故障转移与请求重试
+- 显式 URL whl 不会被镜像中间件重写，避免外部下载地址被误替换
+
 ## [1.0.0] - 2026-05-18
 
 ### Features

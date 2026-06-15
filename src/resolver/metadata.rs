@@ -3,6 +3,8 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use pep440_rs::Version;
 
+use reqwest_middleware::ClientWithMiddleware;
+
 use super::metadata_types::{
     MetadataError, PackageIndex, VersionMetadata, collect_files_by_version,
 };
@@ -39,8 +41,8 @@ where
 
 /// Shared cache for package and version metadata, with in-flight deduplication.
 pub struct MetadataCache {
-    client: reqwest::Client,
-    pypi_url: String,
+    client: ClientWithMiddleware,
+    base_url: String,
     sem: tokio::sync::Semaphore,
     package_index: DashMap<String, InFlight<PackageIndex>>,
     version_metadata: DashMap<(String, Version), InFlight<VersionMetadata>>,
@@ -52,13 +54,13 @@ pub struct MetadataCache {
 
 impl MetadataCache {
     pub fn new(
-        client: reqwest::Client,
-        pypi_url: String,
+        client: ClientWithMiddleware,
+        base_url: String,
         metadata_workers: usize,
     ) -> Self {
         Self {
             client,
-            pypi_url,
+            base_url,
             sem: tokio::sync::Semaphore::new(metadata_workers),
             package_index: DashMap::new(),
             version_metadata: DashMap::new(),
@@ -143,6 +145,36 @@ impl MetadataCache {
         version: Option<&str>,
     ) -> Result<serde_json::Value, MetadataError> {
         let _permit = self.sem.acquire().await.expect("semaphore not closed");
+
+        let mut last_error: Option<MetadataError> = None;
+        for attempt in 0..3 {
+            let result = self.fetch_json_once(url, package, version).await;
+            match update_fetch_attempt(
+                result,
+                package,
+                version,
+                attempt,
+                &mut last_error,
+            ) {
+                Some(json) => return Ok(json),
+                None => continue,
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| MetadataError::Http {
+            package: package.to_string(),
+            version: version.map(String::from),
+            status: 0,
+            source: "未知错误".to_string(),
+        }))
+    }
+
+    async fn fetch_json_once(
+        &self,
+        url: &str,
+        package: &str,
+        version: Option<&str>,
+    ) -> Result<serde_json::Value, MetadataError> {
         let resp = self.client.get(url).send().await.map_err(|e| {
             MetadataError::Http {
                 package: package.to_string(),
@@ -168,14 +200,39 @@ impl MetadataCache {
             msg: e.without_url().to_string(),
         })
     }
+}
 
+fn update_fetch_attempt(
+    result: Result<serde_json::Value, MetadataError>,
+    package: &str,
+    version: Option<&str>,
+    attempt: usize,
+    last_error: &mut Option<MetadataError>,
+) -> Option<serde_json::Value> {
+    match result {
+        Ok(json) => Some(json),
+        Err(err) => {
+            tracing::warn!(
+                "获取 {} {} 元数据失败（尝试 {}）: {}",
+                package,
+                version.unwrap_or("(all versions)"),
+                attempt + 1,
+                err
+            );
+            *last_error = Some(err);
+            None
+        }
+    }
+}
+
+impl MetadataCache {
     async fn fetch_package_index(
         &self,
         pkg: &str,
     ) -> Result<PackageIndex, MetadataError> {
         let url = format!(
             "{}/pypi/{}/json",
-            self.pypi_url.trim_end_matches('/'),
+            self.base_url.trim_end_matches('/'),
             pkg
         );
         let json = self.fetch_json(&url, pkg, None).await?;
@@ -208,7 +265,7 @@ impl MetadataCache {
         let ver_str = ver.to_string();
         let url = format!(
             "{}/pypi/{}/{}/json",
-            self.pypi_url.trim_end_matches('/'),
+            self.base_url.trim_end_matches('/'),
             pkg,
             ver_str
         );
@@ -269,7 +326,7 @@ impl MetadataCache {
         let ver_str = ver.to_string();
         let url = format!(
             "{}/pypi/{}/{}/json",
-            self.pypi_url.trim_end_matches('/'),
+            self.base_url.trim_end_matches('/'),
             pkg,
             ver_str
         );

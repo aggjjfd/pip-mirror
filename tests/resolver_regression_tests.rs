@@ -23,6 +23,10 @@ use pip_mirror::resolver::solve::solve_one_target;
 use pip_mirror::resolver::types::TargetEnv;
 use serde_json::{Value, json};
 
+fn test_client() -> reqwest_middleware::ClientWithMiddleware {
+    reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build()
+}
+
 fn linux_target() -> TargetEnv {
     TargetEnv::test_env("linux", "x86_64", "3.12")
 }
@@ -222,7 +226,7 @@ fn version_response(requires_dist: &[&str]) -> Value {
 }
 
 fn fixture_cache(base_url: &str) -> MetadataCache {
-    MetadataCache::new(reqwest::Client::new(), base_url.to_string(), 8)
+    MetadataCache::new(test_client(), base_url.to_string(), 8)
 }
 
 #[tokio::test]
@@ -433,11 +437,12 @@ async fn test_prefilter_skips_incompatible_versions() {
     };
     let base_url = spawn_fixture_server(state).await;
 
+    let base_urls = vec![base_url];
     let top_packages =
         vec!["demo-macos-only".to_string(), "demo-universal".to_string()];
     let params = PlanParams {
         top_packages: &top_packages,
-        pypi_url: &base_url,
+        pypi_urls: &base_urls,
         top_versions_per_package: 1,
         adjacent_versions_per_side: 0,
         allow_prerelease: false,
@@ -448,7 +453,7 @@ async fn test_prefilter_skips_incompatible_versions() {
         targets: vec![linux_target()],
     };
 
-    let plan = build_dependency_plan(&params, &reqwest::Client::new(), None)
+    let plan = build_dependency_plan(&params, &test_client(), None)
         .await
         .unwrap();
 
@@ -478,10 +483,13 @@ async fn test_prefilter_skips_incompatible_versions() {
 async fn test_metadata_cache_fetch_json_error_does_not_leak_credentials() {
     use std::time::Duration;
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client = reqwest_middleware::ClientBuilder::new(
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap(),
+    )
+    .build();
     let cache = MetadataCache::new(
         client,
         "http://user:pass@127.0.0.1:1".to_string(),
@@ -536,10 +544,13 @@ async fn test_metadata_cache_json_error_does_not_leak_credentials() {
     full_response.extend_from_slice(body);
     let port = start_raw_http_server(full_response).await;
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client = reqwest_middleware::ClientBuilder::new(
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap(),
+    )
+    .build();
     let cache = MetadataCache::new(
         client,
         format!("http://user:pass@127.0.0.1:{port}"),

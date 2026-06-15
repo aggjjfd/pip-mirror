@@ -3,13 +3,15 @@ use std::sync::Arc;
 
 use futures::{StreamExt, stream};
 
+use reqwest_middleware::ClientWithMiddleware;
+
 use super::{
     DownloadOutcome, DownloadResult, FileInfo, should_skip, try_download,
 };
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_download_pipeline(
-    client: &reqwest::Client,
+    client: &ClientWithMiddleware,
     repo: &Path,
     files: &[FileInfo],
     prefetched_files: &crate::downloader::PrefetchedFiles,
@@ -72,7 +74,7 @@ fn collect_pending_downloads(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_download_tasks(
-    client: &reqwest::Client,
+    client: &ClientWithMiddleware,
     repo: &Path,
     store: &Option<Arc<crate::store::DownloadStore>>,
     prefetched_files: &crate::downloader::PrefetchedFiles,

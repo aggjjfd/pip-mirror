@@ -41,25 +41,56 @@ impl Middleware for MirrorRetryMiddleware {
         extensions: &mut Extensions,
         next: Next<'_>,
     ) -> MiddlewareResult<Response> {
-        if self.mirrors.is_empty() {
+        if self.mirrors.is_empty() || !self.is_mirror_request(req.url()) {
             return next.run(req, extensions).await;
         }
 
+        self.try_mirrors(req, extensions, next).await
+    }
+}
+
+impl MirrorRetryMiddleware {
+    fn is_mirror_request(&self, url: &Url) -> bool {
+        self.mirrors
+            .iter()
+            .any(|mirror| mirror.origin() == url.origin())
+    }
+
+    async fn try_mirrors(
+        &self,
+        req: Request,
+        extensions: &mut Extensions,
+        next: Next<'_>,
+    ) -> MiddlewareResult<Response> {
         let mut last_error: Option<MiddlewareError> = None;
 
         for mirror in &self.mirrors {
-            match try_mirror(mirror, &req, extensions, next.clone()).await {
-                Ok(resp) => return Ok(resp),
-                Err(err) => {
-                    warn!("镜像 {} 不可用", mirror);
-                    last_error = Some(err);
-                }
+            let result =
+                try_mirror(mirror, &req, extensions, next.clone()).await;
+            match handle_mirror_result(mirror, result, &mut last_error) {
+                Some(resp) => return Ok(resp),
+                None => continue,
             }
         }
 
         Err(last_error.unwrap_or_else(|| {
             MiddlewareError::middleware(mirror_error("所有镜像均不可用"))
         }))
+    }
+}
+
+fn handle_mirror_result(
+    mirror: &Url,
+    result: MiddlewareResult<Response>,
+    last_error: &mut Option<MiddlewareError>,
+) -> Option<Response> {
+    match result {
+        Ok(resp) => Some(resp),
+        Err(err) => {
+            warn!("镜像 {} 不可用", mirror);
+            *last_error = Some(err);
+            None
+        }
     }
 }
 
@@ -77,7 +108,7 @@ async fn try_mirror(
 ) -> MiddlewareResult<Response> {
     let attempt_url = build_attempt_url(mirror, req.url())?;
 
-    for attempt in 0..2 {
+    for attempt in 0..3 {
         let attempt_req = clone_request(req, attempt_url.clone())?;
         let result = next.clone().run(attempt_req, extensions).await;
 
@@ -116,12 +147,19 @@ async fn evaluate_response(
     attempt: usize,
     resp: Response,
 ) -> AttemptOutcome {
-    if !resp.status().is_server_error() || attempt > 0 {
+    if resp.status().is_success() {
         return AttemptOutcome::Return(resp);
     }
-    warn!("镜像 {} 返回 {}，准备重试", mirror, resp.status());
-    sleep_before_retry().await;
-    AttemptOutcome::Retry
+    if attempt == 0 {
+        warn!("镜像 {} 返回 {}，准备重试", mirror, resp.status());
+        sleep_before_retry().await;
+        return AttemptOutcome::Retry;
+    }
+    AttemptOutcome::Fail(MiddlewareError::middleware(mirror_error(format!(
+        "镜像 {} 返回 {}",
+        mirror,
+        resp.status()
+    ))))
 }
 
 fn evaluate_error(

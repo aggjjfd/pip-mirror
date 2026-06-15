@@ -71,7 +71,7 @@ pub struct Config {
     pub repository_dir: PathBuf,
     #[serde(default = "default_incremental_dir")]
     pub incremental_dir: PathBuf,
-    #[serde(default = "default_pypi_url")]
+    #[serde(default)]
     pub pypi_url: String,
     #[serde(default)]
     pub pypi_urls: Vec<String>,
@@ -270,6 +270,7 @@ impl Config {
 
     pub fn validate(&self) -> Result<(), String> {
         self.validate_no_url_names()?;
+        self.validate_pypi_urls()?;
         self.validate_url_specs()
     }
 
@@ -308,6 +309,24 @@ impl Config {
         }
         Ok(())
     }
+
+    fn validate_pypi_urls(&self) -> Result<(), String> {
+        for url in &self.effective_mirrors() {
+            validate_mirror_url(url)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_mirror_url(url: &str) -> Result<(), String> {
+    let safe = crate::filters::redact_url_for_display(url);
+    let parsed = Url::parse(url)
+        .map_err(|e| format!("镜像地址解析失败 ({safe}): {e}"))?;
+    let scheme = parsed.scheme().to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!("镜像地址只支持 http/https 协议: {safe}"));
+    }
+    Ok(())
 }
 
 fn validate_url_spec(u: &PackageUrlSpec) -> Option<String> {

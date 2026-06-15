@@ -9,10 +9,13 @@ use pip_mirror::resolver::pubgrub::{bare_name, collect_pkg_extras};
 use pip_mirror::resolver::solve::solve_one_target;
 use pip_mirror::resolver::types::TargetEnv;
 
-const PYPI_URL: &str = "https://pypi.org";
 const LINUX_MAX_GLIBC: &str = "2.39";
 const TEST_RESOLVE_WORKERS: usize = 4;
 const TEST_METADATA_WORKERS: usize = 8;
+
+fn pypi_urls() -> [String; 1] {
+    ["https://pypi.org".to_string()]
+}
 
 fn py312_linux_target() -> TargetEnv {
     TargetEnv::test_env("linux", "x86_64", "3.12")
@@ -70,9 +73,13 @@ async fn solve_exact_target(
     package_ref: &str,
     target: &TargetEnv,
 ) -> (Version, HashSet<String>) {
-    let client = reqwest::Client::new();
-    let cache =
-        MetadataCache::new(client, PYPI_URL.to_string(), TEST_METADATA_WORKERS);
+    let client =
+        reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build();
+    let cache = MetadataCache::new(
+        client,
+        pypi_urls()[0].clone(),
+        TEST_METADATA_WORKERS,
+    );
     let package = bare_name(package_ref);
     let extras = collect_pkg_extras(&[package_ref.to_string()])
         .remove(&package)
@@ -141,7 +148,8 @@ async fn test_solve_one_target_matches_uv_for_requests_linux_py312() {
 #[ignore = "e2e network test: runs ~2.5 min against PyPI"]
 async fn test_build_dependency_plan_e2e_smoke() {
     pip_mirror::logging::init(false);
-    let client = reqwest::Client::new();
+    let client =
+        reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build();
     let e2e_packages = [
         "openai",
         "gradio",
@@ -154,7 +162,7 @@ async fn test_build_dependency_plan_e2e_smoke() {
     for package in e2e_packages {
         let params = PlanParams {
             top_packages: &[package.to_string()],
-            pypi_url: PYPI_URL,
+            pypi_urls: &pypi_urls(),
             top_versions_per_package: 1,
             adjacent_versions_per_side: 0,
             allow_prerelease: false,

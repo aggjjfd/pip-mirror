@@ -9,7 +9,7 @@ use crate::filters::{
 use crate::hex_digest;
 use crate::progress::{FileStatus, ProgressHandle, SyncEvent};
 use dashmap::DashMap;
-use reqwest::Client;
+use reqwest_middleware::ClientWithMiddleware;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
@@ -115,7 +115,7 @@ async fn write_atomic(dest_path: &Path, bytes: &[u8]) -> (bool, String) {
 
 /// Download a single file (HTTP/HTTPS) or copy a local file (file://).
 pub async fn download_file(
-    client: &Client,
+    client: &ClientWithMiddleware,
     fi: &FileInfo,
     dest: &Path,
 ) -> (bool, String) {
@@ -184,7 +184,7 @@ async fn try_prefetched_write(
 }
 
 async fn try_network_download(
-    client: &reqwest::Client,
+    client: &ClientWithMiddleware,
     fi: &FileInfo,
     dest: &Path,
     store: &Option<Arc<crate::store::DownloadStore>>,
@@ -211,7 +211,7 @@ async fn try_network_download(
 
 #[allow(clippy::too_many_arguments)]
 async fn try_download(
-    client: &reqwest::Client,
+    client: &ClientWithMiddleware,
     store: &Option<Arc<crate::store::DownloadStore>>,
     prefetched_files: &PrefetchedFiles,
     fi: &FileInfo,
@@ -259,7 +259,7 @@ fn should_skip(fi: &FileInfo, include_source: bool) -> bool {
     fi.filename.ends_with(".whl") && !is_accepted_wheel(&fi.filename)
 }
 pub async fn download_pkg_files(
-    client: &reqwest::Client,
+    client: &ClientWithMiddleware,
     repo: &std::path::Path,
     files: &[FileInfo],
     include_source: bool,
@@ -279,7 +279,7 @@ pub async fn download_pkg_files(
 }
 #[allow(clippy::too_many_arguments)]
 pub async fn download_pkg_files_with_prefetched(
-    client: &reqwest::Client,
+    client: &ClientWithMiddleware,
     repo: &std::path::Path,
     files: &[FileInfo],
     prefetched_files: &PrefetchedFiles,

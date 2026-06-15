@@ -1,6 +1,10 @@
 use dashmap::DashMap;
 use pip_mirror::downloader;
 
+fn test_client() -> reqwest_middleware::ClientWithMiddleware {
+    reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build()
+}
+
 #[test]
 fn test_select_latest_versions_basic() {
     let files = vec![
@@ -311,7 +315,7 @@ async fn test_download_file_copies_local_wheel() {
         yanked: None,
     };
 
-    let client = reqwest::Client::new();
+    let client = test_client();
     let (ok, msg) = downloader::download_file(&client, &fi, &dest).await;
     assert!(ok, "copy failed: {msg}");
     assert!(dest.exists());
@@ -338,7 +342,7 @@ async fn test_download_file_local_hash_mismatch_fails() {
         yanked: None,
     };
 
-    let client = reqwest::Client::new();
+    let client = test_client();
     let (ok, msg) = downloader::download_file(&client, &fi, &dest).await;
     assert!(!ok);
     assert!(msg.contains("hash") || msg.contains("校验"));
@@ -362,7 +366,7 @@ async fn test_download_file_local_missing_source_fails() {
         yanked: None,
     };
 
-    let client = reqwest::Client::new();
+    let client = test_client();
     let (ok, msg) = downloader::download_file(&client, &fi, &dest).await;
     assert!(!ok);
     assert!(msg.contains("读取") || msg.contains("失败"));
@@ -394,7 +398,7 @@ async fn test_explicit_url_wheel_bypasses_platform_filter() {
         yanked: None,
     };
 
-    let client = reqwest::Client::new();
+    let client = test_client();
     let result = downloader::download_pkg_files_with_prefetched(
         &client,
         tmp.path(),

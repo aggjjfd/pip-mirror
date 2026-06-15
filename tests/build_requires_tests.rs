@@ -4,12 +4,19 @@ use pip_mirror::resolver::build_requires::{
     download_sdist, probe_build_requires_from_version_json,
 };
 
+fn test_client() -> reqwest_middleware::ClientWithMiddleware {
+    reqwest_middleware::ClientBuilder::new(
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap(),
+    )
+    .build()
+}
+
 #[tokio::test]
 async fn test_download_sdist_error_does_not_leak_credentials() {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client = test_client();
     let url = "http://user:pass@127.0.0.1:1/pkg-1.0.tar.gz?token=secret";
     let err = download_sdist(&client, url).await.expect_err("should fail");
     assert!(
@@ -21,10 +28,7 @@ async fn test_download_sdist_error_does_not_leak_credentials() {
 
 #[tokio::test]
 async fn test_probe_build_requires_sdist_url_error_does_not_leak_credentials() {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client = test_client();
     let version_json = serde_json::json!({
         "urls": [{
             "packagetype": "sdist",
@@ -75,10 +79,7 @@ async fn test_download_sdist_bytes_error_does_not_leak_credentials() {
         .to_vec();
     let port = start_partial_http_server(response).await;
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client = test_client();
     let url = format!(
         "http://user:pass@127.0.0.1:{}/pkg-1.0.tar.gz?token=secret",
         port

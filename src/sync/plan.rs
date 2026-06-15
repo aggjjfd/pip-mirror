@@ -2,6 +2,8 @@ use dashmap::DashMap;
 use pep440_rs::Version;
 use type_state_builder::TypeStateBuilder;
 
+use reqwest_middleware::ClientWithMiddleware;
+
 use crate::downloader::{FileInfo, PrefetchedFiles};
 use crate::resolver::metadata::MetadataCache;
 use crate::resolver::plan::{DependencyPlan, select_top_versions};
@@ -40,14 +42,16 @@ impl<'a> FileSelector<'a> {
 
 pub async fn build_top_only_plan(
     config: &crate::config::Config,
-    client: &reqwest::Client,
+    client: &ClientWithMiddleware,
     pkgs: &[String],
 ) -> Result<DependencyPlan, ResolveError> {
-    let cache = MetadataCache::new(
-        client.clone(),
-        config.pypi_url.clone(),
-        config.metadata_workers,
-    );
+    let base_url = config
+        .effective_mirrors()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "https://pypi.org".to_string());
+    let cache =
+        MetadataCache::new(client.clone(), base_url, config.metadata_workers);
     let targets =
         crate::resolver::types::TargetEnv::from_specs(&config.targets);
     let selector = FileSelector::builder()

@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use tracing::info;
 
@@ -9,7 +10,6 @@ use crate::python_builds::{
 };
 
 pub async fn finalize_sync(
-    client: &reqwest::Client,
     repo: &std::path::Path,
     download_python_builds: bool,
     download_workers: usize,
@@ -23,7 +23,6 @@ pub async fn finalize_sync(
     }
 
     let python_build_entries = maybe_download_python_builds(
-        client,
         repo,
         download_python_builds,
         download_workers,
@@ -44,7 +43,6 @@ pub async fn finalize_sync(
 }
 
 async fn maybe_download_python_builds(
-    client: &reqwest::Client,
     repo: &Path,
     enabled: bool,
     workers: usize,
@@ -53,8 +51,11 @@ async fn maybe_download_python_builds(
     if !enabled {
         return Ok(None);
     }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .build()?;
     let entries =
-        download_python_builds_batch(client, repo, workers, progress).await?;
+        download_python_builds_batch(&client, repo, workers, progress).await?;
     info!("已下载 Python 解释器，开始生成 python-builds/index.json");
     Ok(Some(entries))
 }
@@ -79,7 +80,6 @@ async fn rebuild_indexes(
 }
 
 pub async fn finalize_mirror(
-    _client: &reqwest::Client,
     repo: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let repo_clone = repo.to_path_buf();

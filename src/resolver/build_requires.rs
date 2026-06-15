@@ -4,6 +4,8 @@ use std::io::{Cursor, Read};
 use futures::{StreamExt, stream};
 use pep440_rs::Version;
 
+use reqwest_middleware::ClientWithMiddleware;
+
 use crate::downloader::FileInfo;
 
 use super::error::ResolveError;
@@ -32,7 +34,7 @@ struct SdistCandidate {
 }
 
 pub async fn probe_build_requires_from_version_json(
-    client: &reqwest::Client,
+    client: &ClientWithMiddleware,
     version_json: &serde_json::Value,
 ) -> Result<BuildRequiresProbe, String> {
     let Some(candidate) = find_sdist_candidate(version_json) else {
@@ -85,7 +87,7 @@ fn find_sdist_candidate(
 }
 
 pub async fn download_sdist(
-    client: &reqwest::Client,
+    client: &ClientWithMiddleware,
     url: &str,
 ) -> Result<Vec<u8>, String> {
     let resp = client

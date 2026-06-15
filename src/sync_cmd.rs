@@ -126,7 +126,7 @@ async fn perform_sync_full(
             return Ok::<(), Box<dyn std::error::Error>>(());
         }
         crate::sync::clean_repo(&config.repository_dir)?;
-        let (client, _downloaded) = crate::sync::do_sync(
+        let (_client, _downloaded) = crate::sync::do_sync(
             &config,
             &pkgs,
             no_deps,
@@ -135,7 +135,7 @@ async fn perform_sync_full(
             Some(progress.clone()),
         )
         .await?;
-        crate::sync::finalize_mirror(&client, &config.repository_dir).await?;
+        crate::sync::finalize_mirror(&config.repository_dir).await?;
         Ok::<(), Box<dyn std::error::Error>>(())
     })
     .await
