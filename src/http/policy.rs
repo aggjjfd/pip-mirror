@@ -28,7 +28,7 @@ fn default_retry_on_body_error(_err: &serde_json::Error) -> bool {
 }
 
 impl RetryPolicy {
-    /// 默认镜像同步策略：3 次尝试、100ms 退避，遇到 5xx/408/超时/连接/请求错误时重试。
+    /// 默认镜像同步策略：3 次尝试、100ms 退避，遇到 5xx/408/超时/连接/请求错误以及响应体 JSON 解析错误时重试。
     pub fn mirror_default() -> Self {
         Self {
             max_attempts: 3,

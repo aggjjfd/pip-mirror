@@ -144,6 +144,43 @@ async fn test_non_mirror_origin_url_not_rewritten() {
     let _ = capture_handle.await;
 }
 
+#[derive(Clone)]
+struct FlakyJsonState {
+    hits: Arc<AtomicUsize>,
+}
+
+async fn flaky_json_handler(
+    State(state): State<FlakyJsonState>,
+) -> (StatusCode, Body) {
+    let n = state.hits.fetch_add(1, Ordering::SeqCst);
+    if n < 2 {
+        (StatusCode::OK, Body::from("not json"))
+    } else {
+        (StatusCode::OK, Body::from(r#"{"name":"demo"}"#))
+    }
+}
+
+#[tokio::test]
+async fn test_json_decode_retry_success() {
+    let state = FlakyJsonState {
+        hits: Arc::new(AtomicUsize::new(0)),
+    };
+    let app = Router::new()
+        .route("/flaky.json", get(flaky_json_handler))
+        .with_state(state.clone());
+    let (port, handle) = start_server(app).await;
+
+    let client = HttpClient::builder().build().unwrap();
+    let url = format!("http://127.0.0.1:{port}/flaky.json");
+    let value = client.get_json(&url).await.unwrap();
+
+    assert_eq!(value["name"], "demo");
+    assert!(state.hits.load(Ordering::SeqCst) > 1);
+
+    handle.abort();
+    let _ = handle.await;
+}
+
 async fn invalid_json_handler() -> (StatusCode, Body) {
     (StatusCode::OK, Body::from("not json"))
 }

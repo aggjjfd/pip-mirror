@@ -148,7 +148,11 @@ impl HttpClient {
             }
         }
 
-        unreachable!()
+        // max_attempts 为 0 时循环体不会执行，安全兜底。
+        Err(HttpError::Http {
+            status: 0,
+            url: url.to_string(),
+        })
     }
 
     async fn try_get_json_once(
