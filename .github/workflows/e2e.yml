@@ -45,15 +45,12 @@ jobs:
         with:
           version: 'latest'
 
-      - name: Install musl toolchain
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-
       - name: Build pip-mirror (Rust)
         run: |
           set -euo pipefail
           rustup default stable
           cargo build --release
-          echo "PIP_MIRROR_BIN=$(pwd)/target/x86_64-unknown-linux-musl/release/pip-mirror" >> "$GITHUB_ENV"
+          echo "PIP_MIRROR_BIN=$(pwd)/target/release/pip-mirror" >> "$GITHUB_ENV"
 
       - name: '生成三机配置（外网全量 / 外网增量 / 内网 serve）'
         run: |
