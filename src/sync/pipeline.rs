@@ -123,6 +123,7 @@ impl SyncPipeline {
             RecordPhase::run(repo, &result).await?;
             FinalizePhase::run(
                 repo,
+                &self.client,
                 self.download_python_builds,
                 self.config.download_workers,
                 progress.clone(),

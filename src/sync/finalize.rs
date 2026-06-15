@@ -11,6 +11,7 @@ use crate::python_builds::{
 
 pub async fn finalize_sync(
     repo: &std::path::Path,
+    client: &HttpClient,
     download_python_builds: bool,
     download_workers: usize,
     progress: Option<ProgressHandle>,
@@ -23,6 +24,7 @@ pub async fn finalize_sync(
     }
 
     let python_build_entries = maybe_download_python_builds(
+        client,
         repo,
         download_python_builds,
         download_workers,
@@ -43,6 +45,7 @@ pub async fn finalize_sync(
 }
 
 async fn maybe_download_python_builds(
+    client: &HttpClient,
     repo: &Path,
     enabled: bool,
     workers: usize,
@@ -51,9 +54,11 @@ async fn maybe_download_python_builds(
     if !enabled {
         return Ok(None);
     }
-    let client = HttpClient::builder().with_timeout(300).build()?;
+    // python-builds 使用 uv metadata 作为数据源，具有独立的 skip-existing、
+    // sha256 校验与进度事件语义，与 BatchDownloader 负责的 PyPI wheel 下载
+    // 差异较大，因此保持独立下载路径，仅复用 HttpClient seam。
     let entries =
-        download_python_builds_batch(&client, repo, workers, progress).await?;
+        download_python_builds_batch(client, repo, workers, progress).await?;
     info!("已下载 Python 解释器，开始生成 python-builds/index.json");
     Ok(Some(entries))
 }
