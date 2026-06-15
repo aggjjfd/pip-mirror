@@ -1,10 +1,13 @@
+use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
+
+use crate::redact::redact_url_for_display;
 
 use percent_encoding::percent_decode_str;
 use url::Url;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ParsedUrlWheel {
     pub url: String,
     pub filename: String,
@@ -17,21 +20,26 @@ pub struct ParsedUrlWheel {
     pub dist_info_dir: String,
 }
 
-/// Parse a URL pointing to a `.whl` file and extract package metadata.
-///
-/// Supported schemes: `http`, `https`, `file`.
-/// The filename must conform to PEP 427:
-/// `{distribution}-{version}(-{build})?-{python}-{abi}-{platform}.whl`
-fn check_scheme(scheme: &str) -> Result<(), String> {
-    if scheme != "http" && scheme != "https" && scheme != "file" {
-        return Err(format!("不支持的 URL scheme: {scheme}"));
+impl fmt::Debug for ParsedUrlWheel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ParsedUrlWheel")
+            .field("url", &redact_url_for_display(&self.url))
+            .field("filename", &self.filename)
+            .field("package_name", &self.package_name)
+            .field("version", &self.version)
+            .field("sha256", &self.sha256)
+            .field("dist_info_dir", &self.dist_info_dir)
+            .finish()
     }
-    Ok(())
 }
 
+/// Parse a URL pointing to a `.whl` file and extract package metadata.
+///
+/// 调用方应确保 URL 已通过 `ConfigValidator` 校验（支持 http/https/file、
+/// 路径以 `.whl` 结尾）。本函数只负责提取文件名并按 PEP 427 解析结构：
+/// `{distribution}-{version}(-{build})?-{python}-{abi}-{platform}.whl`
 fn extract_filename(url: &str) -> Result<String, String> {
     let parsed = Url::parse(url).map_err(|e| format!("无效的 URL: {e}"))?;
-    check_scheme(parsed.scheme())?;
 
     let path = percent_decode_str(parsed.path())
         .decode_utf8()
@@ -50,11 +58,6 @@ pub fn parse_wheel_url(
     sha256: Option<String>,
 ) -> Result<ParsedUrlWheel, String> {
     let filename = extract_filename(url)?;
-
-    if !filename.to_ascii_lowercase().ends_with(".whl") {
-        return Err(format!("URL 必须指向 .whl 文件: {filename}"));
-    }
-
     let (package_name, version, dist_info_dir) =
         parse_wheel_filename(&filename)?;
 
@@ -275,14 +278,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rejects_unsupported_scheme() {
-        assert!(
-            parse_wheel_url("ftp://example.com/foo-1.0-py3-none-any.whl", None)
-                .is_err()
-        );
-    }
-
-    #[test]
     fn test_parse_wheel_url_with_query_and_fragment() {
         let parsed = parse_wheel_url(
             "https://example.com/foo-1.0-py3-none-any.whl?token=abc#frag",
@@ -306,5 +301,23 @@ mod tests {
         // underscores/dots/hyphens and lowercases.
         assert_eq!(parsed.package_name, "foo bar");
         assert_eq!(parsed.version, "1.0");
+    }
+
+    #[test]
+    fn test_parsed_url_wheel_debug_redacts_credentials() {
+        let parsed = parse_wheel_url(
+            "https://user:pass@example.com/foo-1.0-py3-none-any.whl?token=secret",
+            None,
+        )
+        .unwrap();
+        let debug = format!("{parsed:?}");
+        assert!(
+            !debug.contains("user:pass"),
+            "Debug output leaked credentials: {debug}"
+        );
+        assert!(
+            !debug.contains("token=secret"),
+            "Debug output leaked token: {debug}"
+        );
     }
 }

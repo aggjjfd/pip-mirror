@@ -305,3 +305,22 @@ fn test_config_validator_looks_like_url() {
     assert!(!ConfigValidator::looks_like_url("requests"));
     assert!(!ConfigValidator::looks_like_url(""));
 }
+
+#[test]
+fn test_config_error_debug_redacts_credentials() {
+    let spec = PackageUrlSpec {
+        url: "ftp://user:pass@example.com/foo.whl?token=secret".to_string(),
+        sha256: None,
+    };
+    let err =
+        ConfigValidator::validate_package_url(&spec).expect_err("should fail");
+    let debug = format!("{err:?}");
+    assert!(
+        !debug.contains("user:pass"),
+        "Debug output leaked credentials: {debug}"
+    );
+    assert!(
+        !debug.contains("token=secret"),
+        "Debug output leaked token: {debug}"
+    );
+}

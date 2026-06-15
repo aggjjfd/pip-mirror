@@ -6,7 +6,6 @@ use super::{Config, PackageSpec, PackageUrlSpec};
 use crate::redact::redact_url_for_display;
 
 /// 配置校验阶段的统一错误类型。
-#[derive(Debug)]
 pub enum ConfigError {
     /// 镜像地址无效。
     InvalidMirror { url: String, reason: String },
@@ -14,6 +13,27 @@ pub enum ConfigError {
     InvalidPackageUrl { url: String, reason: String },
     /// 包名看起来像 URL，应使用 `url = "..."` 表格形式。
     UrlMistakenForName(String),
+}
+
+impl fmt::Debug for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfigError::InvalidMirror { url, reason } => f
+                .debug_struct("InvalidMirror")
+                .field("url", &redact_url_for_display(url))
+                .field("reason", reason)
+                .finish(),
+            ConfigError::InvalidPackageUrl { url, reason } => f
+                .debug_struct("InvalidPackageUrl")
+                .field("url", &redact_url_for_display(url))
+                .field("reason", reason)
+                .finish(),
+            ConfigError::UrlMistakenForName(name) => f
+                .debug_tuple("UrlMistakenForName")
+                .field(&redact_url_for_display(name))
+                .finish(),
+        }
+    }
 }
 
 impl fmt::Display for ConfigError {
