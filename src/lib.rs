@@ -10,6 +10,7 @@ pub mod logging;
 pub mod packager;
 pub mod progress;
 pub mod python_builds;
+pub mod redact;
 pub mod resolver;
 pub mod server;
 pub mod store;

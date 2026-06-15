@@ -135,7 +135,7 @@ fn is_direct_url_req(req: &pep508_rs::Requirement) -> bool {
 
 fn try_redact_whole_url(token: &str) -> Option<String> {
     if url::Url::parse(token).is_ok() {
-        Some(crate::filters::redact_url_for_display(token))
+        Some(crate::redact::redact_url_for_display(token))
     } else {
         None
     }
@@ -151,7 +151,7 @@ fn try_redact_scheme_url(token: &str) -> Option<String> {
         .unwrap_or(0);
     let candidate = &token[url_start..];
     let mut result = token[..url_start].to_string();
-    result.push_str(&crate::filters::redact_url_for_display(candidate));
+    result.push_str(&crate::redact::redact_url_for_display(candidate));
     Some(result)
 }
 
@@ -161,7 +161,7 @@ fn try_redact_at_url(token: &str) -> Option<String> {
     }
     let with_scheme = format!("https://{token}");
     if url::Url::parse(&with_scheme).is_ok() {
-        Some(crate::filters::redact_url_for_display(&with_scheme))
+        Some(crate::redact::redact_url_for_display(&with_scheme))
     } else {
         Some("<无法解析的 URL>".to_string())
     }

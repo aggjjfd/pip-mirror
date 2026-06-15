@@ -1,33 +1,9 @@
 use std::collections::HashSet;
 
-use url::Url;
-
-use crate::downloader::RemoteFile;
 use crate::resolver::types::TargetEnv;
 
-/// Strip query, fragment and userinfo from a URL for safe logging/errors.
-///
-/// If the string cannot be parsed as a URL, returns a placeholder instead of
-/// echoing the original input, so malformed URLs that contain credentials are
-/// not leaked in error messages.
-pub fn redact_url_for_display(url: &str) -> String {
-    match Url::parse(url) {
-        Ok(mut parsed) => {
-            parsed.set_query(None);
-            parsed.set_fragment(None);
-            parsed.set_username("").ok();
-            parsed.set_password(None).ok();
-            if parsed.host_str().is_none()
-                && parsed.scheme() != "file"
-                && url.contains('@')
-            {
-                return "<无法解析的 URL>".to_string();
-            }
-            parsed.to_string()
-        }
-        Err(_) => "<无法解析的 URL>".to_string(),
-    }
-}
+pub mod file;
+pub use file::ResolvedFile;
 
 static REJECTED_SUBSTRINGS: &[&str] = &[
     "aarch64",
@@ -177,7 +153,7 @@ pub fn is_source_distribution(filename: &str) -> bool {
 }
 
 pub fn sdist_fallback_allowed(
-    files: &[RemoteFile],
+    files: &[ResolvedFile],
     include_source: bool,
 ) -> bool {
     include_source && files.iter().any(|f| is_source_distribution(&f.filename))
@@ -265,7 +241,7 @@ pub fn wheel_is_installable_for_target(
 }
 
 pub fn version_is_installable_for_target(
-    files: &[RemoteFile],
+    files: &[ResolvedFile],
     target: &TargetEnv,
     include_source: bool,
     max_glibc: &str,
@@ -283,7 +259,7 @@ pub fn version_is_installable_for_target(
 // ── file selection helpers ──
 
 fn wheel_is_download_candidate(
-    fi: &RemoteFile,
+    fi: &ResolvedFile,
     targets: &[TargetEnv],
     max_glibc: &str,
     glibc: (u32, u32),
@@ -300,11 +276,11 @@ fn wheel_is_download_candidate(
 /// Returns the kept wheels; if no wheel is kept and `include_source` is true,
 /// falls back to the sdist.
 pub fn select_files_for_version(
-    files: &[RemoteFile],
+    files: &[ResolvedFile],
     targets: &[TargetEnv],
     include_source: bool,
     max_glibc: &str,
-) -> Vec<RemoteFile> {
+) -> Vec<ResolvedFile> {
     let glibc = parse_glibc_version(max_glibc).unwrap_or(DEFAULT_MAX_GLIBC);
 
     let mut kept_wheels = Vec::new();

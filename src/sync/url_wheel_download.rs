@@ -18,7 +18,7 @@ fn check_content_length(url: &str, len: u64) -> Result<(), ResolveError> {
     if len > MAX_REMOTE_WHEEL_BYTES {
         return Err(ResolveError::Config(format!(
             "whl 文件过大 ({}): {} > {} 字节；请手动声明其依赖",
-            crate::filters::redact_url_for_display(url),
+            crate::redact::redact_url_for_display(url),
             len,
             MAX_REMOTE_WHEEL_BYTES
         )));
@@ -47,13 +47,13 @@ fn append_chunk(
     let chunk = chunk.map_err(|e| {
         ResolveError::Config(format!(
             "读取 {} 响应失败: {e}",
-            crate::filters::redact_url_for_display(url)
+            crate::redact::redact_url_for_display(url)
         ))
     })?;
     if bytes.len() as u64 + chunk.len() as u64 > MAX_REMOTE_WHEEL_BYTES {
         return Err(ResolveError::Config(format!(
             "whl 文件过大 ({}): 超过 {} 字节；请手动声明其依赖",
-            crate::filters::redact_url_for_display(url),
+            crate::redact::redact_url_for_display(url),
             MAX_REMOTE_WHEEL_BYTES
         )));
     }
@@ -102,7 +102,7 @@ fn extract_requires_dist_from_bytes_err(
     .map_err(|e| {
         ResolveError::Config(format!(
             "读取 {} 的 METADATA 失败: {e}",
-            crate::filters::redact_url_for_display(url)
+            crate::redact::redact_url_for_display(url)
         ))
     })
 }
@@ -137,7 +137,7 @@ async fn process_single_url_wheel(
             .map_err(|e| {
                 ResolveError::Config(format!(
                     "URL whl 解析失败 ({}): {e}",
-                    crate::filters::redact_url_for_display(&spec.url)
+                    crate::redact::redact_url_for_display(&spec.url)
                 ))
             })?;
 
@@ -183,7 +183,7 @@ pub async fn collect_url_wheel_deps(
             .map_err(|e| {
                 ResolveError::Config(format!(
                     "URL whl 解析失败 ({}): {e}",
-                    crate::filters::redact_url_for_display(&spec.url)
+                    crate::redact::redact_url_for_display(&spec.url)
                 ))
             })?;
         let key = (parsed.package_name, parsed.filename);

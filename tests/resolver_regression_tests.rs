@@ -13,7 +13,8 @@ use axum::{
 use dashmap::DashMap;
 use futures::future::join_all;
 use pep440_rs::Version;
-use pip_mirror::downloader::{Downloadable, FileInfo};
+use pip_mirror::downloader::Downloadable;
+use pip_mirror::filters::ResolvedFile;
 use pip_mirror::filters::version_is_installable_for_target;
 use pip_mirror::http::HttpClient;
 use pip_mirror::resolver::eligibility::{ParsedDepsCacheKey, SolveContext};
@@ -79,13 +80,16 @@ fn test_markers_python_version_fork() {
     assert_eq!(deps[0].version_spec, ">=1.26");
 }
 
-fn file(name: &str) -> FileInfo {
-    FileInfo::builder()
-        .filename(name.to_string())
-        .url("https://example.com/file".to_string())
-        .package_name("demo".to_string())
-        .version("1.0.0".to_string())
-        .build()
+fn file(name: &str) -> ResolvedFile {
+    ResolvedFile {
+        filename: name.to_string(),
+        url: "https://example.com/file".to_string(),
+        package_name: "demo".to_string(),
+        version: "1.0.0".to_string(),
+        sha256: None,
+        size: None,
+        yanked: None,
+    }
 }
 
 #[test]

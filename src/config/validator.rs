@@ -3,7 +3,7 @@ use std::fmt;
 use url::Url;
 
 use super::{Config, PackageSpec, PackageUrlSpec};
-use crate::filters::redact_url_for_display;
+use crate::redact::redact_url_for_display;
 
 /// 配置校验阶段的统一错误类型。
 #[derive(Debug)]

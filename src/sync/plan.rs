@@ -5,7 +5,9 @@ use type_state_builder::TypeStateBuilder;
 use crate::downloader::{Downloadable, DownloadableItem, PrefetchedFiles};
 use crate::http::HttpClient;
 use crate::resolver::metadata::MetadataCache;
-use crate::resolver::plan::{DependencyPlan, select_top_versions};
+use crate::resolver::plan::{
+    DependencyPlan, resolved_file_to_remote, select_top_versions,
+};
 use crate::resolver::pubgrub::bare_name;
 use crate::resolver::resolve::ResolveError;
 use crate::resolver::types::TargetEnv;
@@ -37,7 +39,7 @@ impl<'a> FileSelector<'a> {
             self.linux_max_glibc,
         )
         .into_iter()
-        .map(DownloadableItem::Remote)
+        .map(|rf| DownloadableItem::Remote(resolved_file_to_remote(rf)))
         .collect())
     }
 }

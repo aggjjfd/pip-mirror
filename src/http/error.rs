@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::filters::redact_url_for_display;
+use crate::redact::redact_url_for_display;
 
 /// 统一 HTTP 错误类型，避免在日志/错误信息中泄露凭证。
 #[derive(Debug)]

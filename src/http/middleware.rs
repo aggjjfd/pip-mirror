@@ -8,8 +8,8 @@ use reqwest_middleware::{
 };
 use tracing::warn;
 
-use crate::filters::redact_url_for_display;
 use crate::http::policy::RetryPolicy;
+use crate::redact::redact_url_for_display;
 
 #[derive(Debug)]
 pub struct MirrorRetryMiddleware {
@@ -121,7 +121,11 @@ fn record_mirror_failure(
     attempted_urls: &mut Vec<String>,
     last_error: &mut Option<MiddlewareError>,
 ) {
-    warn!("镜像 {} 不可用: {}", mirror, failure.err);
+    warn!(
+        "镜像 {} 不可用: {}",
+        redact_url_for_display(mirror.as_str()),
+        failure.err
+    );
     attempted_urls.push(failure.attempted_url);
     *last_error = Some(failure.err);
 }
@@ -265,12 +269,20 @@ async fn evaluate_response(
         return AttemptOutcome::Return(resp);
     }
     if should_retry_status(resp.status(), attempt, policy) {
-        warn!("镜像 {} 返回 {}，准备重试", mirror, resp.status());
+        warn!(
+            "镜像 {} 返回 {}，准备重试",
+            redact_url_for_display(mirror.as_str()),
+            resp.status()
+        );
         sleep_before_retry(policy.backoff_ms).await;
         return AttemptOutcome::Retry;
     }
     AttemptOutcome::Fail(MiddlewareError::middleware(MirrorError(
-        format!("镜像 {} 返回 {}", mirror, resp.status()),
+        format!(
+            "镜像 {} 返回 {}",
+            redact_url_for_display(mirror.as_str()),
+            resp.status()
+        ),
         Some(resp.status().as_u16()),
     )))
 }
@@ -290,7 +302,10 @@ async fn evaluate_error(
     policy: &RetryPolicy,
 ) -> AttemptOutcome {
     if should_retry_error(&err, attempt, policy) {
-        warn!("镜像 {} 请求失败: {err}，准备重试", mirror);
+        warn!(
+            "镜像 {} 请求失败: {err}，准备重试",
+            redact_url_for_display(mirror.as_str())
+        );
         sleep_before_retry(policy.backoff_ms).await;
         return AttemptOutcome::Retry;
     }

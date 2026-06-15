@@ -5,7 +5,8 @@ use futures::{StreamExt, stream};
 use pep440_rs::Version;
 use tracing::{debug, info};
 
-use crate::downloader::{Downloadable, DownloadableItem};
+use crate::downloader::{Downloadable, DownloadableItem, RemoteFile};
+use crate::filters::ResolvedFile;
 use crate::http::HttpClient;
 use crate::progress::{ProgressHandle, SyncEvent};
 
@@ -236,7 +237,7 @@ async fn collect_planned_files(
     let mut planned_files: Vec<_> = collected
         .into_iter()
         .flat_map(|(_, s)| s)
-        .map(DownloadableItem::Remote)
+        .map(|rf| DownloadableItem::Remote(resolved_file_to_remote(rf)))
         .collect();
     planned_files.sort_by(|l, r| l.filename().cmp(r.filename()));
     planned_files.dedup_by(|l, r| l.filename() == r.filename());
@@ -256,4 +257,16 @@ fn build_file_jobs(
         .enumerate()
         .map(|(i, (p, v))| (i, p, v))
         .collect()
+}
+
+pub(crate) fn resolved_file_to_remote(rf: ResolvedFile) -> RemoteFile {
+    RemoteFile::builder()
+        .filename(rf.filename)
+        .url(rf.url)
+        .package_name(rf.package_name)
+        .version(rf.version)
+        .sha256(rf.sha256)
+        .size(rf.size)
+        .yanked(rf.yanked)
+        .build()
 }

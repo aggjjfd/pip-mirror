@@ -2,13 +2,13 @@ use std::collections::HashMap;
 
 use pep440_rs::Version;
 
-use crate::downloader::RemoteFile;
+use crate::filters::ResolvedFile;
 
 /// Package-level index: all versions and their files.
 #[derive(Debug, Clone)]
 pub struct PackageIndex {
     pub versions: Vec<Version>,
-    pub files_by_version: HashMap<Version, Vec<RemoteFile>>,
+    pub files_by_version: HashMap<Version, Vec<ResolvedFile>>,
 }
 
 /// Version-level metadata: requires_dist and requires_python.
@@ -122,33 +122,30 @@ pub(crate) fn parse_file_info(
     f: &serde_json::Value,
     pkg: &str,
     version_str: &str,
-) -> Option<RemoteFile> {
-    Some(
-        RemoteFile::builder()
-            .filename(f["filename"].as_str()?.to_string())
-            .url(f["url"].as_str()?.to_string())
-            .package_name(pkg.to_string())
-            .version(version_str.to_string())
-            .sha256(
-                f.get("digests")
-                    .and_then(|d| d.get("sha256"))
-                    .and_then(|s| s.as_str())
-                    .map(String::from),
-            )
-            .size(f["size"].as_u64())
-            .yanked(parse_yanked(f))
-            .build(),
-    )
+) -> Option<ResolvedFile> {
+    Some(ResolvedFile {
+        filename: f["filename"].as_str()?.to_string(),
+        url: f["url"].as_str()?.to_string(),
+        package_name: pkg.to_string(),
+        version: version_str.to_string(),
+        sha256: f
+            .get("digests")
+            .and_then(|d| d.get("sha256"))
+            .and_then(|s| s.as_str())
+            .map(String::from),
+        size: f["size"].as_u64(),
+        yanked: parse_yanked(f),
+    })
 }
 
 pub(crate) fn collect_files_by_version(
     releases: &serde_json::Map<String, serde_json::Value>,
     pkg: &str,
-) -> HashMap<Version, Vec<RemoteFile>> {
+) -> HashMap<Version, Vec<ResolvedFile>> {
     let mut result = HashMap::new();
     for (version_str, file_list) in releases {
         if let Ok(ver) = version_str.parse::<Version>() {
-            let files: Vec<RemoteFile> = file_list
+            let files: Vec<ResolvedFile> = file_list
                 .as_array()
                 .unwrap_or(&vec![])
                 .iter()

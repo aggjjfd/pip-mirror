@@ -31,7 +31,7 @@ pub fn explicit_wheel_from_spec(
             .map_err(|e| {
                 ResolveError::Config(format!(
                     "URL whl 解析失败 ({}): {e}",
-                    crate::filters::redact_url_for_display(&spec.url)
+                    crate::redact::redact_url_for_display(&spec.url)
                 ))
             })?;
     let wheel = ExplicitWheel {
@@ -62,7 +62,7 @@ fn apply_duplicate_resolution(
             "显式 URL wheel 覆盖同名 PyPI 结果: {} {} (url: {})",
             new.package_name(),
             new.filename(),
-            crate::filters::redact_url_for_display(new.source_url())
+            crate::redact::redact_url_for_display(new.source_url())
         );
         chosen.insert(key, new_idx);
         return;
@@ -71,7 +71,7 @@ fn apply_duplicate_resolution(
         "忽略重复的 wheel 文件: {} {} (url: {})",
         new.package_name(),
         new.filename(),
-        crate::filters::redact_url_for_display(new.source_url())
+        crate::redact::redact_url_for_display(new.source_url())
     );
 }
 
@@ -111,13 +111,13 @@ pub fn resolve_file_url(
     let url = Url::parse(url_str).map_err(|e| {
         ResolveError::Config(format!(
             "无效的 file URL ({}): {e}",
-            crate::filters::redact_url_for_display(url_str)
+            crate::redact::redact_url_for_display(url_str)
         ))
     })?;
     url.to_file_path().map_err(|_| {
         ResolveError::Config(format!(
             "无法将 file URL 转换为路径: {}",
-            crate::filters::redact_url_for_display(url_str)
+            crate::redact::redact_url_for_display(url_str)
         ))
     })
 }
@@ -135,7 +135,7 @@ async fn read_local_wheel_bytes(
     if metadata.len() > MAX_REMOTE_WHEEL_BYTES {
         return Err(ResolveError::Config(format!(
             "本地 whl 文件过大 ({}): 超过 {} 字节；请手动声明其依赖",
-            crate::filters::redact_url_for_display(url),
+            crate::redact::redact_url_for_display(url),
             MAX_REMOTE_WHEEL_BYTES
         )));
     }
@@ -159,7 +159,7 @@ async fn extract_requires_dist_blocking(
         .map_err(|e| {
             ResolveError::Config(format!(
                 "读取 {} 的 METADATA 失败: {e}",
-                crate::filters::redact_url_for_display(&url)
+                crate::redact::redact_url_for_display(&url)
             ))
         })
     })
@@ -180,7 +180,7 @@ pub async fn read_local_wheel_deps(
     {
         return Err(ResolveError::Config(format!(
             "{} 的 sha256 校验失败",
-            crate::filters::redact_url_for_display(url)
+            crate::redact::redact_url_for_display(url)
         )));
     }
     extract_requires_dist_blocking(

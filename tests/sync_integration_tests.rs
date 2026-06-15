@@ -4,8 +4,8 @@ use pip_mirror::config::{Config, PackageSpec, PackageUrlSpec, UvEmbedConfig};
 use pip_mirror::downloader::{
     Downloadable, DownloadableItem, ExplicitWheel, FileInfo,
 };
-use pip_mirror::filters::redact_url_for_display;
 use pip_mirror::http::HttpClient;
+use pip_mirror::redact::redact_url_for_display;
 use pip_mirror::resolver::resolve::ResolveError;
 use pip_mirror::sync::SyncError;
 use pip_mirror::sync::phases::PlanPhase;

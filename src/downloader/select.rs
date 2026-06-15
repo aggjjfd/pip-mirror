@@ -1,9 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use super::RemoteFile;
-use crate::filters::{
-    is_accepted_wheel, is_source_distribution, sdist_fallback_allowed,
-};
+use crate::filters::{is_accepted_wheel, is_source_distribution};
 
 fn filter_stable_versions(files: &[RemoteFile]) -> Vec<RemoteFile> {
     let stable: Vec<_> = files
@@ -99,7 +97,8 @@ fn collect_sdists(
 
 pub fn collect_version_files(files: &[RemoteFile]) -> Vec<RemoteFile> {
     let (mut result, whl_versions) = collect_wheels(files);
-    if sdist_fallback_allowed(files, true) {
+    // 当集合中存在任何 sdist 时保留它们（本函数调用上下文默认允许 source fallback）。
+    if files.iter().any(|f| is_source_distribution(&f.filename)) {
         result.extend(collect_sdists(files, &whl_versions));
     }
     result

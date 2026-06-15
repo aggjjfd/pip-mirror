@@ -1,6 +1,9 @@
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use type_state_builder::TypeStateBuilder;
+
+use crate::redact::redact_url_for_display;
 
 /// Trait for any file that can be downloaded into the mirror repository.
 pub trait Downloadable: Send + Sync + std::fmt::Debug {
@@ -16,7 +19,7 @@ pub trait Downloadable: Send + Sync + std::fmt::Debug {
 }
 
 /// A file discovered via PyPI JSON API.
-#[derive(Debug, Clone, TypeStateBuilder)]
+#[derive(Clone, TypeStateBuilder)]
 #[builder(impl_into)]
 pub struct RemoteFile {
     #[builder(required)]
@@ -72,8 +75,22 @@ impl Downloadable for RemoteFile {
     }
 }
 
+impl fmt::Debug for RemoteFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RemoteFile")
+            .field("filename", &self.filename)
+            .field("url", &redact_url_for_display(&self.url))
+            .field("sha256", &self.sha256)
+            .field("size", &self.size)
+            .field("yanked", &self.yanked)
+            .field("package_name", &self.package_name)
+            .field("version", &self.version)
+            .finish()
+    }
+}
+
 /// A wheel explicitly provided by the user via URL.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ExplicitWheel {
     pub filename: String,
     pub url: String,
@@ -122,8 +139,20 @@ impl Downloadable for ExplicitWheel {
     }
 }
 
+impl fmt::Debug for ExplicitWheel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExplicitWheel")
+            .field("filename", &self.filename)
+            .field("url", &redact_url_for_display(&self.url))
+            .field("sha256", &self.sha256)
+            .field("package_name", &self.package_name)
+            .field("version", &self.version)
+            .finish()
+    }
+}
+
 /// Either a PyPI-discovered file or a user-provided explicit wheel.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum DownloadableItem {
     Remote(RemoteFile),
     Explicit(ExplicitWheel),
@@ -206,6 +235,19 @@ impl Downloadable for DownloadableItem {
         match self {
             DownloadableItem::Remote(r) => r.dest_path(repo),
             DownloadableItem::Explicit(e) => e.dest_path(repo),
+        }
+    }
+}
+
+impl fmt::Debug for DownloadableItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DownloadableItem::Remote(r) => {
+                f.debug_tuple("Remote").field(r).finish()
+            }
+            DownloadableItem::Explicit(e) => {
+                f.debug_tuple("Explicit").field(e).finish()
+            }
         }
     }
 }

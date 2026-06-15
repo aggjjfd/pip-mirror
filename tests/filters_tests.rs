@@ -1,5 +1,5 @@
-use pip_mirror::downloader::FileInfo;
 use pip_mirror::filters;
+use pip_mirror::filters::ResolvedFile;
 use pip_mirror::resolver::types::TargetEnv;
 
 const ACCEPTED_WHEELS: &[&str] = &[
@@ -137,8 +137,8 @@ fn linux_target(py: &str) -> TargetEnv {
     TargetEnv::test_env("linux", "x86_64", py)
 }
 
-fn file_info(filename: &str) -> FileInfo {
-    FileInfo {
+fn file_info(filename: &str) -> ResolvedFile {
+    ResolvedFile {
         filename: filename.to_string(),
         url: format!("https://example.invalid/{filename}"),
         sha256: None,
@@ -227,7 +227,7 @@ fn test_redact_url_for_display_returns_placeholder_on_parse_failure() {
     // A malformed URL that contains credentials must not be echoed back.
     let malformed =
         "https://user:pass@example.com:badport/foo.whl?token=secret";
-    let safe = filters::redact_url_for_display(malformed);
+    let safe = pip_mirror::redact::redact_url_for_display(malformed);
     assert!(!safe.contains("user:pass"), "leaked credentials: {safe}");
     assert!(!safe.contains("token=secret"), "leaked token: {safe}");
     assert!(safe.contains("无法解析"), "expected placeholder: {safe}");

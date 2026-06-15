@@ -6,7 +6,7 @@ use pep440_rs::Version;
 use super::metadata_types::{
     MetadataError, PackageIndex, VersionMetadata, collect_files_by_version,
 };
-use crate::downloader::FileInfo;
+use crate::filters::ResolvedFile;
 use crate::http::{HttpClient, HttpError};
 
 type InFlight<T> =
@@ -107,7 +107,7 @@ impl MetadataCache {
         &self,
         pkg: &str,
         ver: &Version,
-    ) -> Result<Vec<FileInfo>, MetadataError> {
+    ) -> Result<Vec<ResolvedFile>, MetadataError> {
         let index = self.get_package_index(pkg).await?;
         Ok(index.files_by_version.get(ver).cloned().unwrap_or_default())
     }
