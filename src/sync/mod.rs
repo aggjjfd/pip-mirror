@@ -3,7 +3,7 @@ use std::path::Path;
 use tracing::info;
 
 use crate::downloader::{
-    FileInfo, PrefetchedFiles, download_pkg_files_with_prefetched,
+    BatchDownloader, DownloadPolicy, FileInfo, PrefetchedFiles,
 };
 use crate::http::HttpClient;
 use crate::progress::{ProgressHandle, SyncEvent};
@@ -44,70 +44,12 @@ pub fn clean_repo(repo: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
 fn log_dry_run(pending: &[FileInfo]) {
     info!(
-        "Dry-run 依赖解析完成，待下载文件清单（{} 个）:",
+        "Dry-run 依赖解析完成，待下载文件清单（{} 个）：",
         pending.len()
     );
     for fi in pending {
         info!("  {}  {}  {}", fi.package_name, fi.version, fi.filename);
     }
-}
-
-struct DownloadPhaseParams<'a> {
-    config: &'a crate::config::Config,
-    client: &'a reqwest_middleware::ClientWithMiddleware,
-    repo: &'a Path,
-    pending: &'a [FileInfo],
-    prefetched: &'a PrefetchedFiles,
-    download_python_builds: bool,
-    progress: Option<ProgressHandle>,
-}
-
-async fn run_download_phase_or_dry_run(
-    p: &DownloadPhaseParams<'_>,
-    dry_run: bool,
-) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
-    if dry_run {
-        log_dry_run(p.pending);
-        return Ok(Vec::new());
-    }
-    execute_download_phase(p).await
-}
-
-async fn execute_download_phase(
-    p: &DownloadPhaseParams<'_>,
-) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
-    emit_phase_started(&p.progress, "download", Some(p.pending.len() as u64));
-
-    let result = run_downloads(
-        p.config,
-        p.client,
-        p.repo,
-        p.pending,
-        p.prefetched,
-        p.progress.clone(),
-    )
-    .await;
-
-    emit_phase_finished(
-        &p.progress,
-        "download",
-        format!(
-            "下载 {}，跳过 {}，失败 {}",
-            result.downloaded.len(),
-            result.skipped.len(),
-            result.failed.len()
-        ),
-    );
-
-    record::record_download_results(p.repo, &result).await?;
-    finalize::finalize_sync(
-        p.repo,
-        p.download_python_builds,
-        p.config.download_workers,
-        p.progress.clone(),
-    )
-    .await?;
-    Ok(result.downloaded)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -127,18 +69,71 @@ pub async fn do_sync(
     let plan =
         create_sync_plan(config, &client, pkgs, no_deps, progress.clone())
             .await?;
-    let (pending, prefetched) = prepare_pending_files(repo, plan, &progress)?;
-    let params = DownloadPhaseParams {
-        config,
-        client: client.inner(),
+    let (pending, prefetched, store) =
+        prepare_pending_files(repo, plan, &progress)?;
+
+    if dry_run {
+        log_dry_run(&pending);
+        return Ok((client, Vec::new()));
+    }
+
+    let downloaded = run_download_phase(
         repo,
-        pending: &pending,
-        prefetched: &prefetched,
+        client.clone(),
+        &pending,
+        &prefetched,
+        store,
+        config.include_source,
+        config.download_workers,
         download_python_builds,
-        progress: progress.clone(),
-    };
-    let downloaded = run_download_phase_or_dry_run(&params, dry_run).await?;
+        progress.clone(),
+    )
+    .await?;
     Ok((client, downloaded))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_download_phase(
+    repo: &Path,
+    client: HttpClient,
+    pending: &[FileInfo],
+    prefetched: &PrefetchedFiles,
+    store: Option<DownloadStore>,
+    include_source: bool,
+    download_workers: usize,
+    download_python_builds: bool,
+    progress: Option<ProgressHandle>,
+) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
+    emit_phase_started(&progress, "download", Some(pending.len() as u64));
+
+    let policy = DownloadPolicy {
+        include_source,
+        workers: download_workers,
+    };
+    let downloader =
+        BatchDownloader::new(client, repo, store, policy, progress.clone());
+    let result = downloader.download(pending, prefetched).await;
+
+    emit_phase_finished(
+        &progress,
+        "download",
+        format!(
+            "下载 {}，跳过 {}，失败 {}",
+            result.downloaded.len(),
+            result.skipped.len(),
+            result.failed.len()
+        ),
+    );
+
+    record::record_download_results(repo, &result).await?;
+    finalize::finalize_sync(
+        repo,
+        download_python_builds,
+        download_workers,
+        progress.clone(),
+    )
+    .await?;
+    Ok(result.downloaded)
 }
 
 fn emit_phase_started(
@@ -170,13 +165,22 @@ pub fn build_sync_client(
         .build()?)
 }
 
+#[allow(clippy::type_complexity)]
 fn prepare_pending_files(
     repo: &Path,
     plan: DependencyPlan,
     progress: &Option<ProgressHandle>,
-) -> Result<(Vec<FileInfo>, PrefetchedFiles), Box<dyn std::error::Error>> {
+) -> Result<
+    (Vec<FileInfo>, PrefetchedFiles, Option<DownloadStore>),
+    Box<dyn std::error::Error>,
+> {
     let planned_count = plan.planned_files.len();
-    let pending = filter_incremental_files(repo, plan.planned_files)?;
+    let store = open_store(repo)?;
+    let pending = if let Some(s) = &store {
+        s.filter_missing_files(&plan.planned_files)?
+    } else {
+        plan.planned_files
+    };
     let prefetched = filter_prefetched_for_pending(
         pending.as_slice(),
         plan.prefetched_files,
@@ -191,7 +195,17 @@ fn prepare_pending_files(
             planned_count.saturating_sub(pending.len())
         ),
     );
-    Ok((pending, prefetched))
+    Ok((pending, prefetched, store))
+}
+
+fn open_store(
+    repo: &Path,
+) -> Result<Option<DownloadStore>, Box<dyn std::error::Error>> {
+    let db_path = repo.join(".store.db");
+    if !db_path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(DownloadStore::open(&db_path)?))
 }
 
 fn log_pending_files(pending_count: usize, planned_count: usize) {
@@ -200,27 +214,6 @@ fn log_pending_files(pending_count: usize, planned_count: usize) {
         pending_count,
         planned_count.saturating_sub(pending_count)
     );
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_downloads(
-    config: &crate::config::Config,
-    client: &reqwest_middleware::ClientWithMiddleware,
-    repo: &Path,
-    pending: &[FileInfo],
-    prefetched: &PrefetchedFiles,
-    progress: Option<ProgressHandle>,
-) -> crate::downloader::DownloadResult {
-    download_pkg_files_with_prefetched(
-        client,
-        repo,
-        pending,
-        prefetched,
-        config.include_source,
-        config.download_workers,
-        progress,
-    )
-    .await
 }
 
 fn filter_prefetched_for_pending(
@@ -328,15 +321,4 @@ pub async fn create_sync_plan(
     url_wheel::dedupe_solved_versions(&mut plan.solved_versions);
 
     Ok(plan)
-}
-
-fn filter_incremental_files(
-    repo: &std::path::Path,
-    planned_files: Vec<FileInfo>,
-) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
-    if !repo.join(".store.db").exists() {
-        return Ok(planned_files);
-    }
-    let store = DownloadStore::open(&repo.join(".store.db"))?;
-    Ok(store.filter_missing_files(&planned_files)?)
 }

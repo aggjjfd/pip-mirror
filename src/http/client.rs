@@ -115,6 +115,7 @@ fn parse_mirror_origins(
 }
 
 /// 统一 HTTP 客户端，内置镜像重试中间件。
+#[derive(Clone)]
 pub struct HttpClient {
     client: ClientWithMiddleware,
 }
@@ -130,6 +131,11 @@ impl HttpClient {
     /// 用于需要直接操作响应流或保持现有接口（如 [`MetadataCache`]）的场景。
     pub(crate) fn inner(&self) -> &ClientWithMiddleware {
         &self.client
+    }
+
+    /// 从已有的中间件客户端构造 [`HttpClient`]（crate 内部兼容旧接口）。
+    pub(crate) fn from_middleware(client: ClientWithMiddleware) -> Self {
+        Self { client }
     }
 
     /// 发送 GET 请求并解析为 JSON。

@@ -1,5 +1,7 @@
 use dashmap::DashMap;
 use pip_mirror::downloader;
+use pip_mirror::downloader::{BatchDownloader, DownloadPolicy};
+use pip_mirror::http::HttpClient;
 
 fn test_client() -> reqwest_middleware::ClientWithMiddleware {
     reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build()
@@ -398,17 +400,16 @@ async fn test_explicit_url_wheel_bypasses_platform_filter() {
         yanked: None,
     };
 
-    let client = test_client();
-    let result = downloader::download_pkg_files_with_prefetched(
-        &client,
-        tmp.path(),
-        &[fi],
-        &downloader::PrefetchedFiles::new(),
-        false,
-        1,
-        None,
-    )
-    .await;
+    let client = HttpClient::builder().build().unwrap();
+    let policy = DownloadPolicy {
+        include_source: false,
+        workers: 1,
+    };
+    let downloader =
+        BatchDownloader::new(client, tmp.path(), None, policy, None);
+    let result = downloader
+        .download(&[fi], &downloader::PrefetchedFiles::new())
+        .await;
 
     assert_eq!(result.downloaded.len(), 1);
     assert!(dest.exists());

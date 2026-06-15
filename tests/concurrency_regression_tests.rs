@@ -11,7 +11,10 @@ use axum::{
     http::StatusCode,
     routing::get,
 };
-use pip_mirror::downloader::{FileInfo, download_pkg_files};
+use pip_mirror::downloader::{
+    BatchDownloader, DownloadPolicy, FileInfo, PrefetchedFiles,
+};
+use pip_mirror::http::HttpClient;
 use pip_mirror::resolver::eligibility::{SolveContext, version_matches_target};
 use pip_mirror::resolver::metadata::MetadataCache;
 use pip_mirror::resolver::plan::{PlanParams, build_dependency_plan};
@@ -274,8 +277,14 @@ async fn test_download_pkg_files_runs_concurrently() {
         .map(|filename| download_file(filename, &base_url))
         .collect::<Vec<_>>();
 
-    let result =
-        download_pkg_files(&test_client(), repo.path(), &files, false, 4).await;
+    let client = HttpClient::builder().build().unwrap();
+    let policy = DownloadPolicy {
+        include_source: false,
+        workers: 4,
+    };
+    let downloader =
+        BatchDownloader::new(client, repo.path(), None, policy, None);
+    let result = downloader.download(&files, &PrefetchedFiles::new()).await;
 
     assert!(result.failed.is_empty());
     assert_eq!(result.downloaded.len(), filenames.len());

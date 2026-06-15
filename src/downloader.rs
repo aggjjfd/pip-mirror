@@ -1,20 +1,21 @@
+mod batch;
 mod local;
 mod pipeline;
 mod select;
 
-use crate::filters::{
-    is_accepted_wheel, is_source_distribution, platform_to_target,
-};
+use crate::filters::{is_accepted_wheel, platform_to_target};
 use crate::hex_digest;
-use crate::progress::{FileStatus, ProgressHandle, SyncEvent};
+use crate::http::HttpClient;
+use crate::progress::ProgressHandle;
 use dashmap::DashMap;
 use reqwest_middleware::ClientWithMiddleware;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use type_state_builder::TypeStateBuilder;
+
+pub use batch::{BatchDownloader, DownloadPolicy};
 
 /// File metadata as returned by PyPI JSON API.
 #[derive(Debug, Clone, TypeStateBuilder)]
@@ -145,121 +146,9 @@ pub async fn download_file(
     write_atomic(dest, &bytes).await
 }
 
-enum DownloadOutcome {
-    Skipped(FileInfo),
-    Downloaded(FileInfo),
-    Failed(FileInfo, String),
-}
-
-async fn try_prefetched_write(
-    fi: &FileInfo,
-    dest: &Path,
-    bytes: &[u8],
-    store: &Option<Arc<crate::store::DownloadStore>>,
-    progress: &Option<ProgressHandle>,
-) -> DownloadOutcome {
-    if !bytes_match_sha256(fi, bytes) {
-        return DownloadOutcome::Failed(
-            fi.clone(),
-            "预下载文件 hash 校验失败".to_string(),
-        );
-    }
-    let (ok, msg) = write_atomic(dest, bytes).await;
-    if ok {
-        tracing::debug!("复用预下载文件: {}", fi.filename);
-        if let Some(p) = progress {
-            p.emit(SyncEvent::FileDone {
-                package: fi.package_name.clone(),
-                filename: fi.filename.clone(),
-                status: FileStatus::Reused,
-            });
-        }
-        if let Some(s) = store {
-            s.record_download(fi, dest).await;
-        }
-        return DownloadOutcome::Downloaded(fi.clone());
-    }
-    DownloadOutcome::Failed(fi.clone(), msg)
-}
-
-async fn try_network_download(
-    client: &ClientWithMiddleware,
-    fi: &FileInfo,
-    dest: &Path,
-    store: &Option<Arc<crate::store::DownloadStore>>,
-    progress: &Option<ProgressHandle>,
-) -> DownloadOutcome {
-    let (ok, msg) = download_file(client, fi, dest).await;
-    if ok {
-        tracing::debug!("下载完成: {}", fi.filename);
-        if let Some(p) = progress {
-            p.emit(SyncEvent::FileDone {
-                package: fi.package_name.clone(),
-                filename: fi.filename.clone(),
-                status: FileStatus::Downloaded,
-            });
-        }
-        if let Some(s) = store {
-            s.record_download(fi, dest).await;
-        }
-        DownloadOutcome::Downloaded(fi.clone())
-    } else {
-        DownloadOutcome::Failed(fi.clone(), msg)
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn try_download(
-    client: &ClientWithMiddleware,
-    store: &Option<Arc<crate::store::DownloadStore>>,
-    prefetched_files: &PrefetchedFiles,
-    fi: &FileInfo,
-    repo: &std::path::Path,
-    progress: &Option<ProgressHandle>,
-) -> DownloadOutcome {
-    let dest = repo
-        .join("simple")
-        .join(&fi.package_name)
-        .join(&fi.filename);
-    if store.as_ref().is_some_and(|s| {
-        s.has_file(&fi.package_name, &fi.filename).unwrap_or(false)
-    }) {
-        return DownloadOutcome::Skipped(fi.clone());
-    }
-    if dest.exists() {
-        // 文件已存在但数据库里没有记录：补录，避免重复下载后仍然丢失记录。
-        if let Some(s) = store {
-            s.record_download(fi, &dest).await;
-        }
-        return DownloadOutcome::Skipped(fi.clone());
-    }
-    let key = (fi.package_name.clone(), fi.filename.clone());
-    if let Some(bytes) = prefetched_files.get(&key) {
-        return try_prefetched_write(fi, &dest, bytes, store, progress).await;
-    }
-    try_network_download(client, fi, &dest, store, progress).await
-}
-
-fn bytes_match_sha256(fi: &FileInfo, bytes: &[u8]) -> bool {
-    fi.sha256.as_ref().is_none_or(|expected| {
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        let actual = hex_digest(hasher.finalize().as_slice());
-        actual.eq_ignore_ascii_case(expected)
-    })
-}
-fn should_skip(fi: &FileInfo, include_source: bool) -> bool {
-    if !include_source && is_source_distribution(&fi.filename) {
-        return true;
-    }
-    if fi.filename.ends_with(".whl") && fi.explicit_url {
-        return false;
-    }
-    fi.filename.ends_with(".whl") && !is_accepted_wheel(&fi.filename)
-}
 pub async fn download_pkg_files(
     client: &ClientWithMiddleware,
-    repo: &std::path::Path,
+    repo: &Path,
     files: &[FileInfo],
     include_source: bool,
     download_workers: usize,
@@ -276,24 +165,23 @@ pub async fn download_pkg_files(
     )
     .await
 }
+
 #[allow(clippy::too_many_arguments)]
 pub async fn download_pkg_files_with_prefetched(
     client: &ClientWithMiddleware,
-    repo: &std::path::Path,
+    repo: &Path,
     files: &[FileInfo],
     prefetched_files: &PrefetchedFiles,
     include_source: bool,
     download_workers: usize,
     progress: Option<ProgressHandle>,
 ) -> DownloadResult {
-    pipeline::run_download_pipeline(
-        client,
-        repo,
-        files,
-        prefetched_files,
+    let http_client = HttpClient::from_middleware(client.clone());
+    let policy = DownloadPolicy {
         include_source,
-        download_workers,
-        progress,
-    )
-    .await
+        workers: download_workers,
+    };
+    let downloader =
+        BatchDownloader::new(http_client, repo, None, policy, progress);
+    downloader.download(files, prefetched_files).await
 }
