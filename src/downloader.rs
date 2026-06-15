@@ -1,21 +1,15 @@
 mod batch;
 mod local;
-mod pipeline;
 mod select;
 
 use crate::filters::{is_accepted_wheel, platform_to_target};
 use crate::hex_digest;
-use crate::http::HttpClient;
-use crate::progress::ProgressHandle;
 use dashmap::DashMap;
 use reqwest_middleware::ClientWithMiddleware;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use type_state_builder::TypeStateBuilder;
-
-pub use batch::{BatchDownloader, DownloadPolicy};
 
 /// File metadata as returned by PyPI JSON API.
 #[derive(Debug, Clone, TypeStateBuilder)]
@@ -48,7 +42,9 @@ pub struct DownloadResult {
     pub warnings: Vec<String>,
 }
 
-pub type PrefetchedFiles = HashMap<(String, String), Vec<u8>>;
+pub type PrefetchedFiles = std::collections::HashMap<(String, String), Vec<u8>>;
+
+pub use batch::{BatchDownloader, DownloadPolicy};
 
 pub use select::{collect_version_files, select_latest_versions};
 
@@ -144,44 +140,4 @@ pub async fn download_file(
         return (false, "hash 校验失败".into());
     }
     write_atomic(dest, &bytes).await
-}
-
-pub async fn download_pkg_files(
-    client: &ClientWithMiddleware,
-    repo: &Path,
-    files: &[FileInfo],
-    include_source: bool,
-    download_workers: usize,
-) -> DownloadResult {
-    let prefetched_files = PrefetchedFiles::new();
-    download_pkg_files_with_prefetched(
-        client,
-        repo,
-        files,
-        &prefetched_files,
-        include_source,
-        download_workers,
-        None,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-pub async fn download_pkg_files_with_prefetched(
-    client: &ClientWithMiddleware,
-    repo: &Path,
-    files: &[FileInfo],
-    prefetched_files: &PrefetchedFiles,
-    include_source: bool,
-    download_workers: usize,
-    progress: Option<ProgressHandle>,
-) -> DownloadResult {
-    let http_client = HttpClient::from_middleware(client.clone());
-    let policy = DownloadPolicy {
-        include_source,
-        workers: download_workers,
-    };
-    let downloader =
-        BatchDownloader::new(http_client, repo, None, policy, progress);
-    downloader.download(files, prefetched_files).await
 }

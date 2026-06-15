@@ -133,11 +133,6 @@ impl HttpClient {
         &self.client
     }
 
-    /// 从已有的中间件客户端构造 [`HttpClient`]（crate 内部兼容旧接口）。
-    pub(crate) fn from_middleware(client: ClientWithMiddleware) -> Self {
-        Self { client }
-    }
-
     /// 发送 GET 请求并解析为 JSON。
     pub async fn get_json(&self, url: &str) -> Result<Value, HttpError> {
         let resp = self.send_get(url).await?;

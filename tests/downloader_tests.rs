@@ -286,7 +286,7 @@ fn test_backfill_one_target_respects_order() {
     };
     let result =
         downloader::backfill_one_target("win32", &older_versions, &all_grouped);
-    // should return 0.9.0's files (first match) not 0.8.0
+    // 按 older_versions 顺序查找，0.9.0 没有 win32 wheel，因此命中 0.8.0
     let (files, _) = result.unwrap();
     assert_eq!(files[0].version, "0.8.0");
 }
