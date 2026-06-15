@@ -2,13 +2,13 @@ use std::collections::HashMap;
 
 use pep440_rs::Version;
 
-use crate::downloader::FileInfo;
+use crate::downloader::RemoteFile;
 
 /// Package-level index: all versions and their files.
 #[derive(Debug, Clone)]
 pub struct PackageIndex {
     pub versions: Vec<Version>,
-    pub files_by_version: HashMap<Version, Vec<FileInfo>>,
+    pub files_by_version: HashMap<Version, Vec<RemoteFile>>,
 }
 
 /// Version-level metadata: requires_dist and requires_python.
@@ -51,7 +51,7 @@ fn fmt_http_err(
 ) -> std::fmt::Result {
     let ver = version
         .as_ref()
-        .map(|v| format!("@{}", v))
+        .map(|v| format!("@{v}"))
         .unwrap_or_default();
     if status == 0 {
         write!(f, "请求 {}{} 失败: {}", package, ver, source)
@@ -79,7 +79,7 @@ impl std::fmt::Display for MetadataError {
                 package,
                 version
                     .as_ref()
-                    .map(|v| format!("@{}", v))
+                    .map(|v| format!("@{v}"))
                     .unwrap_or_default(),
                 msg
             ),
@@ -122,9 +122,9 @@ pub(crate) fn parse_file_info(
     f: &serde_json::Value,
     pkg: &str,
     version_str: &str,
-) -> Option<FileInfo> {
+) -> Option<RemoteFile> {
     Some(
-        FileInfo::builder()
+        RemoteFile::builder()
             .filename(f["filename"].as_str()?.to_string())
             .url(f["url"].as_str()?.to_string())
             .package_name(pkg.to_string())
@@ -144,11 +144,11 @@ pub(crate) fn parse_file_info(
 pub(crate) fn collect_files_by_version(
     releases: &serde_json::Map<String, serde_json::Value>,
     pkg: &str,
-) -> HashMap<Version, Vec<FileInfo>> {
+) -> HashMap<Version, Vec<RemoteFile>> {
     let mut result = HashMap::new();
     for (version_str, file_list) in releases {
         if let Ok(ver) = version_str.parse::<Version>() {
-            let files: Vec<FileInfo> = file_list
+            let files: Vec<RemoteFile> = file_list
                 .as_array()
                 .unwrap_or(&vec![])
                 .iter()

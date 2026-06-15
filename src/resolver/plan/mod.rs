@@ -5,7 +5,7 @@ use futures::{StreamExt, stream};
 use pep440_rs::Version;
 use tracing::{debug, info};
 
-use crate::downloader::FileInfo;
+use crate::downloader::{Downloadable, DownloadableItem};
 use crate::http::HttpClient;
 use crate::progress::{ProgressHandle, SyncEvent};
 
@@ -37,7 +37,7 @@ pub struct PlanParams<'a> {
 
 #[derive(Debug)]
 pub struct DependencyPlan {
-    pub planned_files: Vec<FileInfo>,
+    pub planned_files: Vec<DownloadableItem>,
     pub prefetched_files: HashMap<(String, String), Vec<u8>>,
     pub solved_versions: DashMap<String, Vec<Version>>,
 }
@@ -208,7 +208,7 @@ async fn collect_planned_files(
     params: &PlanParams<'_>,
     cache: &MetadataCache,
     expanded: &DashMap<String, Vec<Version>>,
-) -> Result<Vec<FileInfo>, ResolveError> {
+) -> Result<Vec<DownloadableItem>, ResolveError> {
     let targets = if params.targets.is_empty() {
         super::types::TargetEnv::all_resolution_targets()
     } else {
@@ -233,10 +233,13 @@ async fn collect_planned_files(
         .await;
     let mut collected = results.into_iter().collect::<Result<Vec<_>, _>>()?;
     collected.sort_by_key(|(i, _)| *i);
-    let mut planned_files: Vec<_> =
-        collected.into_iter().flat_map(|(_, s)| s).collect();
-    planned_files.sort_by(|l, r| l.filename.cmp(&r.filename));
-    planned_files.dedup_by(|l, r| l.filename == r.filename);
+    let mut planned_files: Vec<_> = collected
+        .into_iter()
+        .flat_map(|(_, s)| s)
+        .map(DownloadableItem::Remote)
+        .collect();
+    planned_files.sort_by(|l, r| l.filename().cmp(r.filename()));
+    planned_files.dedup_by(|l, r| l.filename() == r.filename());
     Ok(planned_files)
 }
 

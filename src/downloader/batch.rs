@@ -5,7 +5,8 @@ use futures::{StreamExt, stream};
 use reqwest_middleware::ClientWithMiddleware;
 
 use crate::downloader::{
-    DownloadResult, FileInfo, PrefetchedFiles, download_file, write_atomic,
+    DownloadResult, Downloadable, DownloadableItem, PrefetchedFiles,
+    download_file, write_atomic,
 };
 use crate::filters::{is_accepted_wheel, is_source_distribution};
 use crate::http::HttpClient;
@@ -45,7 +46,7 @@ impl BatchDownloader {
 
     pub async fn download(
         &self,
-        files: &[FileInfo],
+        files: &[DownloadableItem],
         prefetched: &PrefetchedFiles,
     ) -> DownloadResult {
         let mut result = DownloadResult::default();
@@ -92,10 +93,10 @@ fn open_download_store(repo: &Path) -> Option<Arc<DownloadStore>> {
 }
 
 fn collect_pending_downloads(
-    files: &[FileInfo],
+    files: &[DownloadableItem],
     include_source: bool,
     result: &mut DownloadResult,
-) -> Vec<FileInfo> {
+) -> Vec<DownloadableItem> {
     let mut pending = Vec::new();
     for fi in files {
         if should_skip(fi, include_source) {
@@ -113,7 +114,7 @@ async fn run_download_tasks(
     repo: &Path,
     store: &Option<Arc<DownloadStore>>,
     prefetched_files: &PrefetchedFiles,
-    pending: Vec<FileInfo>,
+    pending: Vec<DownloadableItem>,
     download_workers: usize,
     progress: &Option<ProgressHandle>,
 ) -> Vec<DownloadOutcome> {
@@ -139,9 +140,9 @@ async fn run_download_tasks(
 }
 
 enum DownloadOutcome {
-    Skipped(FileInfo),
-    Downloaded(FileInfo),
-    Failed(FileInfo, String),
+    Skipped(DownloadableItem),
+    Downloaded(DownloadableItem),
+    Failed(DownloadableItem, String),
 }
 
 fn merge_download_outcomes(
@@ -162,13 +163,13 @@ fn merge_download_outcomes(
 fn sort_download_result(result: &mut DownloadResult) {
     result
         .downloaded
-        .sort_by(|left, right| left.filename.cmp(&right.filename));
+        .sort_by(|left, right| left.filename().cmp(right.filename()));
     result
         .skipped
-        .sort_by(|left, right| left.filename.cmp(&right.filename));
+        .sort_by(|left, right| left.filename().cmp(right.filename()));
     result
         .failed
-        .sort_by(|left, right| left.0.filename.cmp(&right.0.filename));
+        .sort_by(|left, right| left.0.filename().cmp(right.0.filename()));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -176,16 +177,14 @@ async fn try_download(
     client: &ClientWithMiddleware,
     store: &Option<Arc<DownloadStore>>,
     prefetched_files: &PrefetchedFiles,
-    fi: &FileInfo,
+    fi: &DownloadableItem,
     repo: &Path,
     progress: &Option<ProgressHandle>,
 ) -> DownloadOutcome {
-    let dest = repo
-        .join("simple")
-        .join(&fi.package_name)
-        .join(&fi.filename);
+    let dest = fi.dest_path(repo);
     if store.as_ref().is_some_and(|s| {
-        s.has_file(&fi.package_name, &fi.filename).unwrap_or(false)
+        s.has_file(fi.package_name(), fi.filename())
+            .unwrap_or(false)
     }) {
         return DownloadOutcome::Skipped(fi.clone());
     }
@@ -196,7 +195,7 @@ async fn try_download(
         }
         return DownloadOutcome::Skipped(fi.clone());
     }
-    let key = (fi.package_name.clone(), fi.filename.clone());
+    let key = (fi.package_name().to_string(), fi.filename().to_string());
     if let Some(bytes) = prefetched_files.get(&key) {
         return try_prefetched_write(fi, &dest, bytes, store, progress).await;
     }
@@ -204,7 +203,7 @@ async fn try_download(
 }
 
 async fn try_prefetched_write(
-    fi: &FileInfo,
+    fi: &DownloadableItem,
     dest: &Path,
     bytes: &[u8],
     store: &Option<Arc<DownloadStore>>,
@@ -218,11 +217,11 @@ async fn try_prefetched_write(
     }
     let (ok, msg) = write_atomic(dest, bytes).await;
     if ok {
-        tracing::debug!("复用预下载文件: {}", fi.filename);
+        tracing::debug!("复用预下载文件: {}", fi.filename());
         if let Some(p) = progress {
             p.emit(SyncEvent::FileDone {
-                package: fi.package_name.clone(),
-                filename: fi.filename.clone(),
+                package: fi.package_name().to_string(),
+                filename: fi.filename().to_string(),
                 status: FileStatus::Reused,
             });
         }
@@ -236,18 +235,18 @@ async fn try_prefetched_write(
 
 async fn try_network_download(
     client: &ClientWithMiddleware,
-    fi: &FileInfo,
+    fi: &DownloadableItem,
     dest: &Path,
     store: &Option<Arc<DownloadStore>>,
     progress: &Option<ProgressHandle>,
 ) -> DownloadOutcome {
     let (ok, msg) = download_file(client, fi, dest).await;
     if ok {
-        tracing::debug!("下载完成: {}", fi.filename);
+        tracing::debug!("下载完成: {}", fi.filename());
         if let Some(p) = progress {
             p.emit(SyncEvent::FileDone {
-                package: fi.package_name.clone(),
-                filename: fi.filename.clone(),
+                package: fi.package_name().to_string(),
+                filename: fi.filename().to_string(),
                 status: FileStatus::Downloaded,
             });
         }
@@ -260,8 +259,8 @@ async fn try_network_download(
     }
 }
 
-fn bytes_match_sha256(fi: &FileInfo, bytes: &[u8]) -> bool {
-    fi.sha256.as_ref().is_none_or(|expected| {
+fn bytes_match_sha256(fi: &dyn Downloadable, bytes: &[u8]) -> bool {
+    fi.sha256().is_none_or(|expected| {
         let mut hasher = sha2::Sha256::new();
         hasher.update(bytes);
         let actual = crate::hex_digest(hasher.finalize().as_slice());
@@ -269,12 +268,12 @@ fn bytes_match_sha256(fi: &FileInfo, bytes: &[u8]) -> bool {
     })
 }
 
-fn should_skip(fi: &FileInfo, include_source: bool) -> bool {
-    if !include_source && is_source_distribution(&fi.filename) {
+fn should_skip(fi: &dyn Downloadable, include_source: bool) -> bool {
+    if !include_source && is_source_distribution(fi.filename()) {
         return true;
     }
-    if fi.filename.ends_with(".whl") && fi.explicit_url {
+    if fi.filename().ends_with(".whl") && fi.is_explicit_url() {
         return false;
     }
-    fi.filename.ends_with(".whl") && !is_accepted_wheel(&fi.filename)
+    fi.filename().ends_with(".whl") && !is_accepted_wheel(fi.filename())
 }

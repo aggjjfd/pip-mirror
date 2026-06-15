@@ -6,7 +6,7 @@ use pep440_rs::Version;
 
 use reqwest_middleware::ClientWithMiddleware;
 
-use crate::downloader::FileInfo;
+use crate::downloader::DownloadableItem;
 
 use super::error::ResolveError;
 use super::metadata::MetadataCache;
@@ -237,7 +237,7 @@ async fn prefetch_one_sdist(
 
 pub(crate) async fn collect_prefetched_sdists(
     cache: &MetadataCache,
-    planned_files: &[FileInfo],
+    planned_files: &[DownloadableItem],
     include_source: bool,
     metadata_workers: usize,
 ) -> Result<HashMap<(String, String), Vec<u8>>, ResolveError> {
@@ -265,26 +265,31 @@ pub(crate) async fn collect_prefetched_sdists(
     Ok(prefetched)
 }
 
-fn collect_planned_sdist_jobs(planned_files: &[FileInfo]) -> Vec<PlannedSdist> {
+fn collect_planned_sdist_jobs(
+    planned_files: &[DownloadableItem],
+) -> Vec<PlannedSdist> {
     let mut seen = HashSet::new();
     let mut jobs = Vec::new();
     for file in planned_files {
-        if !crate::filters::is_source_distribution(&file.filename) {
+        let Some(remote) = file.as_remote() else {
+            continue;
+        };
+        if !crate::filters::is_source_distribution(&remote.filename) {
             continue;
         }
-        let Ok(version) = file.version.parse::<Version>() else {
+        let Ok(version) = remote.version.parse::<Version>() else {
             tracing::warn!(
                 "  ! 无法解析 sdist 版本，跳过 build requires 解析: {}@{}",
-                file.package_name,
-                file.version
+                remote.package_name,
+                remote.version
             );
             continue;
         };
-        if !seen.insert((file.package_name.clone(), version.clone())) {
+        if !seen.insert((remote.package_name.clone(), version.clone())) {
             continue;
         }
         jobs.push(PlannedSdist {
-            package: file.package_name.clone(),
+            package: remote.package_name.clone(),
             version,
         });
     }

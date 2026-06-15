@@ -1,4 +1,5 @@
 mod batch;
+mod file;
 mod local;
 mod select;
 
@@ -9,36 +10,18 @@ use reqwest_middleware::ClientWithMiddleware;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use type_state_builder::TypeStateBuilder;
 
-/// File metadata as returned by PyPI JSON API.
-#[derive(Debug, Clone, TypeStateBuilder)]
-#[builder(impl_into)]
-pub struct FileInfo {
-    #[builder(required)]
-    pub filename: String,
-    #[builder(required)]
-    pub url: String,
-    pub sha256: Option<String>,
-    pub size: Option<u64>,
-    pub yanked: Option<String>,
-    #[builder(required)]
-    pub package_name: String,
-    #[builder(required)]
-    pub version: String,
-    /// True when this file came from an explicit user-provided URL
-    /// (rather than discovered via PyPI metadata), so platform filtering
-    /// should be skipped.
-    #[builder(default = false)]
-    pub explicit_url: bool,
-}
+pub use file::{Downloadable, DownloadableItem, ExplicitWheel, RemoteFile};
+
+/// Backward-compatible alias for existing code that refers to `FileInfo`.
+pub type FileInfo = RemoteFile;
 
 /// Download result summary.
 #[derive(Debug, Default)]
 pub struct DownloadResult {
-    pub downloaded: Vec<FileInfo>,
-    pub skipped: Vec<FileInfo>,
-    pub failed: Vec<(FileInfo, String)>,
+    pub downloaded: Vec<DownloadableItem>,
+    pub skipped: Vec<DownloadableItem>,
+    pub failed: Vec<(DownloadableItem, String)>,
     pub warnings: Vec<String>,
 }
 
@@ -112,10 +95,10 @@ async fn write_atomic(dest_path: &Path, bytes: &[u8]) -> (bool, String) {
 /// Download a single file (HTTP/HTTPS) or copy a local file (file://).
 pub async fn download_file(
     client: &ClientWithMiddleware,
-    fi: &FileInfo,
+    fi: &dyn Downloadable,
     dest: &Path,
 ) -> (bool, String) {
-    let url = fi.url.split('#').next().unwrap_or(&fi.url);
+    let url = fi.source_url().split('#').next().unwrap_or(fi.source_url());
     if url
         .get(..7)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file://"))
@@ -131,7 +114,7 @@ pub async fn download_file(
     let Ok(bytes) = resp.bytes().await else {
         return (false, "读取失败".into());
     };
-    if fi.sha256.as_ref().is_some_and(|expected| {
+    if fi.sha256().is_some_and(|expected| {
         let mut h = Sha256::new();
         h.update(&bytes);
         let actual = hex_digest(h.finalize().as_slice());

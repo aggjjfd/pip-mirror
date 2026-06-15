@@ -3,7 +3,7 @@ use std::path::Path;
 use sha2::Digest;
 use url::Url;
 
-use crate::downloader::FileInfo;
+use crate::downloader::Downloadable;
 use crate::hex_digest;
 
 async fn read_source_bytes(url: &str) -> Result<Vec<u8>, String> {
@@ -26,18 +26,14 @@ fn verify_hash(bytes: &[u8], expected: &str) -> bool {
 
 pub async fn copy_local_wheel(
     url: &str,
-    fi: &FileInfo,
+    item: &dyn Downloadable,
     dest: &Path,
 ) -> (bool, String) {
     let bytes = match read_source_bytes(url).await {
         Ok(b) => b,
         Err(msg) => return (false, msg),
     };
-    if fi
-        .sha256
-        .as_ref()
-        .is_some_and(|exp| !verify_hash(&bytes, exp))
-    {
+    if item.sha256().is_some_and(|exp| !verify_hash(&bytes, exp)) {
         return (false, "hash 校验失败".into());
     }
     super::write_atomic(dest, &bytes).await

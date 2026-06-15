@@ -139,7 +139,6 @@ fn linux_target(py: &str) -> TargetEnv {
 
 fn file_info(filename: &str) -> FileInfo {
     FileInfo {
-        explicit_url: false,
         filename: filename.to_string(),
         url: format!("https://example.invalid/{filename}"),
         sha256: None,

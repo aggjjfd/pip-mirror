@@ -1,6 +1,6 @@
 use url::Url;
 
-use crate::downloader::FileInfo;
+use crate::downloader::{Downloadable, DownloadableItem};
 use crate::resolver::resolve::ResolveError;
 
 /// Maximum wheel size allowed for remote metadata extraction (200 MiB).
@@ -21,39 +21,47 @@ pub fn split_package_specs(
     (names, urls)
 }
 
-pub fn dedupe_planned_files(files: &mut Vec<FileInfo>) {
+fn apply_duplicate_resolution(
+    files: &[DownloadableItem],
+    prev_idx: usize,
+    new_idx: usize,
+    chosen: &mut std::collections::HashMap<(String, String), usize>,
+    key: (String, String),
+) {
+    let prev = &files[prev_idx];
+    let new = &files[new_idx];
+    if prev.is_explicit_url() {
+        // Existing explicit URL takes precedence; drop the duplicate.
+        return;
+    }
+    if new.is_explicit_url() {
+        tracing::warn!(
+            "显式 URL wheel 覆盖同名 PyPI 结果: {} {} (url: {})",
+            new.package_name(),
+            new.filename(),
+            crate::filters::redact_url_for_display(new.source_url())
+        );
+        chosen.insert(key, new_idx);
+        return;
+    }
+    tracing::warn!(
+        "忽略重复的 wheel 文件: {} {} (url: {})",
+        new.package_name(),
+        new.filename(),
+        crate::filters::redact_url_for_display(new.source_url())
+    );
+}
+
+pub fn dedupe_planned_files(files: &mut Vec<DownloadableItem>) {
     let mut chosen: std::collections::HashMap<(String, String), usize> =
         std::collections::HashMap::new();
     for (idx, fi) in files.iter().enumerate() {
-        let key = (fi.package_name.clone(), fi.filename.clone());
-        match chosen.get(&key) {
-            Some(&prev_idx) if files[prev_idx].explicit_url => {
-                // Existing explicit URL takes precedence; drop the duplicate.
-                continue;
-            }
-            Some(&_prev_idx) if fi.explicit_url => {
-                // New explicit URL should override the PyPI-discovered one.
-                tracing::warn!(
-                    "显式 URL wheel 覆盖同名 PyPI 结果: {} {} (url: {})",
-                    fi.package_name,
-                    fi.filename,
-                    crate::filters::redact_url_for_display(&fi.url)
-                );
-                chosen.insert(key, idx);
-            }
-            Some(_) => {
-                // Both non-explicit: keep the first, warn about the conflict.
-                tracing::warn!(
-                    "忽略重复的 wheel 文件: {} {} (url: {})",
-                    fi.package_name,
-                    fi.filename,
-                    crate::filters::redact_url_for_display(&fi.url)
-                );
-            }
-            None => {
-                chosen.insert(key, idx);
-            }
+        let key = (fi.package_name().to_string(), fi.filename().to_string());
+        if let Some(&prev_idx) = chosen.get(&key) {
+            apply_duplicate_resolution(files, prev_idx, idx, &mut chosen, key);
+            continue;
         }
+        chosen.insert(key, idx);
     }
     let allowed: std::collections::HashSet<usize> =
         chosen.into_values().collect();

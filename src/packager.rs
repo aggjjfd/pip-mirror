@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 use tracing::info;
 
-use crate::downloader::FileInfo;
+use crate::downloader::DownloadableItem;
 use crate::hex_digest;
 
 /// 增量/全量镜像包的压缩方式。
@@ -138,7 +138,7 @@ pub fn pack_full_mirror(
 }
 
 pub struct IncrementalPackage<'a> {
-    pub simple_files: &'a [FileInfo],
+    pub simple_files: &'a [DownloadableItem],
     pub python_builds_files: &'a [PathBuf],
     pub python_builds_index: Option<&'a Path>,
     pub repository_dir: &'a Path,
@@ -149,16 +149,18 @@ fn add_simple_files(
     tar: &mut tar::Builder<impl std::io::Write>,
     spec: &IncrementalPackage<'_>,
 ) -> std::io::Result<()> {
+    use crate::downloader::Downloadable;
+
     for fi in spec.simple_files {
         let src = spec
             .repository_dir
             .join("simple")
-            .join(&fi.package_name)
-            .join(&fi.filename);
+            .join(fi.package_name())
+            .join(fi.filename());
         if src.exists() {
             tar.append_path_with_name(
                 &src,
-                format!("simple/{}/{}", fi.package_name, fi.filename),
+                format!("simple/{}/{}", fi.package_name(), fi.filename()),
             )?;
         }
     }
@@ -277,7 +279,7 @@ pub fn pack_mirror_archive(
 
 pub fn build_incremental_package(
     repo: &Path,
-    downloaded: &[crate::downloader::FileInfo],
+    downloaded: &[DownloadableItem],
     output_dir: &Path,
 ) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     let inc = IncrementalPackage {
@@ -292,7 +294,7 @@ pub fn build_incremental_package(
 
 pub async fn build_incremental_package_async(
     repo: &Path,
-    downloaded: &[crate::downloader::FileInfo],
+    downloaded: &[DownloadableItem],
     output_dir: &Path,
 ) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     let repo = repo.to_path_buf();

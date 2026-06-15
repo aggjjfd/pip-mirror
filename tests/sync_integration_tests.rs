@@ -1,7 +1,9 @@
 use std::io::Write;
 
 use pip_mirror::config::{Config, PackageSpec, PackageUrlSpec, UvEmbedConfig};
-use pip_mirror::downloader::FileInfo;
+use pip_mirror::downloader::{
+    Downloadable, DownloadableItem, ExplicitWheel, FileInfo,
+};
 use pip_mirror::filters::redact_url_for_display;
 use pip_mirror::http::HttpClient;
 use pip_mirror::resolver::resolve::ResolveError;
@@ -72,12 +74,15 @@ async fn test_create_sync_plan_with_url_wheel_no_deps() {
 
     assert_eq!(plan.planned_files.len(), 1);
     let fi = &plan.planned_files[0];
-    assert_eq!(fi.package_name, "mypkg");
-    assert_eq!(fi.version, "1.0");
-    assert_eq!(fi.filename, "mypkg-1.0-py3-none-any.whl");
-    assert_eq!(fi.url, "https://example.com/mypkg-1.0-py3-none-any.whl");
-    assert_eq!(fi.sha256, Some("abc".to_string()));
-    assert!(fi.explicit_url);
+    assert_eq!(fi.package_name(), "mypkg");
+    assert_eq!(fi.version(), "1.0");
+    assert_eq!(fi.filename(), "mypkg-1.0-py3-none-any.whl");
+    assert_eq!(
+        fi.source_url(),
+        "https://example.com/mypkg-1.0-py3-none-any.whl"
+    );
+    assert_eq!(fi.sha256(), Some("abc"));
+    assert!(fi.is_explicit_url());
 }
 
 #[tokio::test]
@@ -142,7 +147,7 @@ Version: 1.0
         .expect("plan should succeed");
 
     assert_eq!(plan.planned_files.len(), 1);
-    assert!(plan.planned_files[0].explicit_url);
+    assert!(plan.planned_files[0].is_explicit_url());
 }
 
 #[test]
@@ -211,9 +216,9 @@ Requires-Dist: typing-extensions
     let url_file = plan
         .planned_files
         .iter()
-        .find(|f| f.package_name == "testpkg");
+        .find(|f| f.package_name() == "testpkg");
     assert!(url_file.is_some(), "URL wheel should be in planned files");
-    assert!(url_file.unwrap().explicit_url);
+    assert!(url_file.unwrap().is_explicit_url());
 
     // Its dependency must have been resolved via PyPI.
     assert!(
@@ -814,36 +819,38 @@ async fn test_download_wheel_bytes_stream_error_does_not_leak_credentials() {
     assert!(!msg.contains("token=abc"), "error leaked token: {msg}");
 }
 
+fn remote_file(url: &str) -> DownloadableItem {
+    DownloadableItem::Remote(FileInfo {
+        filename: "pkg-1.0-py3-none-any.whl".to_string(),
+        url: url.to_string(),
+        sha256: None,
+        size: None,
+        package_name: "pkg".to_string(),
+        version: "1.0".to_string(),
+        yanked: None,
+    })
+}
+
+fn explicit_wheel(url: &str) -> DownloadableItem {
+    DownloadableItem::Explicit(ExplicitWheel {
+        filename: "pkg-1.0-py3-none-any.whl".to_string(),
+        url: url.to_string(),
+        sha256: None,
+        package_name: "pkg".to_string(),
+        version: "1.0".to_string(),
+    })
+}
+
 #[test]
 fn test_dedupe_planned_files_keeps_first_non_explicit() {
     let mut files = vec![
-        FileInfo {
-            explicit_url: false,
-            filename: "pkg-1.0-py3-none-any.whl".to_string(),
-            url: "https://pypi.example.com/pkg-1.0-py3-none-any.whl"
-                .to_string(),
-            sha256: None,
-            size: None,
-            package_name: "pkg".to_string(),
-            version: "1.0".to_string(),
-            yanked: None,
-        },
-        FileInfo {
-            explicit_url: false,
-            filename: "pkg-1.0-py3-none-any.whl".to_string(),
-            url: "https://mirror.example.com/pkg-1.0-py3-none-any.whl"
-                .to_string(),
-            sha256: None,
-            size: None,
-            package_name: "pkg".to_string(),
-            version: "1.0".to_string(),
-            yanked: None,
-        },
+        remote_file("https://pypi.example.com/pkg-1.0-py3-none-any.whl"),
+        remote_file("https://mirror.example.com/pkg-1.0-py3-none-any.whl"),
     ];
     dedupe_planned_files(&mut files);
     assert_eq!(files.len(), 1);
     assert_eq!(
-        files[0].url,
+        files[0].source_url(),
         "https://pypi.example.com/pkg-1.0-py3-none-any.whl"
     );
 }
@@ -851,34 +858,14 @@ fn test_dedupe_planned_files_keeps_first_non_explicit() {
 #[test]
 fn test_dedupe_planned_files_explicit_url_overrides_non_explicit() {
     let mut files = vec![
-        FileInfo {
-            explicit_url: false,
-            filename: "pkg-1.0-py3-none-any.whl".to_string(),
-            url: "https://pypi.example.com/pkg-1.0-py3-none-any.whl"
-                .to_string(),
-            sha256: None,
-            size: None,
-            package_name: "pkg".to_string(),
-            version: "1.0".to_string(),
-            yanked: None,
-        },
-        FileInfo {
-            explicit_url: true,
-            filename: "pkg-1.0-py3-none-any.whl".to_string(),
-            url: "https://explicit.example.com/pkg-1.0-py3-none-any.whl"
-                .to_string(),
-            sha256: None,
-            size: None,
-            package_name: "pkg".to_string(),
-            version: "1.0".to_string(),
-            yanked: None,
-        },
+        remote_file("https://pypi.example.com/pkg-1.0-py3-none-any.whl"),
+        explicit_wheel("https://explicit.example.com/pkg-1.0-py3-none-any.whl"),
     ];
     dedupe_planned_files(&mut files);
     assert_eq!(files.len(), 1);
-    assert!(files[0].explicit_url);
+    assert!(files[0].is_explicit_url());
     assert_eq!(
-        files[0].url,
+        files[0].source_url(),
         "https://explicit.example.com/pkg-1.0-py3-none-any.whl"
     );
 }
@@ -886,34 +873,14 @@ fn test_dedupe_planned_files_explicit_url_overrides_non_explicit() {
 #[test]
 fn test_dedupe_planned_files_keeps_existing_explicit_url() {
     let mut files = vec![
-        FileInfo {
-            explicit_url: true,
-            filename: "pkg-1.0-py3-none-any.whl".to_string(),
-            url: "https://first.example.com/pkg-1.0-py3-none-any.whl"
-                .to_string(),
-            sha256: None,
-            size: None,
-            package_name: "pkg".to_string(),
-            version: "1.0".to_string(),
-            yanked: None,
-        },
-        FileInfo {
-            explicit_url: false,
-            filename: "pkg-1.0-py3-none-any.whl".to_string(),
-            url: "https://pypi.example.com/pkg-1.0-py3-none-any.whl"
-                .to_string(),
-            sha256: None,
-            size: None,
-            package_name: "pkg".to_string(),
-            version: "1.0".to_string(),
-            yanked: None,
-        },
+        explicit_wheel("https://first.example.com/pkg-1.0-py3-none-any.whl"),
+        remote_file("https://pypi.example.com/pkg-1.0-py3-none-any.whl"),
     ];
     dedupe_planned_files(&mut files);
     assert_eq!(files.len(), 1);
-    assert!(files[0].explicit_url);
+    assert!(files[0].is_explicit_url());
     assert_eq!(
-        files[0].url,
+        files[0].source_url(),
         "https://first.example.com/pkg-1.0-py3-none-any.whl"
     );
 }
@@ -921,33 +888,13 @@ fn test_dedupe_planned_files_keeps_existing_explicit_url() {
 #[test]
 fn test_dedupe_planned_files_keeps_first_explicit_url_when_both_explicit() {
     let mut files = vec![
-        FileInfo {
-            explicit_url: true,
-            filename: "pkg-1.0-py3-none-any.whl".to_string(),
-            url: "https://first.example.com/pkg-1.0-py3-none-any.whl"
-                .to_string(),
-            sha256: None,
-            size: None,
-            package_name: "pkg".to_string(),
-            version: "1.0".to_string(),
-            yanked: None,
-        },
-        FileInfo {
-            explicit_url: true,
-            filename: "pkg-1.0-py3-none-any.whl".to_string(),
-            url: "https://second.example.com/pkg-1.0-py3-none-any.whl"
-                .to_string(),
-            sha256: None,
-            size: None,
-            package_name: "pkg".to_string(),
-            version: "1.0".to_string(),
-            yanked: None,
-        },
+        explicit_wheel("https://first.example.com/pkg-1.0-py3-none-any.whl"),
+        explicit_wheel("https://second.example.com/pkg-1.0-py3-none-any.whl"),
     ];
     dedupe_planned_files(&mut files);
     assert_eq!(files.len(), 1);
     assert_eq!(
-        files[0].url,
+        files[0].source_url(),
         "https://first.example.com/pkg-1.0-py3-none-any.whl"
     );
 }

@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, HashSet};
 
-use super::FileInfo;
+use super::RemoteFile;
 use crate::filters::{
     is_accepted_wheel, is_source_distribution, sdist_fallback_allowed,
 };
 
-fn filter_stable_versions(files: &[FileInfo]) -> Vec<FileInfo> {
+fn filter_stable_versions(files: &[RemoteFile]) -> Vec<RemoteFile> {
     let stable: Vec<_> = files
         .iter()
         .filter(|f| {
@@ -33,9 +33,9 @@ fn filter_stable_versions(files: &[FileInfo]) -> Vec<FileInfo> {
 }
 
 fn group_by_version(
-    files: Vec<FileInfo>,
-) -> BTreeMap<pep440_rs::Version, Vec<FileInfo>> {
-    let mut by_ver: BTreeMap<pep440_rs::Version, Vec<FileInfo>> =
+    files: Vec<RemoteFile>,
+) -> BTreeMap<pep440_rs::Version, Vec<RemoteFile>> {
+    let mut by_ver: BTreeMap<pep440_rs::Version, Vec<RemoteFile>> =
         BTreeMap::new();
     for fi in files {
         if let Ok(v) = fi.version.parse::<pep440_rs::Version>() {
@@ -49,10 +49,10 @@ fn group_by_version(
 /// When `allow_prerelease` is false, prerelease versions are dropped.
 /// If that leaves nothing, fall back to the original list with a warning.
 pub fn select_latest_versions(
-    files: &[FileInfo],
+    files: &[RemoteFile],
     max_versions: usize,
     allow_prerelease: bool,
-) -> Vec<FileInfo> {
+) -> Vec<RemoteFile> {
     if max_versions == 0 {
         return files.to_vec();
     }
@@ -70,7 +70,7 @@ pub fn select_latest_versions(
         .collect()
 }
 
-fn collect_wheels(files: &[FileInfo]) -> (Vec<FileInfo>, HashSet<String>) {
+fn collect_wheels(files: &[RemoteFile]) -> (Vec<RemoteFile>, HashSet<String>) {
     let mut whl_versions = HashSet::new();
     let mut result = Vec::with_capacity(files.len());
     for fi in files {
@@ -83,9 +83,9 @@ fn collect_wheels(files: &[FileInfo]) -> (Vec<FileInfo>, HashSet<String>) {
 }
 
 fn collect_sdists(
-    files: &[FileInfo],
+    files: &[RemoteFile],
     whl_versions: &HashSet<String>,
-) -> Vec<FileInfo> {
+) -> Vec<RemoteFile> {
     let mut result = Vec::new();
     for fi in files {
         let is_sdist = is_source_distribution(&fi.filename);
@@ -97,7 +97,7 @@ fn collect_sdists(
     result
 }
 
-pub fn collect_version_files(files: &[FileInfo]) -> Vec<FileInfo> {
+pub fn collect_version_files(files: &[RemoteFile]) -> Vec<RemoteFile> {
     let (mut result, whl_versions) = collect_wheels(files);
     if sdist_fallback_allowed(files, true) {
         result.extend(collect_sdists(files, &whl_versions));

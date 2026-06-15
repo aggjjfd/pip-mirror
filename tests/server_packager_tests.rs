@@ -101,16 +101,17 @@ fn test_no_changes_empty() {
 
 #[test]
 fn test_no_changes_has_simple_files() {
-    let fi = pip_mirror::downloader::FileInfo {
-        explicit_url: false,
-        filename: "pkg-1.0.whl".to_string(),
-        url: "https://x.com/pkg.whl".to_string(),
-        sha256: Some("a".repeat(64)),
-        size: Some(100),
-        package_name: "pkg".to_string(),
-        version: "1.0".to_string(),
-        yanked: None,
-    };
+    let fi = pip_mirror::downloader::DownloadableItem::Remote(
+        pip_mirror::downloader::FileInfo {
+            filename: "pkg-1.0.whl".to_string(),
+            url: "https://x.com/pkg.whl".to_string(),
+            sha256: Some("a".repeat(64)),
+            size: Some(100),
+            package_name: "pkg".to_string(),
+            version: "1.0".to_string(),
+            yanked: None,
+        },
+    );
     let spec = IncrementalPackage {
         simple_files: &[fi],
         python_builds_files: &[],
@@ -121,17 +122,18 @@ fn test_no_changes_has_simple_files() {
     assert!(!pip_mirror::packager::no_changes(&spec));
 }
 
-fn make_test_file_info() -> pip_mirror::downloader::FileInfo {
-    pip_mirror::downloader::FileInfo {
-        explicit_url: false,
-        filename: "pkg-1.0.whl".to_string(),
-        url: "https://x.com/pkg.whl".to_string(),
-        sha256: Some("a".repeat(64)),
-        size: Some(100),
-        package_name: "pkg".to_string(),
-        version: "1.0".to_string(),
-        yanked: None,
-    }
+fn make_test_file_info() -> pip_mirror::downloader::DownloadableItem {
+    pip_mirror::downloader::DownloadableItem::Remote(
+        pip_mirror::downloader::FileInfo {
+            filename: "pkg-1.0.whl".to_string(),
+            url: "https://x.com/pkg.whl".to_string(),
+            sha256: Some("a".repeat(64)),
+            size: Some(100),
+            package_name: "pkg".to_string(),
+            version: "1.0".to_string(),
+            yanked: None,
+        },
+    )
 }
 
 #[test]

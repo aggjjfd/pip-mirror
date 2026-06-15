@@ -2,7 +2,7 @@ use std::path::Path;
 
 use futures::{StreamExt, stream};
 
-use crate::downloader::FileInfo;
+use crate::downloader::{Downloadable, DownloadableItem};
 use crate::store::DownloadStore;
 
 const HASH_CONCURRENCY: usize = 8;
@@ -22,21 +22,18 @@ pub async fn record_download_results(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let records_data = stream::iter(result.downloaded.iter())
         .map(|fi| {
-            let dest = repo
-                .join("simple")
-                .join(&fi.package_name)
-                .join(&fi.filename);
-            let yanked = fi.yanked.clone();
+            let dest = fi.dest_path(repo);
+            let yanked = fi.yanked().map(String::from);
             async move {
-                let sha256 = hash_file_async(&dest, fi.sha256.clone()).await;
+                let sha256 = hash_file_async(&dest, fi.sha256()).await;
                 let size = tokio::fs::metadata(&dest)
                     .await
                     .ok()
                     .map(|m| m.len() as i64);
                 RecordData {
-                    filename: fi.filename.clone(),
-                    package_name: fi.package_name.clone(),
-                    version: fi.version.clone(),
+                    filename: fi.filename().to_string(),
+                    package_name: fi.package_name().to_string(),
+                    version: fi.version().to_string(),
                     sha256,
                     size,
                     yanked,
@@ -55,7 +52,12 @@ pub async fn record_download_results(
     record_skipped_files(&store, repo, &result.skipped).await;
 
     for (fi, err) in &result.failed {
-        tracing::warn!("  [FAIL] {} {}: {}", fi.package_name, fi.filename, err);
+        tracing::warn!(
+            "  [FAIL] {} {}: {}",
+            fi.package_name(),
+            fi.filename(),
+            err
+        );
     }
     Ok(())
 }
@@ -63,7 +65,7 @@ pub async fn record_download_results(
 async fn record_skipped_files(
     store: &DownloadStore,
     repo: &Path,
-    skipped: &[FileInfo],
+    skipped: &[DownloadableItem],
 ) {
     let missing = match store.filter_missing_files(skipped) {
         Ok(m) => m,
@@ -75,11 +77,8 @@ async fn record_skipped_files(
 
     let records_data: Vec<_> = stream::iter(missing)
         .map(|fi| {
-            let dest = repo
-                .join("simple")
-                .join(&fi.package_name)
-                .join(&fi.filename);
-            let yanked = fi.yanked.clone();
+            let dest = fi.dest_path(repo);
+            let yanked = fi.yanked().map(String::from);
             async move { try_hash_file(dest, fi, yanked).await }
         })
         .buffer_unordered(HASH_CONCURRENCY)
@@ -94,30 +93,30 @@ async fn record_skipped_files(
 
 async fn try_hash_file(
     dest: std::path::PathBuf,
-    fi: FileInfo,
+    fi: DownloadableItem,
     yanked: Option<String>,
 ) -> Option<RecordData> {
     if !dest.exists() {
         return None;
     }
-    let sha256 = hash_file_async(&dest, fi.sha256.clone()).await;
+    let sha256 = hash_file_async(&dest, fi.sha256()).await;
     let size = tokio::fs::metadata(&dest)
         .await
         .ok()
         .map(|m| m.len() as i64);
     Some(RecordData {
-        filename: fi.filename,
-        package_name: fi.package_name,
-        version: fi.version,
+        filename: fi.filename().to_string(),
+        package_name: fi.package_name().to_string(),
+        version: fi.version().to_string(),
         sha256,
         size,
         yanked,
     })
 }
 
-async fn hash_file_async(dest: &Path, known_sha256: Option<String>) -> String {
+async fn hash_file_async(dest: &Path, known_sha256: Option<&str>) -> String {
     match known_sha256 {
-        Some(h) => h,
+        Some(h) => h.to_string(),
         None => {
             let dest = dest.to_path_buf();
             let hr = tokio::task::spawn_blocking(move || {

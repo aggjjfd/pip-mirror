@@ -4,7 +4,7 @@ use tracing::info;
 
 use crate::config::validator::{ConfigError, ConfigValidator};
 use crate::config::{Config, PackageSpec};
-use crate::downloader::FileInfo;
+use crate::downloader::DownloadableItem;
 
 fn log_incremental_archive(archive: &Path) {
     info!(
@@ -16,7 +16,7 @@ fn log_incremental_archive(archive: &Path) {
 
 async fn do_incremental_pack(
     config: &Config,
-    downloaded: Vec<FileInfo>,
+    downloaded: Vec<DownloadableItem>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&config.incremental_dir)?;
     if let Some(a) = crate::packager::build_incremental_package_async(

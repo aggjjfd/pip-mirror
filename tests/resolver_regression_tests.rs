@@ -13,7 +13,7 @@ use axum::{
 use dashmap::DashMap;
 use futures::future::join_all;
 use pep440_rs::Version;
-use pip_mirror::downloader::FileInfo;
+use pip_mirror::downloader::{Downloadable, FileInfo};
 use pip_mirror::filters::version_is_installable_for_target;
 use pip_mirror::http::HttpClient;
 use pip_mirror::resolver::eligibility::{ParsedDepsCacheKey, SolveContext};
@@ -81,7 +81,6 @@ fn test_markers_python_version_fork() {
 
 fn file(name: &str) -> FileInfo {
     FileInfo {
-        explicit_url: false,
         filename: name.to_string(),
         url: "https://example.com/file".to_string(),
         sha256: None,
@@ -465,7 +464,7 @@ async fn test_prefilter_skips_incompatible_versions() {
     let macos_files: Vec<_> = plan
         .planned_files
         .iter()
-        .filter(|f| f.package_name == "demo-macos-only")
+        .filter(|f| f.package_name() == "demo-macos-only")
         .collect();
     assert!(
         macos_files.is_empty(),

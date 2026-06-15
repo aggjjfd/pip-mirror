@@ -1,5 +1,5 @@
 use crate::config::{Config, PackageSpec};
-use crate::downloader::FileInfo;
+use crate::downloader::{DownloadableItem, ExplicitWheel};
 use crate::http::HttpClient;
 use crate::progress::ProgressHandle;
 use crate::resolver::plan::{
@@ -85,15 +85,14 @@ fn add_url_wheel_to_plan(
                     crate::filters::redact_url_for_display(&spec.url)
                 ))
             })?;
-    let file_info = FileInfo::builder()
-        .filename(parsed.filename)
-        .url(parsed.url)
-        .sha256(parsed.sha256)
-        .package_name(parsed.package_name.clone())
-        .version(parsed.version.clone())
-        .explicit_url(true)
-        .build();
-    plan.planned_files.push(file_info);
+    let wheel = ExplicitWheel {
+        filename: parsed.filename,
+        url: parsed.url,
+        sha256: parsed.sha256,
+        package_name: parsed.package_name.clone(),
+        version: parsed.version.clone(),
+    };
+    plan.planned_files.push(DownloadableItem::Explicit(wheel));
     let version =
         parsed.version.parse::<pep440_rs::Version>().map_err(|_| {
             ResolveError::Config(format!(

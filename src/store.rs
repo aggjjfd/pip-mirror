@@ -6,6 +6,7 @@ use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 
+use crate::downloader::{Downloadable, DownloadableItem};
 use crate::hex_digest;
 
 pub struct DownloadStore {
@@ -22,8 +23,8 @@ pub struct FileRecord<'a> {
 }
 
 fn push_if_missing(
-    acc: &mut Vec<crate::downloader::FileInfo>,
-    fi: &crate::downloader::FileInfo,
+    acc: &mut Vec<DownloadableItem>,
+    fi: &DownloadableItem,
     has: bool,
 ) {
     if !has {
@@ -234,14 +235,14 @@ impl DownloadStore {
     /// Return files that are not yet in the store.
     pub fn filter_missing_files(
         &self,
-        files: &[crate::downloader::FileInfo],
-    ) -> Result<Vec<crate::downloader::FileInfo>, rusqlite::Error> {
+        files: &[DownloadableItem],
+    ) -> Result<Vec<DownloadableItem>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut result = Vec::new();
         for fi in files {
             let count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM downloaded_files WHERE package_name = ?1 AND filename = ?2",
-                rusqlite::params![&fi.package_name, &fi.filename],
+                rusqlite::params![fi.package_name(), fi.filename()],
                 |r| r.get(0),
             )?;
             push_if_missing(&mut result, fi, count > 0);
@@ -280,11 +281,11 @@ impl DownloadStore {
 
     pub async fn record_download(
         &self,
-        fi: &crate::downloader::FileInfo,
+        fi: &dyn Downloadable,
         dest: &std::path::Path,
     ) {
-        let sha256 = if let Some(h) = fi.sha256.clone() {
-            h
+        let sha256 = if let Some(h) = fi.sha256() {
+            h.to_string()
         } else {
             let dest = dest.to_path_buf();
             let hr =
@@ -294,12 +295,12 @@ impl DownloadStore {
         };
         let size = tokio::fs::metadata(dest).await.ok().map(|m| m.len() as i64);
         let rec = FileRecord {
-            filename: &fi.filename,
-            package_name: &fi.package_name,
-            version: &fi.version,
+            filename: fi.filename(),
+            package_name: fi.package_name(),
+            version: fi.version(),
             sha256: &sha256,
             size,
-            yanked: fi.yanked.as_deref(),
+            yanked: fi.yanked(),
         };
         if let Err(e) = self.add_file(&rec) {
             tracing::warn!("写入 .store.db 失败: {e}");

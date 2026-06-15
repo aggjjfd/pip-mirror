@@ -4,7 +4,8 @@ use tracing::info;
 
 use crate::config::Config;
 use crate::downloader::{
-    BatchDownloader, DownloadPolicy, DownloadResult, FileInfo, PrefetchedFiles,
+    BatchDownloader, DownloadPolicy, DownloadResult, Downloadable,
+    DownloadableItem, PrefetchedFiles,
 };
 use crate::http::HttpClient;
 use crate::progress::{ProgressHandle, SyncEvent};
@@ -63,8 +64,14 @@ fn prepare_pending_files(
     repo: &Path,
     plan: &DependencyPlan,
     progress: &Option<ProgressHandle>,
-) -> Result<(Vec<FileInfo>, PrefetchedFiles, Option<DownloadStore>), SyncError>
-{
+) -> Result<
+    (
+        Vec<DownloadableItem>,
+        PrefetchedFiles,
+        Option<DownloadStore>,
+    ),
+    SyncError,
+> {
     let planned_count = plan.planned_files.len();
     let store = open_store(repo)?;
     let pending = if let Some(s) = &store {
@@ -111,12 +118,13 @@ fn log_pending_files(pending_count: usize, planned_count: usize) {
 }
 
 fn filter_prefetched_for_pending(
-    pending: &[FileInfo],
+    pending: &[DownloadableItem],
     prefetched_files: &PrefetchedFiles,
 ) -> PrefetchedFiles {
     let mut result = PrefetchedFiles::new();
     for file in pending {
-        let key = (file.package_name.clone(), file.filename.clone());
+        let key =
+            (file.package_name().to_string(), file.filename().to_string());
         if let Some(bytes) = prefetched_files.get(&key) {
             result.insert(key, bytes.clone());
         }
@@ -124,12 +132,17 @@ fn filter_prefetched_for_pending(
     result
 }
 
-fn log_dry_run(pending: &[FileInfo]) {
+fn log_dry_run(pending: &[DownloadableItem]) {
     info!(
         "Dry-run 依赖解析完成，待下载文件清单（{} 个）：",
         pending.len()
     );
     for fi in pending {
-        info!("  {}  {}  {}", fi.package_name, fi.version, fi.filename);
+        info!(
+            "  {}  {}  {}",
+            fi.package_name(),
+            fi.version(),
+            fi.filename()
+        );
     }
 }

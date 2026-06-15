@@ -12,7 +12,8 @@ use axum::{
     routing::get,
 };
 use pip_mirror::downloader::{
-    BatchDownloader, DownloadPolicy, FileInfo, PrefetchedFiles,
+    BatchDownloader, DownloadPolicy, DownloadableItem, FileInfo,
+    PrefetchedFiles,
 };
 use pip_mirror::http::HttpClient;
 use pip_mirror::resolver::eligibility::{SolveContext, version_matches_target};
@@ -183,9 +184,8 @@ fn metadata_version_response() -> Value {
     })
 }
 
-fn download_file(filename: &str, base_url: &str) -> FileInfo {
-    FileInfo {
-        explicit_url: false,
+fn download_file(filename: &str, base_url: &str) -> DownloadableItem {
+    DownloadableItem::Remote(FileInfo {
         filename: filename.to_string(),
         url: format!("{base_url}/files/{filename}"),
         sha256: None,
@@ -193,7 +193,7 @@ fn download_file(filename: &str, base_url: &str) -> FileInfo {
         package_name: "demo".to_string(),
         version: "1.0.0".to_string(),
         yanked: None,
-    }
+    })
 }
 
 fn linux_target() -> TargetEnv {

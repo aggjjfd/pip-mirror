@@ -2,7 +2,7 @@ use dashmap::DashMap;
 use pep440_rs::Version;
 use type_state_builder::TypeStateBuilder;
 
-use crate::downloader::{FileInfo, PrefetchedFiles};
+use crate::downloader::{Downloadable, DownloadableItem, PrefetchedFiles};
 use crate::http::HttpClient;
 use crate::resolver::metadata::MetadataCache;
 use crate::resolver::plan::{DependencyPlan, select_top_versions};
@@ -28,14 +28,17 @@ impl<'a> FileSelector<'a> {
         &self,
         package: &str,
         version: &Version,
-    ) -> Result<Vec<FileInfo>, ResolveError> {
+    ) -> Result<Vec<DownloadableItem>, ResolveError> {
         let files = self.cache.get_version_files(package, version).await?;
         Ok(crate::filters::select_files_for_version(
             &files,
             self.targets,
             self.include_source,
             self.linux_max_glibc,
-        ))
+        )
+        .into_iter()
+        .map(DownloadableItem::Remote)
+        .collect())
     }
 }
 
@@ -79,7 +82,7 @@ pub async fn build_top_only_plan(
     }
 
     let mut seen = std::collections::HashSet::new();
-    planned_files.retain(|fi| seen.insert(fi.filename.clone()));
+    planned_files.retain(|fi| seen.insert(fi.filename().to_string()));
 
     Ok(DependencyPlan {
         planned_files,

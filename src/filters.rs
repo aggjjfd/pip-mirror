@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use url::Url;
 
-use crate::downloader::FileInfo;
+use crate::downloader::RemoteFile;
 use crate::resolver::types::TargetEnv;
 
 /// Strip query, fragment and userinfo from a URL for safe logging/errors.
@@ -177,7 +177,7 @@ pub fn is_source_distribution(filename: &str) -> bool {
 }
 
 pub fn sdist_fallback_allowed(
-    files: &[FileInfo],
+    files: &[RemoteFile],
     include_source: bool,
 ) -> bool {
     include_source && files.iter().any(|f| is_source_distribution(&f.filename))
@@ -265,7 +265,7 @@ pub fn wheel_is_installable_for_target(
 }
 
 pub fn version_is_installable_for_target(
-    files: &[FileInfo],
+    files: &[RemoteFile],
     target: &TargetEnv,
     include_source: bool,
     max_glibc: &str,
@@ -283,7 +283,7 @@ pub fn version_is_installable_for_target(
 // ── file selection helpers ──
 
 fn wheel_is_download_candidate(
-    fi: &FileInfo,
+    fi: &RemoteFile,
     targets: &[TargetEnv],
     max_glibc: &str,
     glibc: (u32, u32),
@@ -300,11 +300,11 @@ fn wheel_is_download_candidate(
 /// Returns the kept wheels; if no wheel is kept and `include_source` is true,
 /// falls back to the sdist.
 pub fn select_files_for_version(
-    files: &[FileInfo],
+    files: &[RemoteFile],
     targets: &[TargetEnv],
     include_source: bool,
     max_glibc: &str,
-) -> Vec<FileInfo> {
+) -> Vec<RemoteFile> {
     let glibc = parse_glibc_version(max_glibc).unwrap_or(DEFAULT_MAX_GLIBC);
 
     let mut kept_wheels = Vec::new();
