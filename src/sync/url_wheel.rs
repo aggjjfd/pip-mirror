@@ -1,6 +1,7 @@
 use url::Url;
 
-use crate::downloader::{Downloadable, DownloadableItem};
+use crate::config::PackageUrlSpec;
+use crate::downloader::{Downloadable, DownloadableItem, ExplicitWheel};
 use crate::resolver::resolve::ResolveError;
 
 /// Maximum wheel size allowed for remote metadata extraction (200 MiB).
@@ -19,6 +20,28 @@ pub fn split_package_specs(
         }
     }
     (names, urls)
+}
+
+/// Build a [`DownloadableItem::Explicit`] from a user-supplied URL wheel spec.
+pub fn explicit_wheel_from_spec(
+    spec: &PackageUrlSpec,
+) -> Result<DownloadableItem, ResolveError> {
+    let parsed =
+        crate::wheel_url::parse_wheel_url(&spec.url, spec.sha256.clone())
+            .map_err(|e| {
+                ResolveError::Config(format!(
+                    "URL whl 解析失败 ({}): {e}",
+                    crate::filters::redact_url_for_display(&spec.url)
+                ))
+            })?;
+    let wheel = ExplicitWheel {
+        filename: parsed.filename,
+        url: parsed.url,
+        sha256: parsed.sha256,
+        package_name: parsed.package_name,
+        version: parsed.version,
+    };
+    Ok(DownloadableItem::Explicit(wheel))
 }
 
 fn apply_duplicate_resolution(

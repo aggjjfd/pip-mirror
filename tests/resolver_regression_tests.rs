@@ -80,15 +80,12 @@ fn test_markers_python_version_fork() {
 }
 
 fn file(name: &str) -> FileInfo {
-    FileInfo {
-        filename: name.to_string(),
-        url: "https://example.com/file".to_string(),
-        sha256: None,
-        size: None,
-        package_name: "demo".to_string(),
-        version: "1.0.0".to_string(),
-        yanked: None,
-    }
+    FileInfo::builder()
+        .filename(name.to_string())
+        .url("https://example.com/file".to_string())
+        .package_name("demo".to_string())
+        .version("1.0.0".to_string())
+        .build()
 }
 
 #[test]

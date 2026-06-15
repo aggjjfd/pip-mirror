@@ -1,5 +1,5 @@
 use crate::config::{Config, PackageSpec};
-use crate::downloader::{DownloadableItem, ExplicitWheel};
+use crate::downloader::Downloadable;
 use crate::http::HttpClient;
 use crate::progress::ProgressHandle;
 use crate::resolver::plan::{
@@ -77,31 +77,18 @@ fn add_url_wheel_to_plan(
     plan: &mut DependencyPlan,
     spec: &crate::config::PackageUrlSpec,
 ) -> Result<(), ResolveError> {
-    let parsed =
-        crate::wheel_url::parse_wheel_url(&spec.url, spec.sha256.clone())
-            .map_err(|e| {
-                ResolveError::Config(format!(
-                    "URL whl 解析失败 ({}): {e}",
-                    crate::filters::redact_url_for_display(&spec.url)
-                ))
-            })?;
-    let wheel = ExplicitWheel {
-        filename: parsed.filename,
-        url: parsed.url,
-        sha256: parsed.sha256,
-        package_name: parsed.package_name.clone(),
-        version: parsed.version.clone(),
-    };
-    plan.planned_files.push(DownloadableItem::Explicit(wheel));
+    let item = crate::sync::url_wheel::explicit_wheel_from_spec(spec)?;
+    let package_name = item.package_name().to_string();
     let version =
-        parsed.version.parse::<pep440_rs::Version>().map_err(|_| {
+        item.version().parse::<pep440_rs::Version>().map_err(|_| {
             ResolveError::Config(format!(
                 "无法解析 whl 版本: {}",
-                parsed.version
+                item.version()
             ))
         })?;
+    plan.planned_files.push(item);
     plan.solved_versions
-        .entry(parsed.package_name)
+        .entry(package_name)
         .or_default()
         .push(version);
     Ok(())

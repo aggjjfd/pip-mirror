@@ -12,33 +12,30 @@ fn test_client() -> reqwest_middleware::ClientWithMiddleware {
 #[test]
 fn test_select_latest_versions_basic() {
     let files = vec![
-        downloader::FileInfo {
-            filename: "pkg-2.0.0-py3-none-any.whl".to_string(),
-            url: "https://example.com/pkg-2.0.0.whl".to_string(),
-            sha256: Some("a".repeat(64)),
-            size: Some(100),
-            package_name: "pkg".to_string(),
-            version: "2.0.0".to_string(),
-            yanked: None,
-        },
-        downloader::FileInfo {
-            filename: "pkg-1.0.0-py3-none-any.whl".to_string(),
-            url: "https://example.com/pkg-1.0.0.whl".to_string(),
-            sha256: Some("b".repeat(64)),
-            size: Some(100),
-            package_name: "pkg".to_string(),
-            version: "1.0.0".to_string(),
-            yanked: None,
-        },
-        downloader::FileInfo {
-            filename: "pkg-0.9.0-py3-none-any.whl".to_string(),
-            url: "https://example.com/pkg-0.9.0.whl".to_string(),
-            sha256: Some("c".repeat(64)),
-            size: Some(100),
-            package_name: "pkg".to_string(),
-            version: "0.9.0".to_string(),
-            yanked: None,
-        },
+        downloader::FileInfo::builder()
+            .filename("pkg-2.0.0-py3-none-any.whl".to_string())
+            .url("https://example.com/pkg-2.0.0.whl".to_string())
+            .package_name("pkg".to_string())
+            .version("2.0.0".to_string())
+            .sha256(Some("a".repeat(64)))
+            .size(Some(100))
+            .build(),
+        downloader::FileInfo::builder()
+            .filename("pkg-1.0.0-py3-none-any.whl".to_string())
+            .url("https://example.com/pkg-1.0.0.whl".to_string())
+            .package_name("pkg".to_string())
+            .version("1.0.0".to_string())
+            .sha256(Some("b".repeat(64)))
+            .size(Some(100))
+            .build(),
+        downloader::FileInfo::builder()
+            .filename("pkg-0.9.0-py3-none-any.whl".to_string())
+            .url("https://example.com/pkg-0.9.0.whl".to_string())
+            .package_name("pkg".to_string())
+            .version("0.9.0".to_string())
+            .sha256(Some("c".repeat(64)))
+            .size(Some(100))
+            .build(),
     ];
     let selected = downloader::select_latest_versions(&files, 2, false);
     let versions: Vec<_> =
@@ -51,24 +48,22 @@ fn test_select_latest_versions_basic() {
 #[test]
 fn test_select_latest_versions_max_zero_returns_all() {
     let files = vec![
-        downloader::FileInfo {
-            filename: "pkg-1.0.0-py3-none-any.whl".to_string(),
-            url: "https://example.com/pkg-1.0.0.whl".to_string(),
-            sha256: Some("a".repeat(64)),
-            size: Some(100),
-            package_name: "pkg".to_string(),
-            version: "1.0.0".to_string(),
-            yanked: None,
-        },
-        downloader::FileInfo {
-            filename: "pkg-0.9.0-py3-none-any.whl".to_string(),
-            url: "https://example.com/pkg-0.9.0.whl".to_string(),
-            sha256: Some("b".repeat(64)),
-            size: Some(100),
-            package_name: "pkg".to_string(),
-            version: "0.9.0".to_string(),
-            yanked: None,
-        },
+        downloader::FileInfo::builder()
+            .filename("pkg-1.0.0-py3-none-any.whl".to_string())
+            .url("https://example.com/pkg-1.0.0.whl".to_string())
+            .package_name("pkg".to_string())
+            .version("1.0.0".to_string())
+            .sha256(Some("a".repeat(64)))
+            .size(Some(100))
+            .build(),
+        downloader::FileInfo::builder()
+            .filename("pkg-0.9.0-py3-none-any.whl".to_string())
+            .url("https://example.com/pkg-0.9.0.whl".to_string())
+            .package_name("pkg".to_string())
+            .version("0.9.0".to_string())
+            .sha256(Some("b".repeat(64)))
+            .size(Some(100))
+            .build(),
     ];
     let selected = downloader::select_latest_versions(&files, 0, false);
     assert_eq!(selected.len(), 2);
@@ -77,33 +72,30 @@ fn test_select_latest_versions_max_zero_returns_all() {
 #[test]
 fn test_collect_version_files_filters_platform() {
     let files = vec![
-        downloader::FileInfo {
-            filename: "pkg-1.0-py3-none-manylinux1_x86_64.whl".to_string(),
-            url: "https://example.com/linux.whl".to_string(),
-            sha256: Some("a".repeat(64)),
-            size: Some(100),
-            package_name: "pkg".to_string(),
-            version: "1.0.0".to_string(),
-            yanked: None,
-        },
-        downloader::FileInfo {
-            filename: "pkg-1.0-py3-none-macosx_10_9_x86_64.whl".to_string(),
-            url: "https://example.com/macos.whl".to_string(),
-            sha256: Some("b".repeat(64)),
-            size: Some(100),
-            package_name: "pkg".to_string(),
-            version: "1.0.0".to_string(),
-            yanked: None,
-        },
-        downloader::FileInfo {
-            filename: "pkg-1.0.tar.gz".to_string(),
-            url: "https://example.com/sdist.tar.gz".to_string(),
-            sha256: Some("c".repeat(64)),
-            size: Some(100),
-            package_name: "pkg".to_string(),
-            version: "1.0.0".to_string(),
-            yanked: None,
-        },
+        downloader::FileInfo::builder()
+            .filename("pkg-1.0-py3-none-manylinux1_x86_64.whl".to_string())
+            .url("https://example.com/linux.whl".to_string())
+            .package_name("pkg".to_string())
+            .version("1.0.0".to_string())
+            .sha256(Some("a".repeat(64)))
+            .size(Some(100))
+            .build(),
+        downloader::FileInfo::builder()
+            .filename("pkg-1.0-py3-none-macosx_10_9_x86_64.whl".to_string())
+            .url("https://example.com/macos.whl".to_string())
+            .package_name("pkg".to_string())
+            .version("1.0.0".to_string())
+            .sha256(Some("b".repeat(64)))
+            .size(Some(100))
+            .build(),
+        downloader::FileInfo::builder()
+            .filename("pkg-1.0.tar.gz".to_string())
+            .url("https://example.com/sdist.tar.gz".to_string())
+            .package_name("pkg".to_string())
+            .version("1.0.0".to_string())
+            .sha256(Some("c".repeat(64)))
+            .size(Some(100))
+            .build(),
     ];
     let result = downloader::collect_version_files(&files);
     // linux wheel accepted, macos rejected, sdist skipped (same version has whl)
@@ -114,24 +106,22 @@ fn test_collect_version_files_filters_platform() {
 #[test]
 fn test_collect_version_files_skips_sdist_when_same_version_has_wheel() {
     let files = vec![
-        downloader::FileInfo {
-            filename: "pkg-1.0-cp312-cp312-win_amd64.whl".to_string(),
-            url: "https://example.com/win.whl".to_string(),
-            sha256: Some("a".repeat(64)),
-            size: Some(100),
-            package_name: "pkg".to_string(),
-            version: "1.0.0".to_string(),
-            yanked: None,
-        },
-        downloader::FileInfo {
-            filename: "pkg-1.0.tar.gz".to_string(),
-            url: "https://example.com/sdist.tar.gz".to_string(),
-            sha256: Some("b".repeat(64)),
-            size: Some(100),
-            package_name: "pkg".to_string(),
-            version: "1.0.0".to_string(),
-            yanked: None,
-        },
+        downloader::FileInfo::builder()
+            .filename("pkg-1.0-cp312-cp312-win_amd64.whl".to_string())
+            .url("https://example.com/win.whl".to_string())
+            .package_name("pkg".to_string())
+            .version("1.0.0".to_string())
+            .sha256(Some("a".repeat(64)))
+            .size(Some(100))
+            .build(),
+        downloader::FileInfo::builder()
+            .filename("pkg-1.0.tar.gz".to_string())
+            .url("https://example.com/sdist.tar.gz".to_string())
+            .package_name("pkg".to_string())
+            .version("1.0.0".to_string())
+            .sha256(Some("b".repeat(64)))
+            .size(Some(100))
+            .build(),
     ];
     let result = downloader::collect_version_files(&files);
     assert_eq!(result.len(), 1);
@@ -141,24 +131,22 @@ fn test_collect_version_files_skips_sdist_when_same_version_has_wheel() {
 #[test]
 fn test_version_has_target() {
     let files = vec![
-        downloader::FileInfo {
-            filename: "pkg-1.0-py3-none-manylinux1_x86_64.whl".to_string(),
-            url: "https://example.com/linux.whl".to_string(),
-            sha256: Some("a".repeat(64)),
-            size: Some(100),
-            package_name: "pkg".to_string(),
-            version: "1.0.0".to_string(),
-            yanked: None,
-        },
-        downloader::FileInfo {
-            filename: "pkg-1.0-py3-none-win_amd64.whl".to_string(),
-            url: "https://example.com/win.whl".to_string(),
-            sha256: Some("b".repeat(64)),
-            size: Some(100),
-            package_name: "pkg".to_string(),
-            version: "1.0.0".to_string(),
-            yanked: None,
-        },
+        downloader::FileInfo::builder()
+            .filename("pkg-1.0-py3-none-manylinux1_x86_64.whl".to_string())
+            .url("https://example.com/linux.whl".to_string())
+            .package_name("pkg".to_string())
+            .version("1.0.0".to_string())
+            .sha256(Some("a".repeat(64)))
+            .size(Some(100))
+            .build(),
+        downloader::FileInfo::builder()
+            .filename("pkg-1.0-py3-none-win_amd64.whl".to_string())
+            .url("https://example.com/win.whl".to_string())
+            .package_name("pkg".to_string())
+            .version("1.0.0".to_string())
+            .sha256(Some("b".repeat(64)))
+            .size(Some(100))
+            .build(),
     ];
     assert!(downloader::version_has_target(&files, "linux_x86_64"));
     assert!(downloader::version_has_target(&files, "win_amd64"));
@@ -173,34 +161,32 @@ fn test_backfill_one_target_finds_old_target() {
         m.insert(
             "0.9.0".to_string(),
             vec![
-                downloader::FileInfo {
-                    filename: "p-0.9.0-cp312-cp312-linux_x86_64.whl"
-                        .to_string(),
-                    url: "https://example.com/linux.whl".to_string(),
-                    sha256: Some("a".repeat(64)),
-                    size: Some(100),
-                    package_name: "p".to_string(),
-                    version: "0.9.0".to_string(),
-                    yanked: None,
-                },
-                downloader::FileInfo {
-                    filename: "p-0.9.0-cp312-cp312-win_amd64.whl".to_string(),
-                    url: "https://example.com/win64.whl".to_string(),
-                    sha256: Some("b".repeat(64)),
-                    size: Some(100),
-                    package_name: "p".to_string(),
-                    version: "0.9.0".to_string(),
-                    yanked: None,
-                },
-                downloader::FileInfo {
-                    filename: "p-0.9.0-cp312-cp312-win32.whl".to_string(),
-                    url: "https://example.com/win32.whl".to_string(),
-                    sha256: Some("c".repeat(64)),
-                    size: Some(100),
-                    package_name: "p".to_string(),
-                    version: "0.9.0".to_string(),
-                    yanked: None,
-                },
+                downloader::FileInfo::builder()
+                    .filename(
+                        "p-0.9.0-cp312-cp312-linux_x86_64.whl".to_string(),
+                    )
+                    .url("https://example.com/linux.whl".to_string())
+                    .package_name("p".to_string())
+                    .version("0.9.0".to_string())
+                    .sha256(Some("a".repeat(64)))
+                    .size(Some(100))
+                    .build(),
+                downloader::FileInfo::builder()
+                    .filename("p-0.9.0-cp312-cp312-win_amd64.whl".to_string())
+                    .url("https://example.com/win64.whl".to_string())
+                    .package_name("p".to_string())
+                    .version("0.9.0".to_string())
+                    .sha256(Some("b".repeat(64)))
+                    .size(Some(100))
+                    .build(),
+                downloader::FileInfo::builder()
+                    .filename("p-0.9.0-cp312-cp312-win32.whl".to_string())
+                    .url("https://example.com/win32.whl".to_string())
+                    .package_name("p".to_string())
+                    .version("0.9.0".to_string())
+                    .sha256(Some("c".repeat(64)))
+                    .size(Some(100))
+                    .build(),
             ],
         );
         m
@@ -220,15 +206,18 @@ fn test_backfill_one_target_no_history() {
         let m = DashMap::new();
         m.insert(
             "0.9.0".to_string(),
-            vec![downloader::FileInfo {
-                filename: "p-0.9.0-cp312-cp312-linux_x86_64.whl".to_string(),
-                url: "https://example.com/linux.whl".to_string(),
-                sha256: Some("a".repeat(64)),
-                size: Some(100),
-                package_name: "p".to_string(),
-                version: "0.9.0".to_string(),
-                yanked: None,
-            }],
+            vec![
+                downloader::FileInfo::builder()
+                    .filename(
+                        "p-0.9.0-cp312-cp312-linux_x86_64.whl".to_string(),
+                    )
+                    .url("https://example.com/linux.whl".to_string())
+                    .package_name("p".to_string())
+                    .version("0.9.0".to_string())
+                    .sha256(Some("a".repeat(64)))
+                    .size(Some(100))
+                    .build(),
+            ],
         );
         m
     };
@@ -244,27 +233,31 @@ fn test_backfill_one_target_respects_order() {
         let m = DashMap::new();
         m.insert(
             "0.9.0".to_string(),
-            vec![downloader::FileInfo {
-                filename: "p-0.9.0-cp312-cp312-linux_x86_64.whl".to_string(),
-                url: "https://example.com/v0.9.whl".to_string(),
-                sha256: Some("a".repeat(64)),
-                size: Some(100),
-                package_name: "p".to_string(),
-                version: "0.9.0".to_string(),
-                yanked: None,
-            }],
+            vec![
+                downloader::FileInfo::builder()
+                    .filename(
+                        "p-0.9.0-cp312-cp312-linux_x86_64.whl".to_string(),
+                    )
+                    .url("https://example.com/v0.9.whl".to_string())
+                    .package_name("p".to_string())
+                    .version("0.9.0".to_string())
+                    .sha256(Some("a".repeat(64)))
+                    .size(Some(100))
+                    .build(),
+            ],
         );
         m.insert(
             "0.8.0".to_string(),
-            vec![downloader::FileInfo {
-                filename: "p-0.8.0-cp312-cp312-win32.whl".to_string(),
-                url: "https://example.com/v0.8.whl".to_string(),
-                sha256: Some("b".repeat(64)),
-                size: Some(100),
-                package_name: "p".to_string(),
-                version: "0.8.0".to_string(),
-                yanked: None,
-            }],
+            vec![
+                downloader::FileInfo::builder()
+                    .filename("p-0.8.0-cp312-cp312-win32.whl".to_string())
+                    .url("https://example.com/v0.8.whl".to_string())
+                    .package_name("p".to_string())
+                    .version("0.8.0".to_string())
+                    .sha256(Some("b".repeat(64)))
+                    .size(Some(100))
+                    .build(),
+            ],
         );
         m
     };
@@ -290,15 +283,12 @@ async fn test_download_file_copies_local_wheel() {
         .join("mypkg")
         .join("mypkg-1.0-py3-none-any.whl");
 
-    let fi = downloader::FileInfo {
-        filename: "mypkg-1.0-py3-none-any.whl".to_string(),
-        url: format!("file://{}", source.to_str().unwrap()),
-        sha256: None,
-        size: None,
-        package_name: "mypkg".to_string(),
-        version: "1.0".to_string(),
-        yanked: None,
-    };
+    let fi = downloader::FileInfo::builder()
+        .filename("mypkg-1.0-py3-none-any.whl".to_string())
+        .url(format!("file://{}", source.to_str().unwrap()))
+        .package_name("mypkg".to_string())
+        .version("1.0".to_string())
+        .build();
 
     let client = test_client();
     let (ok, msg) = downloader::download_file(&client, &fi, &dest).await;
@@ -316,15 +306,13 @@ async fn test_download_file_local_hash_mismatch_fails() {
 
     let dest = tmp.path().join("dest.whl");
 
-    let fi = downloader::FileInfo {
-        filename: "mypkg-1.0-py3-none-any.whl".to_string(),
-        url: format!("file://{}", source.to_str().unwrap()),
-        sha256: Some("0".repeat(64)),
-        size: None,
-        package_name: "mypkg".to_string(),
-        version: "1.0".to_string(),
-        yanked: None,
-    };
+    let fi = downloader::FileInfo::builder()
+        .filename("mypkg-1.0-py3-none-any.whl".to_string())
+        .url(format!("file://{}", source.to_str().unwrap()))
+        .package_name("mypkg".to_string())
+        .version("1.0".to_string())
+        .sha256(Some("0".repeat(64)))
+        .build();
 
     let client = test_client();
     let (ok, msg) = downloader::download_file(&client, &fi, &dest).await;
@@ -339,15 +327,12 @@ async fn test_download_file_local_missing_source_fails() {
     let source = tmp.path().join("nonexistent-1.0-py3-none-any.whl");
     let dest = tmp.path().join("dest.whl");
 
-    let fi = downloader::FileInfo {
-        filename: "nonexistent-1.0-py3-none-any.whl".to_string(),
-        url: format!("file://{}", source.to_str().unwrap()),
-        sha256: None,
-        size: None,
-        package_name: "nonexistent".to_string(),
-        version: "1.0".to_string(),
-        yanked: None,
-    };
+    let fi = downloader::FileInfo::builder()
+        .filename("nonexistent-1.0-py3-none-any.whl".to_string())
+        .url(format!("file://{}", source.to_str().unwrap()))
+        .package_name("nonexistent".to_string())
+        .version("1.0".to_string())
+        .build();
 
     let client = test_client();
     let (ok, msg) = downloader::download_file(&client, &fi, &dest).await;

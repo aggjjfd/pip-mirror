@@ -185,15 +185,15 @@ fn metadata_version_response() -> Value {
 }
 
 fn download_file(filename: &str, base_url: &str) -> DownloadableItem {
-    DownloadableItem::Remote(FileInfo {
-        filename: filename.to_string(),
-        url: format!("{base_url}/files/{filename}"),
-        sha256: None,
-        size: Some(8),
-        package_name: "demo".to_string(),
-        version: "1.0.0".to_string(),
-        yanked: None,
-    })
+    DownloadableItem::Remote(
+        FileInfo::builder()
+            .filename(filename.to_string())
+            .url(format!("{base_url}/files/{filename}"))
+            .package_name("demo".to_string())
+            .version("1.0.0".to_string())
+            .size(Some(8))
+            .build(),
+    )
 }
 
 fn linux_target() -> TargetEnv {
