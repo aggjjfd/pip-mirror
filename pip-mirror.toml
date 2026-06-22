@@ -1,0 +1,288 @@
+# 要同步的包列表，支持 extras（如 markitdown[pptx,docx]）
+packages = [
+    # ---------- Web UI / 应用框架 ----------
+    "gradio",
+    "streamlit",
+    "Django",
+    "Flask",
+
+    # ---------- AI / LLM / Agent ----------
+    "openai",
+    "openai-agents",
+    "ftllm",
+    "browser-use",
+    "agentao",
+
+    # ---------- Excel 处理 ----------
+    "openpyxl",
+    "xlsxwriter",
+    "pyxlsb",
+    "xlrd",
+
+    # ---------- Office 文档 ----------
+    "python-docx",
+    "python-pptx",
+
+    # ---------- Windows 专用 ----------
+    "pywin32",
+    "pywinauto",
+    "pywpsrpc",
+
+    # ---------- GIS / 地理信息 ----------
+    "shapely",
+    "geopandas",
+    "fiona",
+    "pyproj",
+    "rtree",
+    "folium",
+    "geopy",
+    "rasterio",
+
+    # ---------- 常用工具库 ----------
+    "requests",
+    "httpx",
+    "aiofiles",
+    "tomli",
+    "python-dotenv",
+    "six",
+    "tqdm",
+    "colorama",
+    "Jinja2",
+    "rich",
+    "orjson",
+    "lxml",
+    "python-magic",
+    "cachetools",
+    "more-itertools",
+    "pyyaml",
+
+    # ---------- 包管理 / 构建 / 开发工具 ----------
+    "uv",
+    "pytest",
+    "pytest-cov",
+    "pytest-xdist",
+    "pytest-asyncio",
+    "hypothesis",
+    "ruff",
+    "mypy",
+    "hatchling",
+    "pyinstaller",
+    "pre-commit",
+    "coverage",
+
+    # ---------- 数据科学 / ML / OLAP ----------
+    "numpy",
+    "pandas",
+    "polars[async,database,excel,graph,deltalake,iceberg,numpy,plot,pydantic,style,timezone]",
+    "pyarrow",
+    "duckdb",
+    "scipy",
+    "scikit-learn",
+    "scikit-image",
+    "xgboost",
+    "lightgbm",
+
+    # ---------- 计算机视觉 ----------
+    "opencv-python",
+    "ultralytics",
+
+    # ---------- 数据可视化 ----------
+    "matplotlib",
+    "seaborn",
+
+    # ---------- GUI ----------
+    "gooey",
+    "pyside6",
+
+    # ---------- Web 框架 / 服务器 / 实时通信 ----------
+    "fastapi",
+    "uvicorn",
+    "python-socketio",
+
+    # ---------- 日志 ----------
+    "loguru",
+
+    # ---------- PDF ----------
+    "pypdf",
+    "pymupdf",
+
+    # ---------- 图像处理 ----------
+    "pillow",
+
+    # ---------- OCR / NLP / 中文处理 / 语音 ----------
+    "onnxruntime",
+    "rapidocr-onnxruntime",
+    "pypinyin",
+    "jieba",
+    "OmniSenseVoice",
+
+    # ---------- 音频 / 视频 ----------
+    "soundfile",
+    "pydub",
+    "mutagen",
+    "librosa",
+    "av",
+
+    # ---------- 浏览器自动化 ----------
+    "playwright",
+
+    # ---------- 网页解析 / 爬虫 ----------
+    "BeautifulSoup",
+    "Scrapy",
+
+    # ---------- 交互式 / CLI ----------
+    "ipython",
+    "typer",
+
+    # ---------- 任务调度 ----------
+    "schedule",
+    "huey",
+
+    # ---------- 认证 ----------
+    "Authlib",
+
+    # ---------- 测试与模拟数据 ----------
+    "faker",
+    "watchdog",
+    "pytest-mock",
+    "pygount",
+
+    # ---------- 二维码 ----------
+    "qrcode[pil]",
+
+    # ---------- 向量数据库 ----------
+    "chromadb",
+
+    # ---------- 文档转换 ----------
+    "markitdown[pptx,docx,xls,xlsx,pdf]",
+
+    # ---------- 通用 ORM / 查询工具 ----------
+    "sqlalchemy",
+    "sqlmodel",
+    "alembic",
+    "peewee",
+    "dataset",
+    "records",
+    "databases",
+
+    # ---------- PostgreSQL ----------
+    # psycopg：PostgreSQL 官方推荐的现代驱动（Python 3.8+）
+    # psycopg2-binary：经典 psycopg2 的预编译版本，兼容性最好
+    "psycopg[binary]",
+    "psycopg2-binary",
+    "asyncpg",
+
+    # ---------- MySQL / MariaDB ----------
+    "pymysql",
+    "mysql-connector-python",
+    "mysqlclient",
+    "aiomysql",
+    "mariadb",
+
+    # ---------- Microsoft SQL Server ----------
+    "pyodbc",
+    "pymssql",
+
+    # ---------- Oracle（11g 兼容） ----------
+    # cx_Oracle：经典 C 扩展驱动，广泛支持 Oracle 11g/11.2
+    # oracledb：新一代官方驱动，Thick 模式配合 Instant Client 可连 11.2+
+    "cx_Oracle",
+    "oracledb",
+
+    # ---------- ClickHouse ----------
+    "clickhouse-connect",
+    "clickhouse-driver",
+    "clickhouse-sqlalchemy",
+
+    # ---------- DuckDB / SQLite ----------
+    "duckdb",
+    "sqlite-utils",
+
+    # ---------- NoSQL ----------
+    "pymongo",
+    "motor",
+    "redis",
+    "elasticsearch",
+    "elasticsearch-dbapi",
+    "cassandra-driver",
+    "neo4j",
+
+    # ---------- 消息队列 ----------
+    "confluent-kafka",
+    "kafka-python",
+    "pika",
+
+    # ---------- NVIDIA CUDA / 深度学习运行时 ----------
+    "nvidia-cudnn-cu12",
+    "nvidia-cusparselt-cu12",
+    "nvidia-nvshmem-cu12",
+
+    # 本地私有 whl（参与依赖解析；如不存在请先注释掉）
+    # { url = "file:///home/lin/works/asr/dist/asr_service-0.1.0-py3-none-any.whl" }
+]
+
+# 解析目标环境（Python 版本 × 操作系统 × 架构）
+# 不配置时默认覆盖全部内置组合
+# python: Python 版本号，如 "3.10" 或 "3.10.0"
+# os:     操作系统，支持 "linux" | "windows"
+# arch:   架构，支持 "x64" | "x86"（windows 下 x86 仅 Python 3.8 支持）
+targets = [
+    { python = "3.8", os = "windows", arch = "x86" },
+    { python = "3.12", os = "windows", arch = "x64" },
+    { python = "3.12", os = "linux", arch = "x64" },
+]
+
+
+# 包仓库本地存储目录
+repository_dir = "./packages"
+
+# 增量同步临时目录
+incremental_dir = "./incremental"
+
+# 镜像池（按顺序重试，支持故障转移）。
+# 常用国内 PyPI 镜像：阿里、中科大、北外、南大、清华
+pypi_urls = [
+    #"https://mirrors.aliyun.com/pypi",
+    #"https://mirrors.ustc.edu.cn/pypi/web",
+    #"https://mirrors.bfsu.edu.cn/pypi/web",
+    #"https://mirrors.nju.edu.cn/pypi/web",
+    #"https://pypi.tuna.tsinghua.edu.cn",
+    "https://pypi.org"
+]
+
+# 国内镜像 simple 索引地址，用于下载 wheel
+index_url = "https://mirrors.ustc.edu.cn/pypi/simple"
+
+# 源码包仅作为 wheel 不可用时的回退，且仅允许纯 Python 回退候选
+include_source = true
+
+# 依赖解析并发数
+resolve_workers = 32
+
+# 元数据获取并发数
+metadata_workers = 32
+
+# 文件下载并发数
+download_workers = 8
+
+# 每个包每侧保留的相邻版本数（0 = 不保留相邻版本）
+adjacent_versions_per_side = 3
+
+# 每个包保留的最新版本数
+top_versions_per_package = 1
+
+# 是否允许预发布版本
+allow_prerelease = false
+
+# Linux 最大支持的 glibc 版本（影响 manylinux 标签过滤）
+linux_max_glibc = "2.39"
+
+# 服务器监听地址
+server_host = "0.0.0.0"
+
+# 服务器监听端口
+server_port = 8080
+
+# 内嵌 uv 安装器版本（需与 Cargo.toml [package.metadata.uv-embed] 保持一致）
+[uv_embed]
+version = "0.11.14"
