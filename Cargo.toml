@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.13", default-features = false, features = ["native-tls", "stream", "gzip", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "gzip", "json"] }
 tokio = { version = "1", features = ["full"] }
 rayon = "1"
 axum = { version = "0.8", features = ["macros"] }
