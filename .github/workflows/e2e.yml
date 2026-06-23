@@ -82,6 +82,7 @@ jobs:
               "gradio",
               "streamlit",
               "markitdown[pptx,docx,xls,xlsx,pdf]",
+              "certifi==2024.6.2",
           ]
           repository_dir = "/tmp/wan/packages"
           incremental_dir = "/tmp/wan/incremental"
@@ -297,6 +298,18 @@ jobs:
                 "gradio", gradio.__version__,
                 "streamlit", streamlit.__version__,
                 "markitdown", getattr(markitdown, "__version__", "?"))
+          PY
+
+      - name: '客户端验证精确版本约束 — certifi==2024.6.2'
+        run: |
+          set -euo pipefail
+          uv venv /tmp/client-certifi
+          export VIRTUAL_ENV=/tmp/client-certifi
+          uv pip install --index-url "http://${MIRROR_HOST}:${MIRROR_PORT}/simple" "certifi==2024.6.2"
+          /tmp/client-certifi/bin/python - <<'PY'
+          import certifi
+          assert certifi.__version__ == '2024.06.02', certifi.__version__
+          print("certifi version pinned OK:", certifi.__version__)
           PY
 
       - name: '客户端第二次下载 — 旧包仍可用（openai + playwright + rapidocr-onnxruntime）'
