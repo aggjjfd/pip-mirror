@@ -59,6 +59,53 @@ repository_dir = "./packages"
 }
 
 #[test]
+fn test_config_accepts_version_spec() {
+    let toml = r#"
+packages = [
+    "numpy==2.5.0",
+    "geopandas[all]==5.0.0",
+    "pandas>=1.20,<2.0",
+]
+repository_dir = "./packages"
+"#;
+    let cfg: Config = toml::from_str(toml).expect("should parse");
+    assert!(cfg.validate().is_ok());
+}
+
+#[test]
+fn test_config_rejects_invalid_version_spec() {
+    let toml = r#"
+packages = ["numpy==abc"]
+repository_dir = "./packages"
+"#;
+    let cfg: Config = toml::from_str(toml).expect("should parse");
+    let err = cfg.validate().expect_err("should fail");
+    assert!(err.contains("无效") || err.contains("版本"));
+}
+
+#[test]
+fn test_config_rejects_space_in_version_spec() {
+    let toml = r#"
+packages = ["numpy == 2.5.0"]
+repository_dir = "./packages"
+"#;
+    let cfg: Config = toml::from_str(toml).expect("should parse");
+    let err = cfg.validate().expect_err("should fail");
+    assert!(err.contains("空格"));
+}
+
+#[test]
+fn test_config_rejects_duplicate_version_spec() {
+    let toml = r#"
+packages = ["numpy>=1.0", "numpy==2.5.0"]
+repository_dir = "./packages"
+"#;
+    let cfg: Config = toml::from_str(toml).expect("should parse");
+    let err = cfg.validate().expect_err("should fail");
+    assert!(err.contains("重复") || err.contains("duplicate"));
+}
+
+#[test]
 fn test_config_url_variant_rejects_unknown_fields() {
     let toml = r#"
 packages = [
