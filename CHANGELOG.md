@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-23
+
+### Features
+
+- 配置 `packages` 支持 PEP 440 版本约束，例如 `numpy==2.5.0`、`geopandas[all]==5.0.0`、`numpy>=1.20,<2.0`
+
+## [1.1.0] - 2026-06-23
+
 ### Features
 
 - 支持配置多个 PyPI 镜像（`pypi_urls`），自动故障转移与请求重试
