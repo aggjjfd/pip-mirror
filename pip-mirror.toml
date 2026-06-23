@@ -30,7 +30,7 @@ packages = [
 
     # ---------- GIS / 地理信息 ----------
     "shapely",
-    "geopandas",
+    "geopandas[all]",
     "fiona",
     "pyproj",
     "rtree",
