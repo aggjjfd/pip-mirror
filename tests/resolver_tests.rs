@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use pep440_rs::Version;
+use pip_mirror::filters::{ParsedPackageRef, parse_package_ref};
 use pip_mirror::resolver::pubgrub;
 use pip_mirror::resolver::types::TargetEnv;
 
@@ -13,6 +14,93 @@ fn linux_target() -> TargetEnv {
 }
 
 // ── pubgrub helpers ──
+
+#[test]
+fn test_parse_package_ref_bare_name() {
+    let parsed = parse_package_ref("numpy").unwrap();
+    assert_eq!(
+        parsed,
+        ParsedPackageRef {
+            name: "numpy".to_string(),
+            extras: HashSet::new(),
+            version_spec: None,
+        }
+    );
+}
+
+#[test]
+fn test_parse_package_ref_extras_only() {
+    let parsed = parse_package_ref("markitdown[pptx,docx]").unwrap();
+    assert_eq!(
+        parsed,
+        ParsedPackageRef {
+            name: "markitdown".to_string(),
+            extras: HashSet::from(["pptx".to_string(), "docx".to_string(),]),
+            version_spec: None,
+        }
+    );
+}
+
+#[test]
+fn test_parse_package_ref_version_only() {
+    let parsed = parse_package_ref("numpy==2.5.0").unwrap();
+    assert_eq!(
+        parsed,
+        ParsedPackageRef {
+            name: "numpy".to_string(),
+            extras: HashSet::new(),
+            version_spec: Some("==2.5.0".to_string()),
+        }
+    );
+}
+
+#[test]
+fn test_parse_package_ref_extras_and_version() {
+    let parsed = parse_package_ref("geopandas[all]==5.0.0").unwrap();
+    assert_eq!(
+        parsed,
+        ParsedPackageRef {
+            name: "geopandas".to_string(),
+            extras: HashSet::from(["all".to_string()]),
+            version_spec: Some("==5.0.0".to_string()),
+        }
+    );
+}
+
+#[test]
+fn test_parse_package_ref_range() {
+    let parsed = parse_package_ref("numpy>=1.20,<2.0").unwrap();
+    assert_eq!(
+        parsed,
+        ParsedPackageRef {
+            name: "numpy".to_string(),
+            extras: HashSet::new(),
+            version_spec: Some(">=1.20,<2.0".to_string()),
+        }
+    );
+}
+
+#[test]
+fn test_parse_package_ref_rejects_space() {
+    assert!(parse_package_ref("numpy == 2.5.0").is_err());
+}
+
+#[test]
+fn test_parse_package_ref_rejects_invalid_version() {
+    assert!(parse_package_ref("numpy==abc").is_err());
+}
+
+#[test]
+fn test_parse_package_ref_rejects_unclosed_bracket() {
+    assert!(parse_package_ref("numpy[all").is_err());
+}
+
+#[test]
+fn test_extract_extras_with_version_spec() {
+    let (name, extras) = pubgrub::extract_extras("geopandas[all]==5.0.0");
+    assert_eq!(name, "geopandas");
+    assert_eq!(extras, HashSet::from(["all".to_string()]));
+}
 
 #[test]
 fn test_extract_extras_no_brackets() {
