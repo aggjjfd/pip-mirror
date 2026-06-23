@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
-use pep440_rs::Version;
+use pep440_rs::{Version, VersionSpecifiers};
 use pubgrub::Range;
 
 use crate::filters::{
@@ -32,8 +32,13 @@ pub fn collect_pkg_refs(
 }
 
 pub fn bare_name(package_ref: &str) -> String {
-    let name = package_ref.split_once('[').map_or(package_ref, |(n, _)| n);
-    normalize_package_name(name)
+    parse_package_ref(package_ref)
+        .map(|parsed| parsed.name)
+        .unwrap_or_else(|_| {
+            let name =
+                package_ref.split_once('[').map_or(package_ref, |(n, _)| n);
+            normalize_package_name(name)
+        })
 }
 
 // ── version range helpers ──
@@ -128,27 +133,10 @@ pub fn spec_to_range(spec: &str) -> Range<Version> {
 
 /// 严格校验用户指定的版本约束字符串。
 ///
-/// 与 `spec_to_range` 不同：遇到任何无效操作符或无效版本号都会返回 Err，
-/// 而不是静默跳过。用于配置加载阶段，避免用户写错约束被当作无约束处理。
+/// 直接复用 `pep440_rs::VersionSpecifiers::from_str`，确保与 `parse_package_ref`
+/// 的解析规则一致，避免自定义解析出现偏差。
 pub fn validate_version_spec(spec: &str) -> Result<(), String> {
-    if spec.is_empty() {
-        return Err("版本约束不能为空".to_string());
-    }
-    for part in spec.split(',') {
-        let part = part.trim();
-        if part.is_empty() {
-            return Err("版本约束中有多余逗号".to_string());
-        }
-        let Some((op, ver_str)) = split_operator(part) else {
-            return Err(format!("无效版本操作符: {part}"));
-        };
-        let ver_str = ver_str.trim();
-        if ver_str.is_empty() {
-            return Err(format!("{op} 后缺少版本号"));
-        }
-        if Version::from_str(ver_str).is_err() {
-            return Err(format!("无效版本号: {ver_str}"));
-        }
-    }
-    Ok(())
+    VersionSpecifiers::from_str(spec)
+        .map(|_| ())
+        .map_err(|err| format!("无效版本约束: {err}"))
 }

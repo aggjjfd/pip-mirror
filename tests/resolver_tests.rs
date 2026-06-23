@@ -144,6 +144,9 @@ fn test_extract_extras_strips_whitespace() {
 fn test_bare_name() {
     assert_eq!(pubgrub::bare_name("requests"), "requests");
     assert_eq!(pubgrub::bare_name("markitdown[pptx]"), "markitdown");
+    assert_eq!(pubgrub::bare_name("numpy==2.5.0"), "numpy");
+    assert_eq!(pubgrub::bare_name("numpy>=1.20,<2.0"), "numpy");
+    assert_eq!(pubgrub::bare_name("geopandas[all]==5.0.0"), "geopandas");
 }
 
 #[test]

@@ -161,11 +161,11 @@ fn display_invalid_version_spec(
     raw: &str,
     reason: &str,
 ) -> fmt::Result {
-    let safe = redact_url_for_display(raw);
     if package.is_empty() {
-        return write!(f, "包引用 `{safe}` 的版本约束无效: {reason}");
+        write!(f, "包引用 `{raw}` 的版本约束无效: {reason}")
+    } else {
+        write!(f, "包 `{package}` 的版本约束 `{raw}` 无效: {reason}")
     }
-    write!(f, "包 `{package}` 的版本约束 `{safe}` 无效: {reason}")
 }
 
 fn display_duplicate_version_spec(
