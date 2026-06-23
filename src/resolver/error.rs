@@ -19,6 +19,10 @@ pub enum ResolveError {
         target: String,
         detail: String,
     },
+    NoMatchingVersion {
+        package: String,
+        spec: String,
+    },
     Config(String),
 }
 
@@ -49,6 +53,12 @@ impl std::fmt::Display for ResolveError {
                 f,
                 "无法为 {package}@{version} 在 {target} 上求得依赖解: {detail}"
             ),
+            ResolveError::NoMatchingVersion { package, spec } => {
+                write!(
+                    f,
+                    "包 {package} 在 PyPI 上找不到匹配版本约束 {spec} 的版本"
+                )
+            }
             ResolveError::Config(msg) => write!(f, "配置错误: {msg}"),
         }
     }
