@@ -309,3 +309,91 @@ pub fn select_files_for_version(
     }
     Vec::new()
 }
+
+/// 解析后的包引用，包含归一化名称、extras 集合和可选版本约束。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedPackageRef {
+    pub name: String,
+    pub extras: HashSet<String>,
+    pub version_spec: Option<String>,
+}
+
+/// 从包引用字符串中提取 `[extras]`，返回剩余包名部分和 extras 集合。
+fn parse_extras_and_rest(raw: &str) -> Result<(&str, HashSet<String>), String> {
+    let Some((name, rest)) = raw.split_once('[') else {
+        return Ok((raw, HashSet::new()));
+    };
+    let (extras_str, after_bracket) = rest
+        .split_once(']')
+        .ok_or_else(|| "缺少右括号 ']'".to_string())?;
+    if !after_bracket.is_empty()
+        && !after_bracket.starts_with(['>', '<', '=', '!', '~'])
+    {
+        return Err(format!("']' 后存在非版本约束内容: {after_bracket}"));
+    }
+    let extras = extras_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    Ok((name, extras))
+}
+
+/// 判断字符是否属于包名字符（字母、数字、`_`、`.`、`-`）。
+fn is_package_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-'
+}
+
+/// 把包名部分拆成名称和可选版本约束字符串。
+fn split_name_and_spec(
+    name_part: &str,
+) -> Result<(&str, Option<&str>), String> {
+    match name_part.find(|c: char| !is_package_name_char(c)) {
+        None => Ok((name_part, None)),
+        Some(0) => Err("包名缺失".to_string()),
+        Some(idx) => {
+            let (name, spec) = name_part.split_at(idx);
+            Ok((name, Some(spec.trim())))
+        }
+    }
+}
+
+/// 校验版本约束字符串：不能为空且不能包含空格。
+fn validate_version_spec_str(spec: &str) -> Result<(), String> {
+    if spec.is_empty() {
+        return Err("版本约束不能为空".to_string());
+    }
+    if spec.contains(' ') {
+        return Err("版本约束中不允许空格".to_string());
+    }
+    Ok(())
+}
+
+/// 解析配置中的包引用字符串。
+///
+/// 支持格式：
+/// - `numpy`
+/// - `markitdown[pptx,docx]`
+/// - `numpy==2.5.0`
+/// - `geopandas[all]==5.0.0`
+/// - `numpy>=1.20,<2.0`
+///
+/// 版本操作符两侧不允许空格。
+pub fn parse_package_ref(raw: &str) -> Result<ParsedPackageRef, String> {
+    if raw.is_empty() {
+        return Err("包引用不能为空".to_string());
+    }
+
+    let (name_part, extras) = parse_extras_and_rest(raw)?;
+    let (name, spec) = split_name_and_spec(name_part)
+        .map_err(|reason| format!("{reason}: {raw}"))?;
+    if let Some(s) = spec {
+        validate_version_spec_str(s)?;
+    }
+
+    Ok(ParsedPackageRef {
+        name: normalize_package_name(name),
+        extras,
+        version_spec: spec.map(|s| s.to_string()),
+    })
+}
