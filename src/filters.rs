@@ -1,6 +1,8 @@
 use std::collections::HashSet;
+use std::str::FromStr;
 
 use crate::resolver::types::TargetEnv;
+use pep440_rs::VersionSpecifiers;
 
 pub mod file;
 pub use file::ResolvedFile;
@@ -318,10 +320,12 @@ pub struct ParsedPackageRef {
     pub version_spec: Option<String>,
 }
 
-/// 从包引用字符串中提取 `[extras]`，返回剩余包名部分和 extras 集合。
-fn parse_extras_and_rest(raw: &str) -> Result<(&str, HashSet<String>), String> {
+/// 从包引用字符串中提取 `[extras]`，返回剩余包名部分（含版本约束）和 extras 集合。
+fn parse_extras_and_rest(
+    raw: &str,
+) -> Result<(String, HashSet<String>), String> {
     let Some((name, rest)) = raw.split_once('[') else {
-        return Ok((raw, HashSet::new()));
+        return Ok((raw.to_string(), HashSet::new()));
     };
     let (extras_str, after_bracket) = rest
         .split_once(']')
@@ -336,7 +340,7 @@ fn parse_extras_and_rest(raw: &str) -> Result<(&str, HashSet<String>), String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    Ok((name, extras))
+    Ok((format!("{name}{after_bracket}"), extras))
 }
 
 /// 判断字符是否属于包名字符（字母、数字、`_`、`.`、`-`）。
@@ -358,7 +362,7 @@ fn split_name_and_spec(
     }
 }
 
-/// 校验版本约束字符串：不能为空且不能包含空格。
+/// 校验版本约束字符串：不能为空、不能包含空格，且必须是合法的 PEP 440 约束。
 fn validate_version_spec_str(spec: &str) -> Result<(), String> {
     if spec.is_empty() {
         return Err("版本约束不能为空".to_string());
@@ -366,7 +370,9 @@ fn validate_version_spec_str(spec: &str) -> Result<(), String> {
     if spec.contains(' ') {
         return Err("版本约束中不允许空格".to_string());
     }
-    Ok(())
+    VersionSpecifiers::from_str(spec)
+        .map(|_| ())
+        .map_err(|err| format!("无效版本约束: {err}"))
 }
 
 /// 解析配置中的包引用字符串。
@@ -385,7 +391,7 @@ pub fn parse_package_ref(raw: &str) -> Result<ParsedPackageRef, String> {
     }
 
     let (name_part, extras) = parse_extras_and_rest(raw)?;
-    let (name, spec) = split_name_and_spec(name_part)
+    let (name, spec) = split_name_and_spec(&name_part)
         .map_err(|reason| format!("{reason}: {raw}"))?;
     if let Some(s) = spec {
         validate_version_spec_str(s)?;
