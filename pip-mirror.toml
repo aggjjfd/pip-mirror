@@ -222,6 +222,13 @@ packages = [
 
     # 本地私有 whl（参与依赖解析；如不存在请先注释掉）
     # { url = "file:///home/lin/works/asr/dist/asr_service-0.1.0-py3-none-any.whl" }
+
+    # Trellis 预编译 wheel（manylinux_2_17 / glibc 2.17 / CentOS 7 兼容）
+    { url = "file:///home/lin/works/trellis/wheelhouse/fixed/numpy-2.5.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" },
+    { url = "file:///home/lin/works/trellis/wheelhouse/fixed/pandas-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" },
+    { url = "file:///home/lin/works/trellis/wheelhouse/fixed/pyproj-3.7.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" },
+    { url = "file:///home/lin/works/trellis/wheelhouse/fixed/rtree-1.4.0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" },
+    { url = "file:///home/lin/works/trellis/wheelhouse/fixed/scipy-1.18.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" },
 ]
 
 # 解析目标环境（Python 版本 × 操作系统 × 架构）
