@@ -192,23 +192,94 @@ fn emit_import_finished(
     });
 }
 
+/// 已知的顶层路径名（无顶层文件夹的归档直接使用这些）
+const KNOWN_TOP_LEVEL: &[&str] = &["simple", "python-builds", ".store.db"];
+
+/// 剥离归档条目的顶层文件夹前缀。
+///
+/// 如果第一层是已知路径名（simple/python-builds/.store.db），保持原路径；
+/// 否则剥掉第一层目录。返回 `None` 表示该条目是顶层文件夹自身，应跳过。
+fn strip_top_level(
+    path: &std::path::Path,
+    stripped_prefix: &mut Option<String>,
+) -> Option<std::path::PathBuf> {
+    let first = path.iter().next()?;
+    let name = first.to_string_lossy().to_string();
+
+    if KNOWN_TOP_LEVEL.contains(&name.as_str()) {
+        return Some(path.to_path_buf());
+    }
+
+    // 有顶层文件夹，剥掉第一层
+    if stripped_prefix.is_none() {
+        *stripped_prefix = Some(name.clone());
+        info!("检测到顶层文件夹, 导入时自动剥离: {}", name);
+    }
+
+    let stripped: std::path::PathBuf = path.iter().skip(1).collect();
+    if stripped.as_os_str().is_empty() {
+        None
+    } else {
+        Some(stripped)
+    }
+}
+
+/// 解包单个归档条目到目标目录
+fn unpack_entry(
+    entry: &mut tar::Entry<'_, Box<dyn std::io::Read>>,
+    repo_dir: &std::path::Path,
+    stripped_prefix: &mut Option<String>,
+) -> Result<(), String> {
+    let path = entry
+        .path()
+        .map_err(|e| format!("获取条目路径失败: {e}"))?
+        .to_path_buf();
+
+    let Some(dest_rel) = strip_top_level(&path, stripped_prefix) else {
+        return Ok(());
+    };
+
+    let dest = repo_dir.join(&dest_rel);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建目录失败: {e}"))?;
+    }
+    entry
+        .unpack(&dest)
+        .map(|_| ())
+        .map_err(|e| format!("解包失败: {e}"))
+}
+
+/// 遍历归档并逐条解包到 repo_dir
+fn unpack_entries(
+    archive: &std::path::Path,
+    repo_dir: &std::path::Path,
+) -> Result<(), String> {
+    let reader = crate::packager::open_archive_reader(archive)
+        .map_err(|e| format!("打开增量包失败: {e}"))?;
+    let mut tar = tar::Archive::new(reader);
+    let mut stripped_prefix: Option<String> = None;
+
+    for entry in tar
+        .entries()
+        .map_err(|e| format!("读取归档条目失败: {e}"))?
+    {
+        let mut entry = entry.map_err(|e| format!("读取条目失败: {e}"))?;
+        unpack_entry(&mut entry, repo_dir, &mut stripped_prefix)?;
+    }
+    Ok(())
+}
+
 async fn unpack_archive(
     archive: &std::path::Path,
     repo_dir: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let archive = archive.to_path_buf();
     let repo_dir = repo_dir.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let reader = crate::packager::open_archive_reader(&archive)
-            .map_err(|e| format!("打开增量包失败: {e}"))?;
-        let mut tar = tar::Archive::new(reader);
-        tar.unpack(&repo_dir)
-            .map_err(|e| format!("解包失败: {e}"))?;
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| format!("解包任务异常: {e}"))?
-    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })
+    tokio::task::spawn_blocking(move || unpack_entries(&archive, &repo_dir))
+        .await
+        .map_err(|e| format!("解包任务异常: {e}"))?
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })
 }
 
 async fn perform_import_incremental(

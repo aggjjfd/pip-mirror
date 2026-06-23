@@ -1,6 +1,6 @@
 [package]
 name = "pip-mirror"
-version = "1.0.0"
+version = "1.1.0"
 description = "轻量级私有 PIP 仓库 — Rust rewrite（增量/全量同步 + PEP 503/691 服务）"
 edition = "2024"
 license = "MIT"
