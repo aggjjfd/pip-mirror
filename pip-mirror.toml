@@ -55,6 +55,9 @@ packages = [
     "cachetools",
     "more-itertools",
     "pyyaml",
+    "structlog",
+    "pydantic",
+    "pydantic-settings",
 
     # ---------- 包管理 / 构建 / 开发工具 ----------
     "uv",
