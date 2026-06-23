@@ -6,7 +6,8 @@ use crate::downloader::{Downloadable, DownloadableItem, PrefetchedFiles};
 use crate::http::HttpClient;
 use crate::resolver::metadata::MetadataCache;
 use crate::resolver::plan::{
-    DependencyPlan, resolved_file_to_remote, select_top_versions,
+    DependencyPlan, filter_versions_by_spec, resolved_file_to_remote,
+    select_top_versions,
 };
 use crate::resolver::pubgrub::bare_name;
 use crate::resolver::resolve::ResolveError;
@@ -48,6 +49,7 @@ pub async fn build_top_only_plan(
     config: &crate::config::Config,
     client: &HttpClient,
     pkgs: &[String],
+    version_specs: &std::collections::HashMap<String, Option<String>>,
 ) -> Result<DependencyPlan, ResolveError> {
     let base_url = config
         .effective_mirrors()
@@ -70,17 +72,16 @@ pub async fn build_top_only_plan(
 
     for pkg in pkgs {
         let package = bare_name(pkg);
-        let selected_versions = select_top_versions(
-            cache.get_all_versions(&package).await?,
-            config.top_versions_per_package,
-            config.allow_prerelease,
-        );
-
-        solved_versions.insert(package.clone(), selected_versions.clone());
-        for version in selected_versions {
-            let selected = selector.select(&package, &version).await?;
-            planned_files.extend(selected);
-        }
+        let (selected_versions, files) = select_package_versions(
+            &package,
+            version_specs,
+            &cache,
+            &selector,
+            config,
+        )
+        .await?;
+        solved_versions.insert(package, selected_versions);
+        planned_files.extend(files);
     }
 
     let mut seen = std::collections::HashSet::new();
@@ -91,4 +92,26 @@ pub async fn build_top_only_plan(
         prefetched_files: PrefetchedFiles::new(),
         solved_versions,
     })
+}
+
+async fn select_package_versions(
+    package: &str,
+    version_specs: &std::collections::HashMap<String, Option<String>>,
+    cache: &MetadataCache,
+    selector: &FileSelector<'_>,
+    config: &crate::config::Config,
+) -> Result<(Vec<Version>, Vec<DownloadableItem>), ResolveError> {
+    let all_versions = cache.get_all_versions(package).await?;
+    let candidates =
+        filter_versions_by_spec(all_versions, package, version_specs)?;
+    let selected_versions = select_top_versions(
+        candidates,
+        config.top_versions_per_package,
+        config.allow_prerelease,
+    );
+    let mut files = Vec::new();
+    for version in &selected_versions {
+        files.extend(selector.select(package, version).await?);
+    }
+    Ok((selected_versions, files))
 }

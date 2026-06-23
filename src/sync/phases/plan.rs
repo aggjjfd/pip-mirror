@@ -5,6 +5,7 @@ use crate::progress::ProgressHandle;
 use crate::resolver::plan::{
     DependencyPlan, PlanParams, build_dependency_plan,
 };
+use crate::resolver::pubgrub::collect_pkg_refs;
 use crate::resolver::resolve::ResolveError;
 use crate::sync::pipeline::SyncError;
 use crate::sync::plan;
@@ -22,6 +23,15 @@ impl PlanPhase {
         let (mut name_pkgs, url_pkgs) =
             crate::sync::url_wheel::split_package_specs(pkgs);
 
+        let pkg_refs = collect_pkg_refs(&name_pkgs);
+        let version_specs: std::collections::HashMap<String, Option<String>> =
+            pkg_refs
+                .iter()
+                .map(|(name, parsed)| {
+                    (name.clone(), parsed.version_spec.clone())
+                })
+                .collect();
+
         let url_prefetched =
             crate::sync::url_wheel_download::maybe_collect_url_wheel_deps(
                 client,
@@ -31,8 +41,15 @@ impl PlanPhase {
             )
             .await?;
 
-        let mut plan =
-            build_plan(config, client, &name_pkgs, no_deps, progress).await?;
+        let mut plan = build_plan(
+            config,
+            client,
+            &name_pkgs,
+            &version_specs,
+            no_deps,
+            progress,
+        )
+        .await?;
         plan.prefetched_files.extend(url_prefetched);
 
         for spec in &url_pkgs {
@@ -48,15 +65,23 @@ impl PlanPhase {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn build_plan(
     config: &Config,
     client: &HttpClient,
     name_pkgs: &[String],
+    version_specs: &std::collections::HashMap<String, Option<String>>,
     no_deps: bool,
     progress: Option<ProgressHandle>,
 ) -> Result<DependencyPlan, ResolveError> {
     if no_deps {
-        return plan::build_top_only_plan(config, client, name_pkgs).await;
+        return plan::build_top_only_plan(
+            config,
+            client,
+            name_pkgs,
+            version_specs,
+        )
+        .await;
     }
     let params = PlanParams {
         top_packages: name_pkgs,
@@ -69,7 +94,7 @@ async fn build_plan(
         resolve_workers: config.resolve_workers,
         metadata_workers: config.metadata_workers,
         targets: crate::resolver::types::TargetEnv::from_specs(&config.targets),
-        version_specs: &std::collections::HashMap::new(),
+        version_specs,
     };
     build_dependency_plan(&params, client, progress).await
 }
