@@ -172,6 +172,7 @@ async fn test_build_dependency_plan_e2e_smoke() {
             metadata_workers: TEST_METADATA_WORKERS,
             targets:
                 pip_mirror::resolver::types::TargetEnv::all_resolution_targets(),
+            version_specs: &std::collections::HashMap::new(),
         };
         let plan = build_dependency_plan(&params, &client, None)
             .await

@@ -244,6 +244,7 @@ async fn test_build_dependency_plan_fetches_metadata_concurrently() {
         metadata_workers: 8,
         targets: pip_mirror::resolver::types::TargetEnv::all_resolution_targets(
         ),
+        version_specs: &std::collections::HashMap::new(),
     };
 
     let plan = build_dependency_plan(&params, &test_client(), None)

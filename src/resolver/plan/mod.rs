@@ -17,7 +17,7 @@ use super::eligibility::ParsedDepsCacheKey;
 use super::error::ResolveError;
 use super::markers::ParsedDependency;
 use super::metadata::MetadataCache;
-use super::pubgrub::{bare_name, collect_pkg_refs};
+use super::pubgrub::{bare_name, collect_pkg_refs, spec_to_range};
 use super::resolve::{build_solve_jobs, solve_all_targets};
 use super::solve::SolveResult;
 use super::solve_cache::{SolveCaches, SolveResultCache};
@@ -37,6 +37,7 @@ pub struct PlanParams<'a> {
     pub resolve_workers: usize,
     pub metadata_workers: usize,
     pub targets: Vec<TargetEnv>,
+    pub version_specs: &'a HashMap<String, Option<String>>,
 }
 
 #[derive(Debug)]
@@ -178,6 +179,28 @@ pub(crate) fn select_top_versions(
     }
 }
 
+pub(crate) fn filter_versions_by_spec(
+    all_versions: Vec<Version>,
+    package: &str,
+    version_specs: &HashMap<String, Option<String>>,
+) -> Result<Vec<Version>, ResolveError> {
+    let Some(Some(spec)) = version_specs.get(package) else {
+        return Ok(all_versions);
+    };
+    let range = spec_to_range(spec);
+    let filtered: Vec<_> = all_versions
+        .into_iter()
+        .filter(|v| range.contains(v))
+        .collect();
+    if filtered.is_empty() {
+        return Err(ResolveError::NoMatchingVersion {
+            package: package.to_string(),
+            spec: spec.clone(),
+        });
+    }
+    Ok(filtered)
+}
+
 async fn collect_top_versions(
     params: &PlanParams<'_>,
     cache: &MetadataCache,
@@ -186,8 +209,13 @@ async fn collect_top_versions(
         .map(|package_ref| async move {
             let package = bare_name(package_ref);
             let all_versions = cache.get_all_versions(&package).await?;
-            let selected = select_top_versions(
+            let candidates = filter_versions_by_spec(
                 all_versions,
+                &package,
+                params.version_specs,
+            )?;
+            let selected = select_top_versions(
+                candidates,
                 params.top_versions_per_package,
                 params.allow_prerelease,
             );

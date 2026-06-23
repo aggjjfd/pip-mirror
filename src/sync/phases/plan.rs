@@ -69,6 +69,7 @@ async fn build_plan(
         resolve_workers: config.resolve_workers,
         metadata_workers: config.metadata_workers,
         targets: crate::resolver::types::TargetEnv::from_specs(&config.targets),
+        version_specs: &std::collections::HashMap::new(),
     };
     build_dependency_plan(&params, client, progress).await
 }

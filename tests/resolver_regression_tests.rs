@@ -452,6 +452,7 @@ async fn test_prefilter_skips_incompatible_versions() {
         resolve_workers: 2,
         metadata_workers: 4,
         targets: vec![linux_target()],
+        version_specs: &std::collections::HashMap::new(),
     };
 
     let plan = build_dependency_plan(&params, &test_client(), None)
