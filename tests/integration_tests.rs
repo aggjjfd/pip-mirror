@@ -6,7 +6,7 @@ use pip_mirror::http::HttpClient;
 use pip_mirror::resolver::eligibility::{SolveContext, version_matches_target};
 use pip_mirror::resolver::metadata::MetadataCache;
 use pip_mirror::resolver::plan::{PlanParams, build_dependency_plan};
-use pip_mirror::resolver::pubgrub::{bare_name, collect_pkg_extras};
+use pip_mirror::resolver::pubgrub::{bare_name, collect_pkg_refs};
 use pip_mirror::resolver::solve::solve_one_target;
 use pip_mirror::resolver::types::TargetEnv;
 
@@ -81,8 +81,9 @@ async fn solve_exact_target(
         TEST_METADATA_WORKERS,
     );
     let package = bare_name(package_ref);
-    let extras = collect_pkg_extras(&[package_ref.to_string()])
+    let extras = collect_pkg_refs(&[package_ref.to_string()])
         .remove(&package)
+        .map(|parsed| parsed.extras)
         .unwrap_or_default();
     let ctx = SolveContext {
         cache: &cache,

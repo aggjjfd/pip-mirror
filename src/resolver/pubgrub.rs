@@ -4,43 +4,36 @@ use std::str::FromStr;
 use pep440_rs::Version;
 use pubgrub::Range;
 
+use crate::filters::{
+    ParsedPackageRef, normalize_package_name, parse_package_ref,
+};
+
 // ── dep spec helpers ──
 
 pub type DepSpec = (String, String);
 
 pub fn extract_extras(package_ref: &str) -> (String, HashSet<String>) {
-    match package_ref.split_once('[') {
-        None => (package_ref.to_string(), HashSet::new()),
-        Some((name, rest)) => {
-            let extras: HashSet<_> = rest
-                .strip_suffix(']')
-                .unwrap_or(rest)
-                .split(',')
-                .map(|e| e.trim().to_string())
-                .filter(|e| !e.is_empty())
-                .collect();
-            (name.to_string(), extras)
-        }
+    match parse_package_ref(package_ref) {
+        Ok(parsed) => (parsed.name, parsed.extras),
+        Err(_) => (package_ref.to_string(), HashSet::new()),
     }
 }
 
-pub fn collect_pkg_extras(
+pub fn collect_pkg_refs(
     packages: &[String],
-) -> std::collections::HashMap<String, HashSet<String>> {
-    let mut pkg_extras = HashMap::new();
+) -> HashMap<String, ParsedPackageRef> {
+    let mut pkg_refs = HashMap::new();
     for pkg_ref in packages {
-        let (name, extras) = extract_extras(pkg_ref);
-        if !extras.is_empty() {
-            pkg_extras
-                .insert(crate::filters::normalize_package_name(&name), extras);
+        if let Ok(parsed) = parse_package_ref(pkg_ref) {
+            pkg_refs.insert(parsed.name.clone(), parsed);
         }
     }
-    pkg_extras
+    pkg_refs
 }
 
 pub fn bare_name(package_ref: &str) -> String {
     let name = package_ref.split_once('[').map_or(package_ref, |(n, _)| n);
-    crate::filters::normalize_package_name(name)
+    normalize_package_name(name)
 }
 
 // ── version range helpers ──
@@ -131,4 +124,31 @@ pub fn spec_to_range(spec: &str) -> Range<Version> {
         range = range.intersection(&op_to_range(op, ver));
     }
     range
+}
+
+/// 严格校验用户指定的版本约束字符串。
+///
+/// 与 `spec_to_range` 不同：遇到任何无效操作符或无效版本号都会返回 Err，
+/// 而不是静默跳过。用于配置加载阶段，避免用户写错约束被当作无约束处理。
+pub fn validate_version_spec(spec: &str) -> Result<(), String> {
+    if spec.is_empty() {
+        return Err("版本约束不能为空".to_string());
+    }
+    for part in spec.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return Err("版本约束中有多余逗号".to_string());
+        }
+        let Some((op, ver_str)) = split_operator(part) else {
+            return Err(format!("无效版本操作符: {part}"));
+        };
+        let ver_str = ver_str.trim();
+        if ver_str.is_empty() {
+            return Err(format!("{op} 后缺少版本号"));
+        }
+        if Version::from_str(ver_str).is_err() {
+            return Err(format!("无效版本号: {ver_str}"));
+        }
+    }
+    Ok(())
 }

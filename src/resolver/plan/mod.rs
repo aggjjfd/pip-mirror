@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use dashmap::DashMap;
 use futures::{StreamExt, stream};
@@ -6,7 +9,7 @@ use pep440_rs::Version;
 use tracing::{debug, info};
 
 use crate::downloader::{Downloadable, DownloadableItem, RemoteFile};
-use crate::filters::ResolvedFile;
+use crate::filters::{ParsedPackageRef, ResolvedFile};
 use crate::http::HttpClient;
 use crate::progress::{ProgressHandle, SyncEvent};
 
@@ -14,7 +17,7 @@ use super::eligibility::ParsedDepsCacheKey;
 use super::error::ResolveError;
 use super::markers::ParsedDependency;
 use super::metadata::MetadataCache;
-use super::pubgrub::{bare_name, collect_pkg_extras};
+use super::pubgrub::{bare_name, collect_pkg_refs};
 use super::resolve::{build_solve_jobs, solve_all_targets};
 use super::solve::SolveResult;
 use super::solve_cache::{SolveCaches, SolveResultCache};
@@ -65,6 +68,15 @@ pub async fn build_dependency_plan(
     Ok(plan)
 }
 
+fn pkg_refs_to_extras(
+    pkg_refs: HashMap<String, ParsedPackageRef>,
+) -> HashMap<String, HashSet<String>> {
+    pkg_refs
+        .into_iter()
+        .map(|(name, parsed)| (name, parsed.extras))
+        .collect()
+}
+
 async fn build_dependency_plan_inner(
     params: &PlanParams<'_>,
     client: &HttpClient,
@@ -79,7 +91,7 @@ async fn build_dependency_plan_inner(
     let cache =
         MetadataCache::new(client.clone(), base_url, params.metadata_workers);
     let top_versions = collect_top_versions(params, &cache).await?;
-    let pkg_extras = collect_pkg_extras(params.top_packages);
+    let pkg_extras = pkg_refs_to_extras(collect_pkg_refs(params.top_packages));
     let targets = if params.targets.is_empty() {
         TargetEnv::all_resolution_targets()
     } else {
